@@ -136,9 +136,9 @@ You always do the git push yourself. The assistant commits locally; pushing stay
 
 ### The in-progress phase file, and pausing safely
 
-While a phase is running, its live state sits in `phase-ends/CURRENT_PHASE.md`. This file holds the approved plan as a checklist, a pointer to the task currently in progress, a running log with one line per completed task, and any blockers. It is created from a template when the phase is planned, updated after every task, and archived into `phase-ends/logs/` when the phase ends. It is the recovery point: if a session crashes, the conversation gets compacted, or you just close the laptop, this file is how the next session knows exactly where things stood.
+While a phase is running, its live state sits in `phase-ends/CURRENT_PHASE.md`. This file holds the approved plan as a checklist, a pointer to the task currently in progress, a running log with a short rich note for each completed task (what it did and why), and any blockers. It is created from a template when the phase is planned, updated after every task, and archived into `phase-ends/logs/` when the phase ends. It is the recovery point: if a session crashes, the conversation gets compacted, or you just close the laptop, this file is how the next session knows exactly where things stood.
 
-Because each task is committed together with its log line in `CURRENT_PHASE.md`, the repository sits at a clean checkpoint after every task. That is what makes it safe to stop and pick up later.
+Because each task is committed together with its checkpoint note in `CURRENT_PHASE.md`, the repository sits at a clean, well-documented checkpoint after every task. Each note captures why the task was done the way it was, not just the code, so a later session can pick the phase back up and write the phase summary from the log. That is what makes it safe to stop after any task and pick up later.
 
 To pause in the middle of a phase and resume in a fresh session:
 
@@ -230,66 +230,73 @@ It commits, in small per-task steps, with clear messages and no AI attribution i
 Run "Read SETUP.md and do it" again. The installer tracks its own progress and resumes.
 
 **Is my code sent anywhere unusual?**
-No more than normal Claude Code usage. The system is local files and Claude Code's normal operation. The only nuance is that it keeps the assistant's memory and transcripts inside your repo instead of your home directory. This harness has zero net calls and no code ever leaves your computer. No metrics or telemetry is gained using this harness.
+No more than normal Claude Code usage. The system is local files and Claude Code's normal operation. The only nuance is that it keeps the assistant's memory and transcripts inside your repo instead of your home directory. The harness itself makes no network calls of its own and no code leaves your computer through it. It collects no metrics or telemetry.
 
 **Can a large or messy existing project use this?**
 Yes. That is the migration mode. It was validated against a real multi-year project with dozens of out-of-order phase files and an old chat-era plan, and it tidied everything with git history intact.
 
 ---
 
-## Generalized example workflow (additional Claude Code use instructions)
+## Generalized example workflow (a Claude Code primer)
 
-**Project architect relies on Project Context file :**
-This is the projects source of truth and roadmap. The grand plan for the entire project.
+New to Claude Code? This section walks through a normal working session from start to finish and explains the terms Project Architect uses along the way.
 
-**Generating a Project Context :**
-If you do not have one yet, you can build one using this system. Start a new session and say that you want to build this. This works for new empty projects all the way through mature established projects. This entails discussion of your project idea/history, project goals, scope, and post release features. Generations are major changes in the project, 1.0 can be the first working release, and 2.0 can be an evolution of the orginal code-base into something nextgen or more fleshed out. Phases are parts of a generation, each building a testable piece of the generation, iterating from boilerplate to completed project. Roadmap is the list of generations/phases planned out how to get from start/current state to goal. Parking Lot is for additional thoughts and stray ideas that dont have a place on the roadmap currently. When building a project context, the first generation is planned out in phases. and the rest is bundled in. Once you complete a generation you will need to plan the next generation's phases. A generation can have several project contexts, project plans, etc. Coding is a very iterative process, its common to finish a phase, and questions/more plans related to that phase need to be completed before the next phase. This can be refered to as a subphase and appending a x.1 to the last phase to indicate more work was needed. There are no limits to the number of plans per project.
+**The Project Context file:**
+This is your project's source of truth and roadmap: the master plan for the whole project.
 
-**How to start CC (Claude Code) :**
-Open Terminal / Command Prompt / Powershell and navigate to the directory of your project. You can also use folder explorer to right click in the emtpy space within your repo's root folder and use the option "Open in Terminal"
-Example:
+**Generating a Project Context:**
+If you do not have one yet, this system builds it for you. Start a session and say you want to build a Project Context. It works for a brand new empty project and for a mature, established one. Expect a discussion of your idea and history, your goals, the scope, and the features you want after release. A few terms it uses:
+
+- **Generation:** a major stage of the project. 1.0 might be the first working release; 2.0 might be an evolution of that codebase into something more capable.
+- **Phase:** a part of a generation that builds one testable piece, working from boilerplate toward a finished result. Usually indicated by GEN.x.
+- **Subphase:** coding is iterative, so it is common to finish a phase and find that follow-up questions or extra work are needed before the next one. That work is a subphase, written as an Gen.x.1 appended to the last phase number.
+- **Roadmap:** the ordered list of generations and phases that gets you from the current state to the goal.
+- **Parking Lot:** a place for stray ideas that do not have a home on the roadmap yet.
+
+When a Project Context is generated, the first generation is planned out in detail as phases and the later generations are sketched in. When you finish a generation, you plan the next generation's phases. A project can have several plans over its life; there is no limit.
+
+**Starting Claude Code:**
+Open a terminal (Terminal, Command Prompt, or PowerShell) and change into your project's folder. On Windows you can also right-click the empty space inside the repo folder and choose "Open in Terminal."
+
 ```
-C:\Users\User >
-type `cd path-to-repo` and hit enter
-C:\Users\User > cd Documents\git\repository\
-C:\Users\User\Documents\git\repository >
-now that you are in the repository root directory, type `claude` and hit enter
-C:\Users\User\Documents\git\repository > claude
+C:\Users\You> cd Documents\git\my-repo
+C:\Users\You\Documents\git\my-repo> claude
 ```
-  This starts Claude Code and puts you in a fresh session
 
-**Session Start Protocol :**
-In a fresh chat session, all you have to type is `continue` and Session Start Protocol will run. All of the rules will be listed and you will be presented with the next task. Now enable Plan Mode.
+The `cd` command moves you into the project directory. Typing `claude` then starts Claude Code in a fresh session.
 
-**Plan mode On :**
-Toggle plan mode on using "shift+tab" to cycle the modes. Type /effort to change the effort to Max. and then just typed confirmed to continue. Plan mode will review your Project Context where the current generation is listed and the current phase is listed. It will take that information and build a plan to acomplish the phase. It may have questions for you to answer. The questions come with a recommended option to pick, but several others are included for you to pick from. You are also able to type something instead of picking an option, or chat about this to discuss it in detail. Once the plan is locked in and presented, review it and type any changes you need or accept the plan and use Auto Mode. 
+**Session start:**
+In a fresh session, type `continue`. The Session Start Protocol runs, lists all the rules, and presents the next task. Then turn on Plan mode.
 
-**Auto Mode On :**
-Auto Mode will automatically do the tasks and proceed through the task list. During this time you can always type to discuss what you are observing and make deviations. Cntrl+C will cancel any current thinking by CC, useful if you see it doing something you want it to skip or rethink its approach. CC will explain how and why its coding this task the way it is. It will then do the code, finish the task, and update Current_Phase tracker with this new task results.
+**Turning on Plan mode:**
+Press Shift+Tab to cycle the modes until Plan mode is on. Type `/effort` and set it to Max, then type `confirmed` to proceed. Plan mode reads your Project Context, finds the current generation and phase, and builds a plan to complete that phase. It may ask you questions; each one comes with a recommended answer plus other options. You can pick an option, type your own answer, or discuss it in detail first. When the plan is ready it is shown to you. Review it, ask for any changes, and once you approve it, turn on Auto Mode.
 
-**Current Phase :**
-Current_Phase is the intra-session memory. Some Phases can take more than one session, when you approach 600k out of 1M context or higher, CC will usually recommend picking things up in a fresh session. Say that you want to do so and checkpoint current progress for the fresh session. Cntrl+C twice in a row to exit an active CC session. This will drop you back to the terminal. Typing "claude" will start a new session. Typing "claude --resume" will list all previous sessions from the current project, you can select one and continue the session you were working with no loss. This is useful for computer crashes/ reboots / or just continueing the project another day.
+**Turning on Auto Mode:**
+In Auto Mode, Claude Code works through the task list on its own. You can type at any time to comment on what you are seeing or ask for a change of direction. Ctrl+C cancels whatever it is currently thinking about, which is handy if you want it to skip or rethink something. Before each task it explains how and why it is coding it that way, then writes the code, finishes the task, and records the result in the Current Phase tracker.
 
-**Phase End Protocol :**
-When the phase is complete and you have verified the milestone, confirm it. PhaseEnd will start. This is automatic and requires no assistance. A CC session ends 1 of two ways, PhaseEnd, or session checkpoint where a phase takes multiple sessions.
+**Current Phase:**
+`CURRENT_PHASE.md` is the memory for the phase in progress. A phase can span more than one session. As a session fills up, Claude Code will suggest continuing in a fresh one; say that you want to and it checkpoints your progress first. To leave a session, press Ctrl+C twice to return to the terminal. Type `claude` to start a new session, or `claude --resume` to list this project's previous sessions and pick one up exactly where you left off. Resume is useful after a crash, a reboot, or simply picking the project back up another day.
 
-**Multiple Session Phases :**
-Sometimes debuging and other coding tasks in a phase can take extended context use. When a session reaches ~900k or 90% full, its best to checkpoint and start a fresh session. You can monitor your session usage through the statusline underneath your text input line
+**Phase End:**
+When a phase is complete and you have verified its milestone, confirm it. The Phase End process runs automatically and needs no help from you. A session ends one of two ways: a Phase End, or a checkpoint when a phase takes more than one session.
 
-**Status Line :**
-The statusline shows underneath your text input line. It contains: Model, Effort level | Session context length | 5 hour usage limit and reset time | Weekly usage limit. If you cannot see it after Setup, cntrl+C twice to exit the session, `claude -- resume` to see the list of sessions in this project, they are in order of most recent to oldest.
+**Phases that span multiple sessions:**
+Debugging and larger tasks can use a lot of context. When a session gets full (watch the status line), checkpoint and start fresh. There is no penalty for this: Project Architect is built so a new session resumes the work with no loss.
 
-**Git :**
-Git is a version control software and should be used with any coding project. Version control means you will have lots of backups if an outtage/crash/mistake destorys your files. Github is cloude storage for code. A Repository can be private or public. You can use Github Desktop App for easy use of the system. Good hygiene is to push the commits made by CC regularly. 
+**The status line:**
+The status line sits just below your text input. Left to right it shows: the model and effort level, the session context length, your 5-hour usage and its reset time, and your weekly usage. If you cannot see it after setup, press Ctrl+C twice to exit, then run `claude --resume` to see this project's sessions, listed newest to oldest.
 
-**Effort Modes and Models :**
-Effort is set with `/effort` on the ladder `low / medium / high / xHigh / Max` (depth — how hard one agent reasons). Ultracode is NOT a deeper level — it runs at xHigh and adds multi-agent orchestration (breadth). **Max and Ultracode are session-only** (re-apply each session; xHigh is the highest that persists). `docs/effort-map.md` is the evolvable source of truth and governs where this section's wording differs. xHigh is the recommended default for Agentic coding. Max is only recommened for very deep reasoning and novel algorthym development. HTML/Markdown/JSON can use much less effort. Model is set with `/model` Opus with 1 million context length is the default and recommended model for coding. Sonnet is a very capable coder and when I was on the Pro plan I used it very much to great success.
+**Git:**
+Git is version control, and you should use it on any coding project. Version control means you keep a full history of backups, so an outage, crash, or mistake does not destroy your work. GitHub is cloud storage for code, and a repository can be private or public. The GitHub Desktop app makes this easy to manage. Good practice is to push Claude Code's commits regularly.
 
-**Evolvable workflow :**
-During regular use, if anything is going against what you want, you have two options; new rule or new memory. Memories are for the most important things. Rules are for regular project specific work. Each session all rules are stated into the session, this takes up very little tokens and ensures each session never breaks a rule. Memories are to be kept light and about the highest priority things.
+**Effort and models:**
+Effort is set with `/effort` on the ladder `low / medium / high / xHigh / Max`, which controls how hard a single agent reasons. Ultracode is not a deeper level; it runs at xHigh and adds multi-agent work (breadth) rather than depth. Max and Ultracode are session-only and reset each session, while xHigh is the highest level that persists. `docs/effort-map.md` is the source of truth and overrides this description where they differ. In practice, xHigh is the recommended default for coding, Max is worth it only for very deep reasoning or novel algorithm design, and lightweight work such as HTML, Markdown, or JSON needs less. The model is set with `/model`. Opus with the 1 million token context is the default and recommended model for coding; Sonnet is also a strong coder and a good fit on the Pro plan.
 
-**Context Usage :**
-Session start can use roughly 100k tokens, or about 10% of the context length. Plan mode, depending on the phase scope, can use roughly 100k or another 10% of the context length. Most phases/sessions fill up to about 600k or 60% usage. The longer a single session goes on, the faster you will use your 5 hour usage limit and your weekly usage limit. Anthropic has a 90% token cache hit discount, but the cache has a TTL of 5 minutes. Dont feel presured to finish an entire phase per session. Dont feel pressured to fill up a context length before starting a new session. With the Project Architect harness, you are able to start a fresh session and resume work seemlessly. Normal sessions will get to 60% or so before starting a new session is recommended.
+**Evolving the workflow:**
+During normal use, if something is not going the way you want, you have two tools: a new rule or a new memory. Rules cover regular project work, and every session states all of them back at the start, which costs very few tokens and keeps the project from ever breaking one. Memories are reserved for the most important, highest-priority guidance and are kept light.
+
+**Context usage:**
+Session start uses roughly 100k tokens, about 10% of the 1M context. Plan mode uses roughly another 100k, depending on the phase. Once a session is around 400 to 600k (40 to 60%), starting a fresh one usually pays off, and it is best not to push much past 600k (60%): beyond that every turn is dragging a large context, and if the session fills up the tool auto-summarizes, which loses more than a clean reload from your phase file does. There is one exception: if you are only a task or two from finishing the phase, it is worth pushing through in the same session, because the phase summary comes out richer when it is written from a warm session rather than reconstructed. Claude watches all of this and, at each task boundary, will tell you the context size and whether it is a good moment to start fresh. The longer a single session runs, the faster it also consumes your 5-hour and weekly limits. Anthropic gives up to a 90% discount on cached tokens, but the cache expires after 5 minutes of inactivity. Do not feel pressured to finish a whole phase in one session or to fill the context before stopping; with Project Architect you can start fresh and resume with no loss at any time.
 
 
 ---
