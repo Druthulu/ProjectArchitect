@@ -303,4 +303,4 @@ Session start uses roughly 100k tokens, about 10% of the 1M context. Plan mode u
 
 ## License
 
-See `LICENSE` if present in this repository. All rights reserved. The `project-architect-2.0/` package is self-contained Markdown and shell scripts with no third-party dependencies.
+Source-available, not open source. You are free to install and use Project Architect in your own projects, personal or commercial, including in your own public or private repositories, and to adapt its templates for your own use. You may not redistribute, repackage, or republish it as a standalone work. All rights reserved by the author. See `LICENSE` for the full terms. If you want to share it, link to this repository rather than copying it. The `project-architect-2.0/` package is self-contained Markdown and shell scripts with no third-party dependencies.

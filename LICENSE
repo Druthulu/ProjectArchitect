@@ -1,0 +1,34 @@
+Project Architect License
+Copyright (c) 2026 Druthulu. All rights reserved.
+
+Project Architect ("the Software") is source-available, not open source.
+The permissions below are granted; all other rights are reserved by the
+copyright holder.
+
+You MAY:
+- Download, install, and use the Software in your own projects, personal
+  or commercial, including copying its files into your own repositories
+  (public or private) as part of installing and using it.
+- Modify and adapt its templates and files for use within your own projects.
+
+You MAY NOT:
+- Redistribute, republish, host, mirror, sublicense, sell, or otherwise
+  make the Software, or a renamed, modified, or substantially similar
+  version of it, available to others as a standalone work, package,
+  product, or service.
+- Remove or alter the copyright and authorship notices, or misrepresent
+  the origin or authorship of the Software.
+
+Clarification: installing the Software into your own project (which copies
+its files into your repository) is permitted use, even in a public repo.
+What is not permitted is offering the Software itself, or a repackaged or
+renamed version of it, to others. If you want to share it, link to the
+original repository rather than copying it.
+
+The Software is provided "as is", without warranty of any kind, express or
+implied. In no event shall the copyright holder be liable for any claim,
+damages, or other liability arising from, out of, or in connection with the
+Software or its use.
+
+For any use beyond these terms, open an issue at
+https://github.com/Druthulu/ProjectArchitect
