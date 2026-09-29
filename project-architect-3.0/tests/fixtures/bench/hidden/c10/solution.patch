@@ -1,0 +1,20 @@
+diff --git a/shelf/loans.py b/shelf/loans.py
+index 77acf01..0c7c899 100644
+--- a/shelf/loans.py
++++ b/shelf/loans.py
+@@ -46,6 +46,15 @@ class LoanDesk:
+         self.loans.append(loan)
+         return loan
+ 
++    def checkout_many(self, isbns, member_id):
++        """Check out several books to one member, all or nothing; returns the new loans."""
++        loans, next_id = list(self.loans), self._next_id
++        try:
++            return [self.checkout(isbn, member_id) for isbn in isbns]
++        except Exception:
++            self.loans, self._next_id = loans, next_id
++            raise
++
+     def checkin(self, loan_id):
+         """Close the loan today; returns the late fee in cents."""
+         loan = self._loan(loan_id)

@@ -1,0 +1,25 @@
+{
+  "id": "v05",
+  "arm": "review",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the review contract.\n\nYou are the review agent for the shelf project. The REVIEW.md, the task entry and the result files it points at are given below verbatim. Return exactly your contract (OUTCOME, DECISIONS with two to four options each, every option carrying the exact `python tools/plan_edit.py ... --by developer` command or an `INBOX:` line, every decision carrying at least one plan_edit.py option (an INBOX: line is never a decision's only option), the recommended option first, then the RECOMMENDED line).\n\nplan_edit.py grammar (positional arguments as shown; there is no --task, --status, --note or --text flag):\n  python tools/plan_edit.py set-status <task> <status> --by developer        e.g. set-status T3 done\n  python tools/plan_edit.py reopen <task> --title \"...\" --done-when \"...\" [--files \"...\"] [--verify \"...\"] --by developer\n  python tools/plan_edit.py add-task --after <task> --title \"...\" --done-when \"...\" [--files \"...\"] [--verify \"...\"] --by developer\n  python tools/plan_edit.py append-change \"<text>\" --by developer Do not read files, run commands or spawn agents.\n\nREVIEW.md (T3, phase 1.6 Reports):\nWhat ran: member_statement for all 25 members of the sample desk on 2024-05-01.\nResults: 25 statements; totals checked by hand for six members: all match. One of them, pasted by the expert:\n  Statement for Ada Park (M0007, standard) on 2024-05-01\n  12 Dune | due 2024-04-02 | returned | fee $1.50\n  19 The Hobbit | due 2024-04-20 | overdue | fee $2.50\n  23 Emma | due 2024-05-10 | open\n  Total due: $4.00\n Two statements are 60+ lines for staff with long histories; the expert asks whether to cap the history at the last 20 loans (not in the done-when).\nDecisions asked: (1) accept T3? yes. (2) cap long histories? expert leans to a later task.\nTask entry: - T3 | next | expert-opus55 | files: shelf/models.py, shelf/reports.py, tests/test_statement.py | done-when: Loan.status and member_statement with header, loan lines, fees, and a total due over open loans only | verify: python -m unittest tests.test_statement | review: yes\nVerify output: Ran 10 tests ... OK\n",
+  "expect": {
+    "min_decisions": 2,
+    "reference": {
+      "recommended": [
+        "1a"
+      ],
+      "commands": [
+        "reopen T3"
+      ],
+      "first_option": {
+        "1": "reopen T3"
+      }
+    }
+  },
+  "hidden": "—"
+}

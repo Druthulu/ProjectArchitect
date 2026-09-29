@@ -1,0 +1,30 @@
+{
+  "id": "r27",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "During checkin, where is the member's kind looked up and where is it turned into a daily fee rate? Cite each step; skip deprecated fee helpers.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 55,
+        "symbol": "kind"
+      },
+      {
+        "path": "shelf/fees.py",
+        "line": 10,
+        "symbol": "daily_fee"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 29,
+        "symbol": "daily_fee"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

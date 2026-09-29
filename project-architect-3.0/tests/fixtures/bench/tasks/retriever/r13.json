@@ -1,0 +1,33 @@
+{
+  "id": "r13",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which text format does shelf's date parser accept, where is the parser defined, and where in the package outside the dates module is it called? Cite each call site and name the function that contains it.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/dates.py",
+        "line": 5,
+        "symbol": "parse_date"
+      },
+      {
+        "path": "shelf/storage.py",
+        "line": 32,
+        "symbol": "parse_date"
+      },
+      {
+        "path": "shelf/storage.py",
+        "line": 33,
+        "symbol": "parse_date"
+      }
+    ],
+    "tokens": [
+      "YYYY-MM-DD",
+      "_loan_from_dict"
+    ]
+  },
+  "hidden": "—"
+}

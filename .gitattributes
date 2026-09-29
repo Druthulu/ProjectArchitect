@@ -1,2 +1,18 @@
 # Auto detect text files and perform LF normalization
-* text=auto
+# 3.11 T1: and check them out LF on every OS (was `* text=auto`): with no eol, a fresh Windows clone -- the
+# installer's machine clone, a user's clone of the public repo -- gets CRLF, the package suite fails 8 tests there,
+# and the installer writes a CRLF CLAUDE.md from the template. install.cmd keeps its CRLF pin below.
+* text=auto eol=lf
+
+# T11.c1: pin these two regardless of core.autocrlf -- install.sh's shebang
+# breaks if it ever picks up a CR, and install.cmd should stay a normal CRLF
+# batch file even on a checkout with core.autocrlf=false.
+project-architect-3.0/install.cmd text eol=crlf
+project-architect-3.0/setup-project.cmd text eol=crlf
+project-architect-3.0/install.sh text eol=lf
+# 3.9 T6: WSL runs these over /mnt/z; a CRLF checkout breaks bash (`set: -: invalid option`)
+tools/*.sh text eol=lf
+project-architect-3.0/tools/*.sh text eol=lf
+
+# 3.3 T1: tool-written record files stay LF on every checkout (the plan lock hashes content, but mixed endings are ugly)
+phase-ends/** text eol=lf

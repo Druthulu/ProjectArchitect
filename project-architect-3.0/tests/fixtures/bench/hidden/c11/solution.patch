@@ -1,0 +1,61 @@
+diff --git a/shelf/holds.py b/shelf/holds.py
+index 187b6b5..12ff7e0 100644
+--- a/shelf/holds.py
++++ b/shelf/holds.py
+@@ -32,6 +32,10 @@ class HoldQueue:
+                 return hold
+         raise NotFound(f"no hold by {member_id} on {isbn}")
+ 
++    def count(self, isbn):
++        """Number of holds on isbn."""
++        return len(self._queues.get(isbn, []))
++
+     def queue(self, isbn):
+         """The holds on isbn, oldest first (a copy)."""
+         return list(self._queues.get(isbn, []))
+diff --git a/shelf/loans.py b/shelf/loans.py
+index 77acf01..ad9ec8f 100644
+--- a/shelf/loans.py
++++ b/shelf/loans.py
+@@ -14,6 +14,7 @@ class LoanDesk:
+         self.clock = clock or date.today
+         self.loans = []
+         self.holds = HoldQueue()
++        self.notices = []   # (member_id, isbn) of holders told a copy is back
+         self._next_id = 1
+ 
+     def today(self):
+@@ -37,13 +38,21 @@ class LoanDesk:
+         if len(self.open_loans(member_id)) >= limit:
+             raise LimitReached(f"{member_id} already has {limit} loans")
+         book = self.catalog.get(isbn)
+-        if self.available(book.isbn) <= 0:
++        free = self.available(book.isbn)
++        queue = [h.member_id for h in self.holds.queue(book.isbn)]
++        if member_id in queue:
++            allowed = queue.index(member_id) + 1 <= free
++        else:
++            allowed = free > len(queue)
++        if not allowed:
+             raise Unavailable(book.isbn)
+         today = self.today()
+         due = add_days(today, policy.loan_days(member.kind))
+         loan = Loan(self._next_id, book.isbn, member_id, today, due)
+         self._next_id += 1
+         self.loans.append(loan)
++        if member_id in queue:
++            self.holds.cancel(book.isbn, member_id)
+         return loan
+ 
+     def checkin(self, loan_id):
+@@ -52,6 +61,10 @@ class LoanDesk:
+         if not loan.is_open:
+             raise ValueError(f"loan {loan_id} already returned")
+         loan.returned = self.today()
++        free = self.available(loan.isbn)
++        queue = self.holds.queue(loan.isbn)
++        if 0 < free <= len(queue):
++            self.notices.append((queue[free - 1].member_id, loan.isbn))
+         kind = self.members.get(loan.member_id).kind
+         return fees.loan_fee_cents(loan, loan.returned, kind)
+ 

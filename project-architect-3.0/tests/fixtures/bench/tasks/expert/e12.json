@@ -1,0 +1,29 @@
+{
+  "id": "e12",
+  "arm": "expert",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the coder brief.\n\nYou are the expert for task T3 of phase 1.5 of the shelf project. This directory is the project: `shelf/` the package, `tests/` its unittest suite, interpreter `python`. Read the code as you need, then write the brief you would hand the coder. Do not spawn agents, do not edit files and do not run the change yourself: the brief is your whole answer.\n\nPlan task entry:\n- T3 | next | expert-opus55 | coder: opus55 | effort: medium | files: shelf/loans.py, shelf/storage.py | done-when: see below | verify: python -m unittest discover -s tests | reads: — | deps: — | review: no\n\ndone-when (the task's specification):\nAfter `storage.loads`, the desk issues loan ids from 1 again, colliding with the loaded loans.\n\n1. `shelf/loans.py`: add `LoanDesk.restore(loans)`: replace the desk's loans with the given ones (any iterable), kept sorted by `loan_id`; duplicate ids raise `ValueError` and leave the desk unchanged; the next loan id becomes one more than the largest (1 when empty). Add a public `LoanDesk.get_loan(loan_id)` that returns the loan or raises `NotFound`.\n2. `shelf/storage.py`: `loads` installs the loaded loans with `restore`, so a checkout after loading gets the next free id even when the stored loans are out of order.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).\n\nThe coder brief contract, in this order: `CODER TASK T3.c1`, `CHANGE` (at most 8 lines), `INTERFACES` (the functions and records the change touches, with their files), `CONSTRAINTS`, `BUILD/TEST` (the exact command from the entry's verify and what green means), `DONE WHEN`, `LOG: logs/T3.c1.md`, `RETURN: the coder contract`. Name every repo file the coder edits or must read as a repo-relative path (`shelf/x.py`, `tests/x.py`); name no file the change does not need.\n\nReturn only the brief, nothing else.\n",
+  "expect": {
+    "files": [
+      "shelf/loans.py",
+      "shelf/models.py",
+      "shelf/reports.py",
+      "shelf/storage.py",
+      "tests/*.py"
+    ],
+    "must_files": [
+      "shelf/loans.py",
+      "shelf/storage.py"
+    ],
+    "build_test": "python -m unittest discover -s tests",
+    "based_on": "c20"
+  },
+  "hidden": "—",
+  "cli": [
+    "--disallowedTools",
+    "Agent"
+  ]
+}

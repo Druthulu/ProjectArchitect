@@ -1,0 +1,17 @@
+{
+  "id": "c23",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Invoice tax is off by a cent on orders with several small lines. Steps: add a ballpoint pen at 0.12 EUR and a pencil at 0.07 EUR, stock both, create an order for one of each, then place, pick and ship it at the default 20% tax rate. The invoice shows net 0.19 EUR, tax 0.03 EUR and gross 0.22 EUR. Expected tax 0.04 EUR and gross 0.23 EUR: 20% of the 0.19 EUR net is 3.8 cents, and tax is rounded half up once on the invoice net, not per line. With a third line of two pens at 50% discount the net is 0.31 EUR and the tax comes out 0.05 EUR instead of 0.06 EUR. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/billing.py"
+    ]
+  },
+  "hidden": "hidden/c23",
+  "overlay": "overlay/c23",
+  "repo": "repo-depot"
+}

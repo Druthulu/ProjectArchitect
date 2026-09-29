@@ -1,0 +1,59 @@
+diff --git a/shelf/holds.py b/shelf/holds.py
+index 187b6b5..f9ca943 100644
+--- a/shelf/holds.py
++++ b/shelf/holds.py
+@@ -11,6 +11,13 @@ class Hold:
+     member_id: str
+     placed: date
+ 
++    def to_dict(self):
++        return {"isbn": self.isbn, "member_id": self.member_id, "placed": self.placed.isoformat()}
++
++    @classmethod
++    def from_dict(cls, d):
++        return cls(d["isbn"], d["member_id"], date.fromisoformat(d["placed"]))
++
+ 
+ class HoldQueue:
+     def __init__(self):
+@@ -41,5 +48,10 @@ class HoldQueue:
+         queue = self._queues.get(isbn)
+         return queue.pop(0) if queue else None
+ 
++    def restore(self, holds):
++        """Re-add saved holds in order (storage uses this)."""
++        for hold in holds:
++            self.place(hold.isbn, hold.member_id, hold.placed)
++
+     def all(self):
+         return [h for isbn in sorted(self._queues) for h in self._queues[isbn]]
+diff --git a/shelf/storage.py b/shelf/storage.py
+index e77d487..a14f79b 100644
+--- a/shelf/storage.py
++++ b/shelf/storage.py
+@@ -3,6 +3,7 @@ import json
+ 
+ from .catalog import Catalog
+ from .dates import format_date, parse_date
++from .holds import Hold
+ from .loans import LoanDesk
+ from .members import MemberRegistry
+ from .models import Book, Loan, Member
+@@ -38,7 +39,8 @@ def dumps(catalog, members, desk):
+     data = {"format": FORMAT,
+             "books": [_book_to_dict(b) for b in catalog],
+             "members": [_member_to_dict(m) for m in members],
+-            "loans": [_loan_to_dict(loan) for loan in desk.loans]}
++            "loans": [_loan_to_dict(loan) for loan in desk.loans],
++            "holds": [hold.to_dict() for hold in desk.holds.all()]}
+     return json.dumps(data, indent=2, sort_keys=True)
+ 
+ 
+@@ -55,6 +57,7 @@ def loads(text, clock=None):
+         members.add(Member(**d))
+     desk = LoanDesk(catalog, members, clock)
+     desk.loans = [_loan_from_dict(d) for d in data["loans"]]
++    desk.holds.restore(Hold.from_dict(d) for d in data.get("holds", []))
+     return catalog, members, desk
+ 
+ 

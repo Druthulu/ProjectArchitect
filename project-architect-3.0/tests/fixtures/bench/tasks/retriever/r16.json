@@ -1,0 +1,36 @@
+{
+  "id": "r16",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Trace how the amount returned by LoanDesk.checkin is computed, from checkin down to the policy numbers it uses. Cite each hop; skip helpers not on this path.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 56,
+        "symbol": "loan_fee_cents"
+      },
+      {
+        "path": "shelf/fees.py",
+        "line": 13,
+        "symbol": "loan_fee_cents"
+      },
+      {
+        "path": "shelf/fees.py",
+        "line": 5,
+        "symbol": "late_fee_cents"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 29,
+        "symbol": "daily_fee"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

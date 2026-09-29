@@ -1,0 +1,21 @@
+{
+  "id": "k03",
+  "arm": "critic",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the critic contract.\n\nYou are the critic for the shelf project. Judge the proposed plan change below by your rules and return exactly your contract (DECISION, TIER, EDITS as `python tools/plan_edit.py` lines, WHY in three lines, BRIEF only for needs-developer). Do not read files or run commands.\n\nPlan, phase 1.3 Money. Milestone: `format_cents` handles negatives and thousands and `parse_cents` is its inverse; fee caps come from `fee_cap` per member kind and `outstanding_cents` and `fee_summary` report what members owe; the whole suite stays green.\nContext: fees in integer cents; per-kind numbers live in shelf/policy.py; storage.FORMAT stays 2 (standing constraint).\nDeveloper decides: (1) whether staff members pay no late fees at all (cap 0, as drafted) or a capped fee like students. Recommended: cap 0.\nTasks:\n- T1 | done   | expert-opus55 | files: shelf/fees.py, tests/test_money.py | done-when: format_cents prints -$12.34 and $1,234,567.89; parse_cents inverts it | verify: python -m unittest tests.test_money | deps: —\n- T2 | next   | expert-opus55 | files: shelf/policy.py, shelf/fees.py, tests/test_fee_caps.py | done-when: fee_cap(kind) caps late_fee_cents; outstanding_cents and fee_summary report open-loan fees | verify: python -m unittest tests.test_fee_caps | deps: —\n- T3 | queued | expert-opus55 | files: shelf/reports.py, tests/test_fee_report.py | done-when: fee report lines through format_cents | verify: python -m unittest tests.test_fee_report | deps: T2\n- T4 | queued | expert-opus55 | files: tests/ | done-when: the whole suite passes after T1-T3 | verify: python -m unittest discover -s tests | deps: T1, T2, T3\n\nExpert on T2 returned `blocked`.\nQUESTION: tests.test_fee_caps fails for student loans: late_fee_cents still caps students at FEE_CAP_CENTS because loan_fee_cents does not pass the kind through. Fixing loan_fee_cents touches every caller.\nRECOMMENDED: supersede T2 and add a task whose done-when drops the per-kind cap for students (standard cap for everyone), so the phase can close.\n",
+  "expect": {
+    "reference": {
+      "decision": "continue",
+      "tier": [
+        "subtractive",
+        "milestone"
+      ],
+      "edits_must": []
+    }
+  },
+  "hidden": "—"
+}

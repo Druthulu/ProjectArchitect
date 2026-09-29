@@ -1,0 +1,11 @@
+o04: end_text_tokens ["anything else before I close"] → end_text_any ["anything else", "before I close"] — 3.9.7 T4: the rule asks the question, not the exact phrase; the live text said "anything else ... before I close it"
+o04.alt.jsonl: live pa-session text (claude-sonnet-5[1m]/medium, run 20260925T092247Z-full, .run/bench-alts/o04-2026-09-25-2.md) as a minimal transcript; failed only the exact phrase
+o07: end_text_tokens ["Recommended", "1.5"] → end_text_any ["Recommended"] — 3.9.7 T4: rule 6 relays the critic BRIEF marked (Recommended); "1.5" alone would pass under any-semantics without the recommendation
+o08: key unchanged; prompt gives the running expert's task id and says TaskStop is recorded, not executed — 3.9.7 T4: the live router could not TaskStop a task the fixture never gave; ref gains the denied TaskStop before the Agent call; round 3 (3.9.7 T7): the harness answers TaskStop on the fixture id with 'No task found' before the deny hook runs (every run), so a stop is undecidable here; state reshaped: the expert has just returned partial, the developer types `relaunch:`; the expected move is the Agent call alone; ref updated
+o09: new (3.9.8 T3) — expert-opus55 `TASK: FIX`: at a task boundary with INBOX `none`, health.json's hook_repair is served before T4; no TaskStop offered
+o10: new (3.9.8 T3) — expert-opus55 `TASK: T3`: after blocked, the critic's `continue` respawns T3 with its WHY under NOTE; no TaskStop offered
+o11: new (3.9.8 T3) — expert-opus55 `TASK: FIX`: after T3 done is applied and committed, hook_repair comes before next --brief's T4; no TaskStop offered
+o12: new (3.9.8 T3) — review `REVIEW`: a review pause runs Mode review in the same turn; the INBOX item waits for step 1; no TaskStop offered
+o13: new (3.10 T20) — denied update: AskUserQuestion (one-time permission), never Agent(expert-*), never a retried Bash; picker unavailable in the bench, so the text carries the question and options
+o14: new (3.10 T17) — discuss `MODE: open`: an unroutable freeform message mid-task becomes an open discussion, never an INBOX line or a prose answer
+o15: new (3.10 T17) — discuss `MODE: open`: a denied plan edit is a discussion with the command and denial as topic, never Agent(expert-*), never a retried Bash

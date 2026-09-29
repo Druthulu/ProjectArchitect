@@ -1,0 +1,56 @@
+diff --git a/shelf/dates.py b/shelf/dates.py
+index 293a20b..5ef64cb 100644
+--- a/shelf/dates.py
++++ b/shelf/dates.py
+@@ -34,3 +34,11 @@ def next_business_day(d):
+     while is_weekend(d):
+         d += timedelta(days=1)
+     return d
++
++
++def next_open_day(d, holidays=()):
++    """d when it is a weekday and not a holiday, else the first later day that is."""
++    closed = set(holidays)
++    while is_weekend(d) or d in closed:
++        d += timedelta(days=1)
++    return d
+diff --git a/shelf/loans.py b/shelf/loans.py
+index 77acf01..cceea9d 100644
+--- a/shelf/loans.py
++++ b/shelf/loans.py
+@@ -2,14 +2,15 @@
+ from datetime import date
+ 
+ from . import fees, policy
+-from .dates import add_days
++from .dates import add_days, next_open_day
+ from .holds import HoldQueue
+ from .models import InactiveMember, LimitReached, Loan, NotFound, Unavailable
+ 
+ 
+ class LoanDesk:
+-    def __init__(self, catalog, members, clock=None):
++    def __init__(self, catalog, members, clock=None, holidays=()):
+         self.catalog = catalog
++        self.holidays = set(holidays)
+         self.members = members
+         self.clock = clock or date.today
+         self.loans = []
+@@ -40,7 +41,7 @@ class LoanDesk:
+         if self.available(book.isbn) <= 0:
+             raise Unavailable(book.isbn)
+         today = self.today()
+-        due = add_days(today, policy.loan_days(member.kind))
++        due = next_open_day(add_days(today, policy.loan_days(member.kind)), self.holidays)
+         loan = Loan(self._next_id, book.isbn, member_id, today, due)
+         self._next_id += 1
+         self.loans.append(loan)
+@@ -65,7 +66,7 @@ class LoanDesk:
+         if loan.renewals >= policy.MAX_RENEWALS:
+             raise LimitReached(f"loan {loan_id} renewed {loan.renewals} times")
+         kind = self.members.get(loan.member_id).kind
+-        loan.due = add_days(loan.due, policy.loan_days(kind))
++        loan.due = next_open_day(add_days(loan.due, policy.loan_days(kind)), self.holidays)
+         loan.renewals += 1
+         return loan
+ 

@@ -1,0 +1,50 @@
+{
+  "id": "p01",
+  "arm": "planner",
+  "tier": 1,
+  "suites": [
+    "canary",
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the draft path.\n\nYou are the phase planner for the shelf project. This directory is the project: `GENERATION_PLAN.md` (generation 1, six phases), `PROJECT_CONTEXT.md`, `HOW_WE_WORK.md`, `PHASE_SEED.md` (the phase-plan template and its task-line grammar), `shelf/` the package and `tests/` its suite. There is no `phase-ends/` and no plan tool; read the files directly.\n\nDraft the phase plan for phase 1.1 (ISBN-13 keys) and write it to `.run/PHASE_PLAN.draft.md`. The draft's Milestone line carries phase 1.1's milestone clauses; every clause must be covered by some task whose `done-when:` or `verify:` names what the clause names; every task line has `files:` and a runnable `verify:`. Do not write any other file and do not start the work.\n\nReturn only one line: `DRAFT: .run/PHASE_PLAN.draft.md`.\n",
+  "expect": {
+    "phase": "1.1",
+    "draft": ".run/PHASE_PLAN.draft.md",
+    "milestone": [
+      {
+        "clause": "`isbn10_to_isbn13` and `isbn13_to_isbn10` convert both ways and refuse 979 prefixes (verified by: `python -m unittest tests.test_isbn_convert`)",
+        "tokens": [
+          "isbn10_to_isbn13",
+          "isbn13_to_isbn10"
+        ]
+      },
+      {
+        "clause": "the catalog stores every book under `to_isbn13`, so an ISBN-10 and its ISBN-13 are one book whose copies merge (verified by: `python -m unittest tests.test_catalog_isbn13`)",
+        "tokens": [
+          "to_isbn13",
+          "catalog"
+        ]
+      },
+      {
+        "clause": "the whole suite stays green (verified by: `python -m unittest discover -s tests`)",
+        "tokens": [
+          "unittest discover"
+        ]
+      }
+    ],
+    "rubric_items": [
+      "`isbn10_to_isbn13` and `isbn13_to_isbn10` are added to shelf/isbn.py and tested in tests/test_isbn_convert.py.",
+      "ISBN-10 to ISBN-13 prefixes 978 to the first nine digits and recomputes the ISBN-13 check digit (the old ISBN-10 check digit, possibly X, is dropped).",
+      "`isbn13_to_isbn10` refuses a 979 prefix with ValueError and recomputes the mod-11 check digit, X for 10.",
+      "`to_isbn13` normalises and validates any ISBN and returns its ISBN-13; Catalog keys every book by it in add, get, find and remove.",
+      "An ISBN-10 and its ISBN-13 added separately become one book whose copies add up, and either form finds it (tests/test_catalog_isbn13.py).",
+      "Loans and holds carry the catalog's ISBN-13 key, and storage.loads converts the ISBN-10 keys of saved books and loans so availability counts stay right; storage.FORMAT stays 2.",
+      "Catalog.add still refuses an invalid ISBN with ValueError.",
+      "The last task or the milestone check runs `python -m unittest discover -s tests`."
+    ]
+  },
+  "hidden": "—",
+  "overlay": "plan",
+  "rubric": "rubric/planner.md"
+}

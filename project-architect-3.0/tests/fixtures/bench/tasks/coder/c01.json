@@ -1,0 +1,17 @@
+{
+  "id": "c01",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "canary",
+    "light",
+    "full"
+  ],
+  "prompt": "In `shelf/isbn.py` add two conversion functions.\n\n`isbn10_to_isbn13(raw)`: accept an ISBN-10 in any form `normalize_isbn` accepts (hyphens, spaces, lower-case `x`); raise `ValueError` unless it is a valid ISBN-10 (a 13-digit ISBN is also an error); return the 13-digit string made of `978`, the first nine digits of the ISBN-10, and a freshly computed ISBN-13 check digit.\n\n`isbn13_to_isbn10(raw)`: the inverse for valid ISBN-13s that start with `978`: return the 10-character form (the nine digits after `978` plus a computed ISBN-10 check digit, `X` for 10). Raise `ValueError` for anything that is not a valid ISBN-13 or that starts with `979`.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/isbn.py"
+    ]
+  },
+  "hidden": "hidden/c01"
+}

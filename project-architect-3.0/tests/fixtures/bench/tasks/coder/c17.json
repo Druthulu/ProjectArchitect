@@ -1,0 +1,17 @@
+{
+  "id": "c17",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Make ISBN-13 the catalog's canonical key.\n\n1. `shelf/isbn.py`: add `to_isbn13(raw)`: normalise; a valid ISBN-10 becomes `978` + its first nine digits + a recomputed ISBN-13 check digit; a valid ISBN-13 is returned normalised; anything else raises `ValueError`.\n2. `shelf/catalog.py`: `add` stores each book under `to_isbn13` of its ISBN and sets `book.isbn` to that, so an ISBN-10 and the matching ISBN-13 are the same book and their copies merge. `get`, `find` and `remove` accept either form. `add` still raises `ValueError` for an invalid ISBN; `get` of an invalid string raises `NotFound` and `find` returns `None`.\n3. Libraries saved before this change may carry ISBN-10s, for books and for loans alike. After `storage.loads` such a library must behave exactly as if its books had been added and its loans made after this change.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/isbn.py",
+      "shelf/catalog.py",
+      "shelf/storage.py"
+    ]
+  },
+  "hidden": "hidden/c17"
+}

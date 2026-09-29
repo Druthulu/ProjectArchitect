@@ -1,0 +1,18 @@
+{
+  "id": "c12",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "canary",
+    "light",
+    "full"
+  ],
+  "prompt": "Renewal limits become per member kind.\n\n1. `shelf/policy.py`: `MAX_RENEWALS` becomes a dict `{\"standard\": 2, \"student\": 1, \"staff\": 5}`; add `max_renewals(kind)`, which validates the kind like the other helpers there (unknown kind -> `ValueError`).\n2. `shelf/loans.py`: `LoanDesk.renew` uses `max_renewals` for the member's kind (everything else about renewing stays as it is). Add `LoanDesk.renewals_left(loan_id)`: how many more renewals the loan may get now; 0 for a returned or overdue loan; `NotFound` for an unknown id.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/policy.py",
+      "shelf/loans.py"
+    ]
+  },
+  "hidden": "hidden/c12"
+}

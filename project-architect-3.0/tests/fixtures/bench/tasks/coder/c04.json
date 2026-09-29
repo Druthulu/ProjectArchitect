@@ -1,0 +1,16 @@
+{
+  "id": "c04",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Money amounts print wrong for credits and large sums: `format_cents(-1234)` returns `$-13.66`, and `format_cents(123456789)` returns `$1234567.89`. The desk wants the sign before the dollar sign (`-$12.34`) and thousands grouped with commas (`$1,234,567.89`).\n\nAlso add `parse_cents(text)`, the inverse of `format_cents`, returning integer cents. It reads back everything `format_cents` writes, and also what staff type by hand: that same form with any of the `$`, the commas and the cents part left out (`$5`, `1234.50`), and surrounding whitespace. Anything else raises `ValueError`.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/fees.py"
+    ]
+  },
+  "hidden": "hidden/c04"
+}

@@ -1,0 +1,20 @@
+{
+  "id": "k09",
+  "arm": "critic",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the critic contract.\n\nYou are the critic for the shelf project. Judge the proposed plan change below by your rules and return exactly your contract (DECISION, TIER, EDITS as `python tools/plan_edit.py` lines, WHY in three lines, BRIEF only for needs-developer). Do not read files or run commands.\n\nPlan, phase 1.9 Renewal limits. Milestone: `LoanDesk.renewals_left` reports how many renewals a loan has left; `renew` refuses with `LimitReached` while another member has a hold on the book; the whole suite stays green.\nContext: MAX_RENEWALS per member kind lives in shelf/policy.py; storage.FORMAT stays 2 (standing constraint).\nDeveloper decides: none.\nTasks:\n- T1 | done   | expert-opus55 | files: shelf/loans.py, tests/test_renewals_left.py | done-when: LoanDesk.renewals_left reports how many renewals a loan has left | verify: python -m unittest tests.test_renewals_left | deps: —\n- T2 | done   | expert-opus55 | files: shelf/loans.py, tests/test_renew_holds.py | done-when: renew refuses with LimitReached while another member has a hold on the book | verify: python -m unittest tests.test_renew_holds | deps: —\n- T3 | next   | expert-opus55 | files: shelf/loans.py, tests/test_renew_limit.py | done-when: renew refuses with LimitReached once renewals_left is 0 | verify: python -m unittest tests.test_renew_limit | deps: T1\n- T4 | queued | expert-opus55 | files: tests/ | done-when: the whole suite passes | verify: python -m unittest discover -s tests | deps: T1, T2, T3\n\nExpert on T3 returned `question`.\nQUESTION: T3 has nothing left to build: T1 made renew call renewals_left and raise LimitReached at 0, and the RenewAtLimit tests in tests/test_renewals_left.py cover it and are green. tests/test_renew_limit.py would repeat them.\nRECOMMENDED: mark T3 superseded; T4 unchanged.\n",
+  "expect": {
+    "reference": {
+      "decision": "edit",
+      "tier": "subtractive",
+      "edits_must": [
+        "set-status T3 superseded"
+      ]
+    }
+  },
+  "hidden": "—"
+}

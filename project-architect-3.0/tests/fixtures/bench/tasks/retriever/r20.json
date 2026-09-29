@@ -1,0 +1,35 @@
+{
+  "id": "r20",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "When a book is checked out with a hyphenated ISBN, how does the Loan end up with the normalised ISBN? Trace from checkout to the normalising function.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 39,
+        "symbol": "catalog.get"
+      },
+      {
+        "path": "shelf/catalog.py",
+        "line": 25,
+        "symbol": "normalize_isbn"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 44,
+        "symbol": "book.isbn"
+      },
+      {
+        "path": "shelf/isbn.py",
+        "line": 4,
+        "symbol": "normalize_isbn"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

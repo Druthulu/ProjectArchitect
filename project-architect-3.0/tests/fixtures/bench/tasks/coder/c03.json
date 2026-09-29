@@ -1,0 +1,16 @@
+{
+  "id": "c03",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Rework `Catalog.search` in `shelf/catalog.py` into word search: `search(text, *, tag=None)`.\n\nSplit `text` on whitespace into words. A book matches when every word occurs, case-insensitively, as a substring of its title or of its author (different words may match different fields). Blank or all-whitespace `text` returns `[]`. When the keyword-only `tag` is given, only books whose `tags` contain it can match. Results are sorted by title (case-insensitive), ties broken by ISBN.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/catalog.py"
+    ]
+  },
+  "hidden": "hidden/c03"
+}

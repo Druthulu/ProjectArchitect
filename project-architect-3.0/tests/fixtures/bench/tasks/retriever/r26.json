@@ -1,0 +1,25 @@
+{
+  "id": "r26",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "What happens to a book's copy count when the same ISBN is added to the catalog twice, and where does the loan desk read that count?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/catalog.py",
+        "line": 17,
+        "symbol": "copies"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 26,
+        "symbol": "copies"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

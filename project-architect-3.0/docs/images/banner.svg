@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 300" width="1280" height="300" role="img" aria-label="Project Architect 3.0: a team with a plan, inside Claude Code">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0b1220"/>
+      <stop offset="1" stop-color="#17253f"/>
+    </linearGradient>
+    <pattern id="grid" width="30" height="30" patternUnits="userSpaceOnUse">
+      <path d="M30 0H0V30" fill="none" stroke="#2b3c5c" stroke-width="1"/>
+    </pattern>
+  </defs>
+  <rect width="1280" height="300" rx="22" fill="url(#bg)"/>
+  <rect width="1280" height="300" rx="22" fill="url(#grid)" opacity="0.5"/>
+  <g stroke="#56739f" stroke-width="3" stroke-linecap="round">
+    <line x1="120" y1="150" x2="225" y2="150"/>
+    <line x1="225" y1="150" x2="320" y2="82"/>
+    <line x1="225" y1="150" x2="335" y2="150"/>
+    <line x1="225" y1="150" x2="320" y2="218"/>
+    <line x1="335" y1="150" x2="425" y2="108"/>
+    <line x1="335" y1="150" x2="425" y2="192"/>
+  </g>
+  <circle cx="120" cy="150" r="21" fill="#f8fafc"/>
+  <circle cx="225" cy="150" r="26" fill="#60a5fa"/>
+  <circle cx="320" cy="82" r="15" fill="#93c5fd"/>
+  <circle cx="335" cy="150" r="19" fill="#93c5fd"/>
+  <circle cx="320" cy="218" r="15" fill="#93c5fd"/>
+  <circle cx="425" cy="108" r="12" fill="#c7dcfb"/>
+  <circle cx="425" cy="192" r="12" fill="#c7dcfb"/>
+  <g font-family="Segoe UI, Helvetica Neue, Arial, sans-serif">
+    <text x="520" y="138" font-size="54" font-weight="700" fill="#f8fafc">Project Architect <tspan fill="#60a5fa">3.0</tspan></text>
+    <text x="522" y="190" font-size="26" fill="#cbd5e1">A team with a plan, inside Claude Code</text>
+    <text x="522" y="232" font-size="19" fill="#8093b8">plan · approve · build · measure · save</text>
+  </g>
+</svg>

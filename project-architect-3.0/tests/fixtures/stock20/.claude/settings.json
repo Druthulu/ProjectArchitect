@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash tools/backup-claude-state.sh --hook",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

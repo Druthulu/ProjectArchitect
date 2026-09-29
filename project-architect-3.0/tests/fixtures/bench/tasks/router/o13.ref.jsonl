@@ -1,0 +1,2 @@
+{"type": "user", "sessionId": "ref-o13", "message": {"role": "user", "content": "bench prompt"}}
+{"type": "assistant", "sessionId": "ref-o13", "message": {"role": "assistant", "content": [{"type": "text", "text": "PA3 update needs a one-time permission. Choose one:\n1. Allow (Recommended): I re-run `python tools/pa3_update.py` once.\n2. I will run it myself: `! python tools/pa3_update.py` (the update is skipped this session; I go on to T4).\n3. Skip this session."}]}}

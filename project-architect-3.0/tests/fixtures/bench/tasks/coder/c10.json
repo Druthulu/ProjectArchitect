@@ -1,0 +1,15 @@
+{
+  "id": "c10",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "The desk wants to lend a pile of books to one member in one go. Add `LoanDesk.checkout_many(isbns, member_id)`, returning the new loans in the order of `isbns` (`[]` for an empty list).\n\nIt is all or nothing. The batch succeeds exactly when checking the books out one after another would succeed, and then gives the same loans. Otherwise it raises the error that one-after-another checkout would raise first, and the desk is left as if the call had never been made.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/loans.py"
+    ]
+  },
+  "hidden": "hidden/c10"
+}

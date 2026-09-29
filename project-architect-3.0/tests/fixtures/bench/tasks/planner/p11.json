@@ -1,0 +1,48 @@
+{
+  "id": "p11",
+  "arm": "planner",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the draft path.\n\nYou are the phase planner for the shelf project. This directory is the project: `GENERATION_PLAN.md` (generation 1, twelve phases), `PROJECT_CONTEXT.md`, `HOW_WE_WORK.md`, `PHASE_SEED.md` (the phase-plan template and its task-line grammar), `shelf/` the package and `tests/` its suite. There is no `phase-ends/` and no plan tool; read the files directly.\n\nDraft the phase plan for phase 1.11 (Overdue notices) and write it to `.run/PHASE_PLAN.draft.md`. The draft's Milestone line carries phase 1.11's milestone clauses; every clause must be covered by some task whose `done-when:` or `verify:` names what the clause names; every task line has `files:` and a runnable `verify:`. Do not write any other file and do not start the work.\n\nReturn only one line: `DRAFT: .run/PHASE_PLAN.draft.md`.\n",
+  "expect": {
+    "phase": "1.11",
+    "draft": ".run/PHASE_PLAN.draft.md",
+    "milestone": [
+      {
+        "clause": "`overdue_notices` returns one notice per member with overdue loans, listing each title, days late and fee (verified by: `python -m unittest tests.test_overdue_notices`)",
+        "tokens": [
+          "overdue_notices"
+        ]
+      },
+      {
+        "clause": "`notice_text` renders a notice as plain text no wider than 72 columns, with the total owed on the last line",
+        "tokens": [
+          "notice_text"
+        ]
+      },
+      {
+        "clause": "the whole suite stays green (verified by: `python -m unittest discover -s tests`)",
+        "tokens": [
+          "unittest discover"
+        ]
+      }
+    ],
+    "rubric_items": [
+      "`overdue_notices` returns one notice per member with overdue loans, listing title, days late and fee (tests/test_overdue_notices.py).",
+      "Fees come from fees.loan_fee_cents with the member's kind; titles come from the catalog.",
+      "The `notice_text` clause has no check in the generation plan; the draft gives it a machine check, a named test (for example tests/test_notice_text.py) in a task's verify and on the Milestone line, or raises it; it never leaves the clause unchecked.",
+      "notice_text lines are at most 72 columns and the last line carries the total owed, formatted by format_cents.",
+      "Every clause on the draft's Milestone line has a verified-by check.",
+      "Tasks touch only shelf/ and tests/.",
+      "The last task or the milestone check runs `python -m unittest discover -s tests`."
+    ]
+  },
+  "hidden": "—",
+  "overlay": "plan",
+  "files": [
+    "plan2/GENERATION_PLAN.md"
+  ],
+  "rubric": "rubric/planner.md"
+}

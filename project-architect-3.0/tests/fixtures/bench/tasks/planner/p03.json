@@ -1,0 +1,59 @@
+{
+  "id": "p03",
+  "arm": "planner",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the draft path.\n\nYou are the phase planner for the shelf project. This directory is the project: `GENERATION_PLAN.md` (generation 1, six phases), `PROJECT_CONTEXT.md`, `HOW_WE_WORK.md`, `PHASE_SEED.md` (the phase-plan template and its task-line grammar), `shelf/` the package and `tests/` its suite. There is no `phase-ends/` and no plan tool; read the files directly.\n\nDraft the phase plan for phase 1.3 (Money) and write it to `.run/PHASE_PLAN.draft.md`. The draft's Milestone line carries phase 1.3's milestone clauses; every clause must be covered by some task whose `done-when:` or `verify:` names what the clause names; every task line has `files:` and a runnable `verify:`. Do not write any other file and do not start the work.\n\nReturn only one line: `DRAFT: .run/PHASE_PLAN.draft.md`.\n",
+  "expect": {
+    "phase": "1.3",
+    "draft": ".run/PHASE_PLAN.draft.md",
+    "milestone": [
+      {
+        "clause": "`format_cents` handles negatives and thousands and `parse_cents` is its inverse (verified by: `python -m unittest tests.test_money`)",
+        "tokens": [
+          "format_cents",
+          "parse_cents",
+          "negatives",
+          "thousands",
+          "tests.test_money"
+        ]
+      },
+      {
+        "clause": "fee caps come from `fee_cap` per member kind and `outstanding_cents` and `fee_summary` report what members owe (verified by: `python -m unittest tests.test_fee_caps`)",
+        "tokens": [
+          "fee_cap",
+          "tests.test_fee_caps"
+        ]
+      },
+      {
+        "clause": "fee caps come from `fee_cap` per member kind and `outstanding_cents` and `fee_summary` report what members owe (verified by: `python -m unittest tests.test_fee_caps`)",
+        "tokens": [
+          "outstanding_cents",
+          "fee_summary",
+          "tests.test_fee_caps"
+        ]
+      },
+      {
+        "clause": "the whole suite stays green (verified by: `python -m unittest discover -s tests`)",
+        "tokens": [
+          "unittest discover"
+        ]
+      }
+    ],
+    "rubric_items": [
+      "`format_cents` prints negatives as -$12.34 and groups thousands ($1,234.56); today it floors negative cents into wrong text.",
+      "`parse_cents` is added and inverts format_cents (round trip tested, negatives and thousands included) and refuses malformed text with ValueError (tests/test_money.py).",
+      "`fee_cap(kind)` in shelf/policy.py gives a cap per member kind, replacing the single FEE_CAP_CENTS in late_fee_cents; an unknown kind raises through check_kind.",
+      "late_fee_cents keeps the grace days and the per-kind daily rate and applies fee_cap(kind).",
+      "`outstanding_cents` reports a member's accrued fees on open loans as of a date, via loan_fee_cents with the member's kind.",
+      "`fee_summary` reports what members owe, tested with `outstanding_cents` in tests/test_fee_caps.py.",
+      "Amounts stay integer cents throughout; overdue_report's line format keeps working through format_cents.",
+      "The last task or the milestone check runs `python -m unittest discover -s tests`."
+    ]
+  },
+  "hidden": "—",
+  "overlay": "plan",
+  "rubric": "rubric/planner.md"
+}

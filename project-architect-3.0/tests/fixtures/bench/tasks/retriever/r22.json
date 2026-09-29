@@ -1,0 +1,33 @@
+{
+  "id": "r22",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Where does a hold get its `placed` date? Trace from the desk method a caller uses down to the Hold record.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 83,
+        "symbol": "holds.place"
+      },
+      {
+        "path": "shelf/holds.py",
+        "line": 19,
+        "to": 25,
+        "symbol": "place"
+      },
+      {
+        "path": "shelf/holds.py",
+        "line": 23,
+        "symbol": "Hold"
+      }
+    ],
+    "tokens": [
+      "place_hold"
+    ]
+  },
+  "hidden": "—"
+}

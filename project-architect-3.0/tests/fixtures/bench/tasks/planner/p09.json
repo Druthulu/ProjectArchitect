@@ -1,0 +1,48 @@
+{
+  "id": "p09",
+  "arm": "planner",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the draft path.\n\nYou are the phase planner for the shelf project. This directory is the project: `GENERATION_PLAN.md` (generation 1, twelve phases), `PROJECT_CONTEXT.md`, `HOW_WE_WORK.md`, `PHASE_SEED.md` (the phase-plan template and its task-line grammar), `shelf/` the package and `tests/` its suite. There is no `phase-ends/` and no plan tool; read the files directly.\n\nDraft the phase plan for phase 1.9 (Renewal limits) and write it to `.run/PHASE_PLAN.draft.md`. The draft's Milestone line carries phase 1.9's milestone clauses; every clause must be covered by some task whose `done-when:` or `verify:` names what the clause names; every task line has `files:` and a runnable `verify:`. Do not write any other file and do not start the work.\n\nReturn only one line: `DRAFT: .run/PHASE_PLAN.draft.md`.\n",
+  "expect": {
+    "phase": "1.9",
+    "draft": ".run/PHASE_PLAN.draft.md",
+    "milestone": [
+      {
+        "clause": "`LoanDesk.renewals_left` reports how many renewals a loan has left (verified by: `python -m unittest tests.test_renewals_left`)",
+        "tokens": [
+          "renewals_left"
+        ]
+      },
+      {
+        "clause": "`renew` refuses with `LimitReached` while another member has a hold on the book (verified by: `python -m unittest tests.test_renew_holds`)",
+        "tokens": [
+          "test_renew_holds"
+        ]
+      },
+      {
+        "clause": "the whole suite stays green (verified by: `python -m unittest discover -s tests`)",
+        "tokens": [
+          "unittest discover"
+        ]
+      }
+    ],
+    "rubric_items": [
+      "`LoanDesk.renewals_left` is added to shelf/loans.py and returns policy.MAX_RENEWALS minus the loan's renewals (tests/test_renewals_left.py).",
+      "renewals_left finds the loan through LoanDesk._loan, so an unknown loan id raises NotFound.",
+      "`renew` raises LimitReached while another member has a hold on the loan's book (desk.holds.queue), tested in tests/test_renew_holds.py.",
+      "A hold placed by the borrower themself does not block the renewal.",
+      "renew keeps its existing checks: returned loans, overdue loans and MAX_RENEWALS.",
+      "Tasks touch only shelf/ and tests/.",
+      "The last task or the milestone check runs `python -m unittest discover -s tests`."
+    ]
+  },
+  "hidden": "—",
+  "overlay": "plan",
+  "files": [
+    "plan2/GENERATION_PLAN.md"
+  ],
+  "rubric": "rubric/planner.md"
+}

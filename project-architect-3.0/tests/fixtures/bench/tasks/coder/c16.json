@@ -1,0 +1,17 @@
+{
+  "id": "c16",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Authors are written both 'First Last' and 'Last, First'; group them.\n\n1. `shelf/catalog.py`: add a module-level function `author_key(name)`: if the name contains a comma, `'Last, First'` becomes `'First Last'` (split at the first comma); then lower-case it, remove periods, collapse whitespace runs to one space and strip. So `'Kernighan, Brian'`, `'brian  kernighan'` and `'Brian Kernighan'` all give `'brian kernighan'`, and `'J.R.R. Tolkien'` gives `'jrr tolkien'`. Add `Catalog.by_author(name)`: the books whose author has the same `author_key` as `name`, sorted by `(year, title)`.\n2. `shelf/reports.py`: add `author_ranking(desk, n=10)`: a list of `(display_name, loan_count)` over all loans ever, authors grouped by `author_key`. The display name is the author string of that author's book with the smallest ISBN in the catalog. Sort by count descending, then display name; at most `n` entries; authors with no loans are left out.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/catalog.py",
+      "shelf/reports.py"
+    ]
+  },
+  "hidden": "hidden/c16"
+}

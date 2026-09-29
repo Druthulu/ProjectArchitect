@@ -1,0 +1,17 @@
+{
+  "id": "k12",
+  "arm": "critic",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the critic contract.\n\nYou are the critic for the shelf project. Judge the proposed plan change below by your rules and return exactly your contract (DECISION, TIER, EDITS as `python tools/plan_edit.py` lines, WHY in three lines, BRIEF only for needs-developer). Do not read files or run commands.\n\nPlan, phase 1.12 Fast search. Milestone: `Catalog.search` answers from an index that `add` and `remove` keep current instead of scanning every book; `search` returns exactly what the old scan returned for every query, substrings and case included; the whole suite stays green.\nContext: Python 3.12, stdlib only; storage.FORMAT stays 2 (standing constraint).\nDeveloper decides: (1) which index backs search: a word map, a trigram map or sorted title lists (still open).\nTasks:\n- T1 | next   | expert-opus55 | files: shelf/catalog.py, tests/test_search_index.py | done-when: Catalog.search answers from an index that add and remove keep current | verify: python -m unittest tests.test_search_index | deps: —\n- T2 | queued | expert-opus55 | files: tests/test_search_same.py | done-when: search returns exactly what the old scan returned for every query, substrings and case included | verify: python -m unittest tests.test_search_same | deps: T1\n- T3 | queued | expert-opus55 | files: tests/ | done-when: the whole suite passes after T1-T2 | verify: python -m unittest discover -s tests | deps: T1, T2\n\nExpert on T1 returned `question`.\nQUESTION: the milestone needs substrings inside words (\"oby\" finds \"Moby Dick\"). A word map cannot answer those without scanning; a trigram map can for queries of three or more characters and scans only shorter ones; sorted title lists only help prefixes. The index would live in a new shelf/search_index.py, which T1's files do not list.\nRECOMMENDED: build a trigram map: reopen T1 as T1.1 with files expanded to shelf/search_index.py, done-when unchanged.\n",
+  "expect": {
+    "reference": {
+      "decision": "needs-developer",
+      "tier": "additive",
+      "edits_must": []
+    }
+  },
+  "hidden": "—"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "c18",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Due dates must fall on days the library is open. The library is closed on Saturdays, Sundays and its holidays.\n\n1. `shelf/dates.py`: add `next_open_day(d, holidays=())`: `d` itself when the library is open that day, otherwise the first later open day. `holidays` is any iterable of dates.\n2. `LoanDesk` takes the library's holidays as a new keyword argument `holidays=()`: any iterable of dates (a list, a set, a generator). Every due date the desk sets, at checkout and at renewal, falls on an open day: a due date that would land on a closed day moves forward to the next open day. A renewal adds the loan period to the loan's current due date, then moves it.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/dates.py",
+      "shelf/loans.py"
+    ]
+  },
+  "hidden": "hidden/c18"
+}

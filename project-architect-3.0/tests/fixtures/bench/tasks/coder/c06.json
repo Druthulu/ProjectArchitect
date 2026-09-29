@@ -1,0 +1,16 @@
+{
+  "id": "c06",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Add an aging report to `shelf/reports.py`.\n\n`aging_report(desk, today=None)`: group the desk's open overdue loans by days late into the buckets `'1-7'`, `'8-30'` and `'31+'`. Return a dict with exactly those three keys in that order; each value is `{\"count\": <int>, \"fees\": <int>}`, where fees is the sum of `loan_fee_cents(loan, today, kind)` over the bucket's loans, `kind` being each loan's member kind. `today` defaults to `desk.today()`; returned loans never count.\n\n`aging_lines(desk, today=None)`: one line per bucket in the same order, `'<bucket>: <count> loans, <fees>'` with the fees through `format_cents`, and `loan` instead of `loans` when the count is exactly 1 (e.g. `'8-30: 1 loan, $2.00'`).\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/reports.py"
+    ]
+  },
+  "hidden": "hidden/c06"
+}

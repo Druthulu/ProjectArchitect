@@ -1,0 +1,34 @@
+diff --git a/shelf/holds.py b/shelf/holds.py
+index 187b6b5..dffa848 100644
+--- a/shelf/holds.py
++++ b/shelf/holds.py
+@@ -41,5 +41,29 @@ class HoldQueue:
+         queue = self._queues.get(isbn)
+         return queue.pop(0) if queue else None
+ 
++    def position(self, isbn, member_id):
++        """1-based place of member_id in the queue for isbn, or None."""
++        for i, hold in enumerate(self._queues.get(isbn, []), 1):
++            if hold.member_id == member_id:
++                return i
++        return None
++
++    def expire(self, today, max_days):
++        """Drop holds placed more than max_days before today; return them by (placed, isbn, member)."""
++        removed = []
++        for isbn in list(self._queues):
++            keep = []
++            for hold in self._queues[isbn]:
++                (removed if (today - hold.placed).days > max_days else keep).append(hold)
++            if keep:
++                self._queues[isbn] = keep
++            else:
++                del self._queues[isbn]
++        return sorted(removed, key=lambda h: (h.placed, h.isbn, h.member_id))
++
++    def isbns(self):
++        """ISBNs with at least one hold, sorted."""
++        return sorted(isbn for isbn, queue in self._queues.items() if queue)
++
+     def all(self):
+         return [h for isbn in sorted(self._queues) for h in self._queues[isbn]]

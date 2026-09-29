@@ -1,0 +1,33 @@
+You are grading one anonymous answer against a fixed rubric. Everything you need is below; read no files, run nothing, write nothing.
+
+The rubric:
+----- RUBRIC -----
+{rubric}
+----- END RUBRIC -----
+
+Must-haves for this task (numbered P-items, 1 point each; "none" when the task has none):
+----- ITEMS -----
+{items}
+----- END ITEMS -----
+
+The material the answer was written from (the task as given, and any files it names):
+----- MATERIAL -----
+{material}
+----- END MATERIAL -----
+
+A reference answer. It is one acceptable answer, not the only one: credit a different answer the material supports equally well, and do not reward copying its wording.
+----- REFERENCE -----
+{reference}
+----- END REFERENCE -----
+
+The answer to grade:
+----- ANSWER -----
+{answer}
+----- END ANSWER -----
+
+Score every rubric item and every P-item 0 or 1: an item counts only when the answer states it AND it is correct against the material. Then apply the rubric's penalties; the total is never below 0. Be strict and literal; do not reward length.
+
+Return only three lines:
+1. Every item id with its score, space-separated, then the penalties, ending with `| total <n>` (for example `S1 1 S2 0 P1 1 penalties -1 | total 1`).
+2. The answer's strongest point.
+3. Its worst error, with a short quote.

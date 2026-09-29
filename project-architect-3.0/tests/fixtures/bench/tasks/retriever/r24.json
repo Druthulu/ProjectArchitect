@@ -1,0 +1,27 @@
+{
+  "id": "r24",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "What decides the order of the lines in reports.overdue_report? Cite the loop and the sort it relies on.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/reports.py",
+        "line": 11,
+        "symbol": "overdue"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 75,
+        "symbol": "loan.due"
+      }
+    ],
+    "tokens": [
+      "loan_id"
+    ]
+  },
+  "hidden": "—"
+}

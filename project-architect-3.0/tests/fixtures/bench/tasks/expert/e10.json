@@ -1,0 +1,29 @@
+{
+  "id": "e10",
+  "arm": "expert",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the coder brief.\n\nYou are the expert for task T5 of phase 1.4 of the shelf project. This directory is the project: `shelf/` the package, `tests/` its unittest suite, interpreter `python`. Read the code as you need, then write the brief you would hand the coder. Do not spawn agents, do not edit files and do not run the change yourself: the brief is your whole answer.\n\nPlan task entry:\n- T5 | next | expert-opus55 | coder: opus55 | effort: medium | files: shelf/holds.py, shelf/storage.py | done-when: see below | verify: python -m unittest discover -s tests | reads: — | deps: — | review: no\n\ndone-when (the task's specification):\n`storage.dumps` drops the desk's hold queues, so holds vanish on save and load. Fix it.\n\n1. `shelf/holds.py`: add `Hold.to_dict()` -> `{\"isbn\": ..., \"member_id\": ..., \"placed\": \"<ISO date>\"}` and a classmethod `Hold.from_dict(d)` (its inverse). Add `HoldQueue.restore(holds)`: append each Hold to its ISBN's queue in the given order, rejecting a duplicate (same ISBN and member) with `ValueError` just like `place`.\n2. `shelf/storage.py`: `dumps` writes the holds as a list under a top-level `\"holds\"` key, in `HoldQueue.all()` order; `loads` restores them into the desk's queue. A document without `\"holds\"` loads with no holds. The format number stays 2.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).\n\nThe coder brief contract, in this order: `CODER TASK T5.c1`, `CHANGE` (at most 8 lines), `INTERFACES` (the functions and records the change touches, with their files), `CONSTRAINTS`, `BUILD/TEST` (the exact command from the entry's verify and what green means), `DONE WHEN`, `LOG: logs/T5.c1.md`, `RETURN: the coder contract`. Name every repo file the coder edits or must read as a repo-relative path (`shelf/x.py`, `tests/x.py`); name no file the change does not need.\n\nReturn only the brief, nothing else.\n",
+  "expect": {
+    "files": [
+      "shelf/holds.py",
+      "shelf/loans.py",
+      "shelf/storage.py",
+      "tests/*.py"
+    ],
+    "must_files": [
+      "shelf/holds.py",
+      "shelf/storage.py"
+    ],
+    "build_test": "python -m unittest discover -s tests",
+    "based_on": "c15"
+  },
+  "hidden": "—",
+  "cli": [
+    "--disallowedTools",
+    "Agent"
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "id": "c19",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Add a member statement.\n\n1. `shelf/models.py`: add `Loan.status(today)` returning `'returned'`, `'overdue'` or `'open'`.\n2. `shelf/reports.py`: add `member_statement(desk, member_id, today=None)` returning a list of lines:\n   - header `Statement for <name> (<member_id>, <kind>) on <today ISO>`;\n   - one line per loan in the member's history, sorted by start date then loan id: `<loan_id> <title> | due <due ISO> | <status>`, followed by ` | fee <amount>` only when the loan's fee is non-zero, the fee being `loan_fee_cents(loan, today, kind)` (so a returned loan shows the fee it was charged at return);\n   - last line `Total due: <amount>`, summing the fees of open loans only.\n   Amounts use `format_cents`; `today` defaults to `desk.today()`; an unknown member raises `NotFound`.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/models.py",
+      "shelf/reports.py"
+    ]
+  },
+  "hidden": "hidden/c19"
+}

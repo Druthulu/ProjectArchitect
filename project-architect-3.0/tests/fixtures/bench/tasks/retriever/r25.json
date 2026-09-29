@@ -1,0 +1,46 @@
+{
+  "id": "r25",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Which exceptions can LoanDesk.checkout raise, and where does each one originate (the raise statement)?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 35,
+        "symbol": "InactiveMember"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 38,
+        "symbol": "LimitReached"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 41,
+        "symbol": "Unavailable"
+      },
+      {
+        "path": "shelf/members.py",
+        "line": 28,
+        "symbol": "NotFound"
+      },
+      {
+        "path": "shelf/catalog.py",
+        "line": 27,
+        "symbol": "NotFound"
+      }
+    ],
+    "tokens": [
+      "NotFound",
+      "Unavailable",
+      "LimitReached",
+      "InactiveMember"
+    ]
+  },
+  "hidden": "—"
+}

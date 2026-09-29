@@ -1,0 +1,163 @@
+{
+  "format": 1,
+  "run_id": "20260925T162011Z-canary",
+  "date": "2026-09-25T16:20:11Z",
+  "suite": "canary",
+  "harness_version": "3.0.0a1",
+  "price_version": "2026-09",
+  "fixture_hash": "e0a5d6271998b468b04746bd176297ab3c3ffa33f061104192d67a59774428b5",
+  "claude_code": "2.1.281",
+  "arms": [
+    {
+      "role": "coder",
+      "agent": "coder-opus55",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "body_hash": "81cec93173bb31e3e61658deaaeea14dabaef8c25c7e6b19ddbe499a868ce841",
+      "version": "1",
+      "stopped": 0,
+      "w5h_before": null,
+      "w5h_after": null,
+      "tasks": [
+        {
+          "id": "c01",
+          "tier": 1,
+          "passed": true,
+          "cost_usd": 0.1192096,
+          "secs": 23.5,
+          "turns": 6,
+          "session_id": "396b8e26-0000-4000-8000-000000000017",
+          "turns_source": "transcript",
+          "input": 12,
+          "output": 2231,
+          "cache_read": 33028,
+          "cache_write": 8492,
+          "rubric": null,
+          "detail": "...................................\n----------------------------------------------------------------------\nRan 35 tests in 0.004s\n\nOK\n; num_turns 6"
+        },
+        {
+          "id": "c02",
+          "tier": 1,
+          "passed": true,
+          "cost_usd": 0.053222200000000004,
+          "secs": 17.2,
+          "turns": 3,
+          "session_id": "b72a72a1-0000-4000-8000-000000000066",
+          "turns_source": "transcript",
+          "input": 6,
+          "output": 1514,
+          "cache_read": 16191,
+          "cache_write": 2460,
+          "rubric": null,
+          "detail": "....................................\n----------------------------------------------------------------------\nRan 36 tests in 0.004s\n\nOK\n; num_turns 3"
+        },
+        {
+          "id": "c11",
+          "tier": 2,
+          "passed": true,
+          "cost_usd": 0.1426804,
+          "secs": 34.8,
+          "turns": 8,
+          "session_id": "bba9623d-0000-4000-8000-000000000069",
+          "turns_source": "transcript",
+          "input": 16,
+          "output": 3368,
+          "cache_read": 68162,
+          "cache_write": 7703,
+          "rubric": null,
+          "detail": "...................................\n----------------------------------------------------------------------\nRan 35 tests in 0.004s\n\nOK\n; num_turns 12"
+        },
+        {
+          "id": "c12",
+          "tier": 2,
+          "passed": true,
+          "cost_usd": 0.1197008,
+          "secs": 28.3,
+          "turns": 7,
+          "session_id": "7ba499d9-0000-4000-8000-00000000003e",
+          "turns_source": "transcript",
+          "input": 14,
+          "output": 2711,
+          "cache_read": 54004,
+          "cache_write": 6828,
+          "rubric": null,
+          "detail": "..................................\n----------------------------------------------------------------------\nRan 34 tests in 0.004s\n\nOK\n; num_turns 9"
+        }
+      ]
+    },
+    {
+      "role": "expert",
+      "agent": "expert-opus55",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "body_hash": "7b029c477214e382981eaab61355f9a6f5cb5b110c47165cf6bb85612cbda1d9",
+      "version": "1",
+      "stopped": 0,
+      "w5h_before": null,
+      "w5h_after": null,
+      "tasks": [
+        {
+          "id": "e01",
+          "tier": 1,
+          "passed": true,
+          "cost_usd": 0.1173886,
+          "secs": 24.2,
+          "turns": 3,
+          "session_id": "33ef1fb5-0000-4000-8000-000000000016",
+          "turns_source": "transcript",
+          "input": 6,
+          "output": 2334,
+          "cache_read": 14063,
+          "cache_write": 8484,
+          "rubric": null,
+          "detail": "brief ok (5 change lines, 2 files); num_turns 3"
+        },
+        {
+          "id": "e07",
+          "tier": 2,
+          "passed": true,
+          "cost_usd": 0.084626,
+          "secs": 25.4,
+          "turns": 3,
+          "session_id": "8e760283-0000-4000-8000-00000000004b",
+          "turns_source": "transcript",
+          "input": 6,
+          "output": 2290,
+          "cache_read": 20890,
+          "cache_write": 4328,
+          "rubric": null,
+          "detail": "brief ok (8 change lines, 5 files); num_turns 3"
+        }
+      ]
+    },
+    {
+      "role": "planner",
+      "agent": "planner-phase",
+      "model": "claude-opus-5-5",
+      "effort": "medium",
+      "body_hash": "b7f6fa9653717b633bf32e2cd03715f99f00d6f7ce55142ca64a61dd244b242b",
+      "version": "1",
+      "stopped": 0,
+      "w5h_before": null,
+      "w5h_after": null,
+      "tasks": [
+        {
+          "id": "p01",
+          "tier": 1,
+          "passed": true,
+          "cost_usd": 0.35247639999999997,
+          "secs": 62.4,
+          "turns": 6,
+          "session_id": "c965a7a4-0000-4000-8000-000000000078",
+          "turns_source": "transcript",
+          "input": 12,
+          "output": 6688,
+          "cache_read": 73102,
+          "cache_write": 25506,
+          "rubric": null,
+          "detail": "lint ok, 3 tasks, 3 clauses covered; num_turns 6"
+        }
+      ]
+    }
+  ]
+}

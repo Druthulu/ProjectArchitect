@@ -1,0 +1,59 @@
+diff --git a/shelf/catalog.py b/shelf/catalog.py
+index e82175f..707d839 100644
+--- a/shelf/catalog.py
++++ b/shelf/catalog.py
+@@ -3,6 +3,14 @@ from .isbn import is_valid_isbn, normalize_isbn
+ from .models import NotFound
+ 
+ 
++def author_key(name):
++    """Comparable form of an author name: 'Last, First' -> 'first last', lower-case, no periods."""
++    if "," in name:
++        last, first = name.split(",", 1)
++        name = f"{first} {last}"
++    return " ".join(name.replace(".", "").lower().split())
++
++
+ class Catalog:
+     def __init__(self):
+         self._books = {}
+@@ -41,6 +49,12 @@ class Catalog:
+                 if needle in b.title.lower() or needle in b.author.lower()]
+         return sorted(hits, key=lambda b: b.title.lower())
+ 
++    def by_author(self, name):
++        """Books by this author under any spelling author_key folds together, by (year, title)."""
++        key = author_key(name)
++        return sorted((b for b in self._books.values() if author_key(b.author) == key),
++                      key=lambda b: (b.year, b.title))
++
+     def by_tag(self, tag):
+         return sorted((b for b in self._books.values() if tag in b.tags), key=lambda b: b.isbn)
+ 
+diff --git a/shelf/reports.py b/shelf/reports.py
+index d0d9021..3fa31d8 100644
+--- a/shelf/reports.py
++++ b/shelf/reports.py
+@@ -1,6 +1,7 @@
+ """Plain-text reports over a LoanDesk."""
+ from collections import Counter
+ 
++from .catalog import author_key
+ from .fees import format_cents, loan_fee_cents
+ 
+ 
+@@ -35,3 +36,14 @@ def member_loans(desk, member_id):
+ def popular_titles(desk, n=10):
+     """Old name used by the 0.2 web page; titles only. Prefer popular()."""
+     return [desk.catalog.get(isbn).title for isbn, _ in popular(desk, n)]
++
++
++def author_ranking(desk, n=10):
++    """Top n (author, loans) over all loans ever; spellings grouped by author_key."""
++    display = {}
++    for book in desk.catalog:   # ascending ISBN, so the first spelling seen wins
++        display.setdefault(author_key(book.author), book.author)
++    counts = Counter(author_key(desk.catalog.get(loan.isbn).author) for loan in desk.loans)
++    ranked = sorted(((display[key], count) for key, count in counts.items()),
++                    key=lambda kv: (-kv[1], kv[0]))
++    return ranked[:n]

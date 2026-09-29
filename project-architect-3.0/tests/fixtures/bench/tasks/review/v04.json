@@ -1,0 +1,25 @@
+{
+  "id": "v04",
+  "arm": "review",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the review contract.\n\nYou are the review agent for the shelf project. The REVIEW.md, the task entry and the result files it points at are given below verbatim. Return exactly your contract (OUTCOME, DECISIONS with two to four options each, every option carrying the exact `python tools/plan_edit.py ... --by developer` command or an `INBOX:` line, every decision carrying at least one plan_edit.py option (an INBOX: line is never a decision's only option), the recommended option first, then the RECOMMENDED line).\n\nplan_edit.py grammar (positional arguments as shown; there is no --task, --status, --note or --text flag):\n  python tools/plan_edit.py set-status <task> <status> --by developer        e.g. set-status T3 done\n  python tools/plan_edit.py reopen <task> --title \"...\" --done-when \"...\" [--files \"...\"] [--verify \"...\"] --by developer\n  python tools/plan_edit.py add-task --after <task> --title \"...\" --done-when \"...\" [--files \"...\"] [--verify \"...\"] --by developer\n  python tools/plan_edit.py append-change \"<text>\" --by developer Do not read files, run commands or spawn agents.\n\nREVIEW.md (T4, phase 1.4 Holds that hold):\nWhat ran: a replay of last month's desk log (310 checkouts, 42 holds) through the new checkout.\nResults: 305 checkouts identical to the log; 5 refused with Unavailable where the log shows a checkout. All 5 are non-holders taking the last free copy of a book with one hold, which the new rule refuses by design. notices: 38 recorded, 4 missing: all four for books returned while two holds were waiting (only the first holder got a notice; the done-when says every holder within the free copies).\nDecisions asked: accept T4? expert recommends accepting; the 4 missing notices \"are rare\".\nTask entry: - T4 | next | expert-opus55 | files: shelf/loans.py, tests/test_checkout_holds.py | done-when: checkout honours the queue against free copies; checkin appends a notice for every holder within the free copies | verify: python -m unittest tests.test_checkout_holds | review: yes\nVerify output: Ran 14 tests ... OK\n",
+  "expect": {
+    "min_decisions": 1,
+    "reference": {
+      "recommended": [
+        "1a"
+      ],
+      "commands": [
+        "reopen T4"
+      ],
+      "first_option": {
+        "1": "reopen T4"
+      }
+    }
+  },
+  "hidden": "—"
+}

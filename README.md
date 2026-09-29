@@ -1,306 +1,115 @@
-# Project Architect 2.0
+<p align="center">
+  <img src="project-architect-3.0/docs/images/banner.svg" alt="Project Architect 3.0: a team with a plan, inside Claude Code" width="860">
+</p>
 
-A governance system for building software with Claude Code. It gives a project a permanent plan, a phase-by-phase build process, a rulebook the assistant re-reads every session, and a build history that any future session can pick up cold. You install it once per project with a single instruction and then work in structured phases from idea to shipped code.
+<p align="center">
+  <img alt="version 3.11" src="https://img.shields.io/badge/version-3.11-3b82f6">
+  <img alt="for Claude Code" src="https://img.shields.io/badge/for-Claude%20Code-d97757">
+  <img alt="Windows, WSL, Linux, macOS" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20WSL%20%7C%20Linux%20%7C%20macOS-64748b">
+</p>
 
-It works for a brand new project, an existing codebase that has no process yet, and an older project that was run with a previous chat-based version of this system.
+**Project Architect turns Claude Code into a small team that works from a plan.** It is a project management
+system and a token-saving system in one. As a project manager, it keeps the plan: phases with a milestone a machine
+can check, your approval before any work starts, and a memory in your repository that every new session starts from.
+As a token saver, it runs each task in a small, fresh context, and helpers do the long reading and the build-and-test
+loops, so your session never carries them; a local ledger measures what that saves, and the statusline shows it.
+[What PA3 is and does](https://github.com/Druthulu/ProjectArchitect/wiki/What-PA3-does) explains every part in plain
+words.
 
-## Who this is for
+## What you get
 
-- If you are a senior developer: this is an opinionated project constitution plus a session protocol that keeps an AI coding assistant on rails. It enforces one-task-at-a-time execution, machine-checkable milestones, per-task commits, and a rules registry that grows as the project teaches you things.
-- If you are a solo builder or a "vibe coder": this stops the assistant from wandering. Every project gets a written plan, the assistant checks in at the right moments and runs on its own in between, nothing important is ever left only in a chat window, and you can close your laptop and come back next week and it knows exactly where you were.
+- **A plan that outlives every session.** Phases with a milestone a machine can check, task summaries, decisions,
+  rules and techniques, all kept as files in your repository. A new session starts from them, not from a transcript.
+- **Work that runs on its own between two gates.** You approve the plan and confirm the close; in between, nobody
+  stops to ask unless a decision is genuinely yours.
+- **Savings you can see.** A local ledger prices every request, and the statusline shows, live, what the helpers kept
+  out of your context.
+- **Models that fit your plan.** Max 20x, Max 5x or Pro: PA3 reads which from your login and picks its models to
+  match.
 
-## Requirements
+## See it
 
-- [Claude Code](https://docs.claude.com/en/docs/claude-code) (the CLI, desktop, or IDE version). This system is built for Claude Code specifically.
-- Git. The history and recovery model assume the project is a git repository.
-- That is all. There is nothing to compile and no dependencies to install. The package is plain Markdown plus two small shell scripts.
+<p align="center">
+  <img src="project-architect-3.0/docs/images/pa3-new-project-run-demo.gif" alt="A new project from claude to the phase close: the router, the planners' drafts, two approvals, experts briefing a retriever and coders, and the close" width="860">
+</p>
 
----
+A new project from `claude` to the phase close, sped up: the router starts, the planners draft, you approve twice,
+the experts brief a retriever and coders, and the phase closes.
+
+<p align="center">
+  <img src="project-architect-3.0/docs/images/statusline.png" alt="The PA3 statusline during a phase" width="860">
+</p>
+
+White is what you used; blue is what the helpers saved. Here this session used 1 % of the five-hour window and its
+helpers saved another 2 %, and over the project's life its work has gone 2.6 times as far as it would have without
+them. [Every number, line by line](https://github.com/Druthulu/ProjectArchitect/wiki/Statusline-and-savings).
 
 ## Install
 
-### Step 1: copy the right folder
+You need Claude Code, a Claude subscription (Max 20x, Max 5x or Pro), Python 3.12 or newer, and git.
 
-This repository contains the README you are reading and one folder called `project-architect-2.0/`. **You copy only that inner folder into your project.** Do not copy the whole repo, and do not copy this README into your project.
+1. **Once per machine.** Download this repository (**Code → Download ZIP**, then extract) and open its
+   `project-architect-3.0` folder. On Windows, double-click **`install.cmd`**; on WSL, Linux or macOS, run
+   `./install.sh`. It asks nothing.
+2. **Once per repository.** Open the repository in Claude Code: PA3 shows one line that sets it up, with the path
+   already filled in. Type it, then restart Claude Code (`/exit`, then `claude`). Or double-click
+   **`setup-project.cmd`** and pick the folder. It makes one commit and never pushes.
+3. **Start.** Open `claude` in your repository, and the router takes it from there. The first time, PA3 asks which day
+   your plan renews (the Claude app shows it under Settings → Billing) so the month figures count from it.
 
-```
-ProjectArchitect/                 <- this repo. Do NOT copy this whole thing.
-├─ README.md                      <- you are reading it. It stays here.
-└─ project-architect-2.0/         <- COPY THIS ONE FOLDER into your project root.
-   ├─ SETUP.md                    (the installer the assistant runs)
-   ├─ project-architect-2.0.md    (the methodology reference)
-   ├─ templates/                  (the files it stamps into your project)
-   ├─ corpus/                     (distilled lessons from prior projects)
-   ├─ memory-seed/                (starter assistant memories)
-   ├─ statusline/                 (an optional status bar for Claude Code)
-   └─ tools/                      (a backup helper script)
-```
+Step by step, updating and removing: [Install](https://github.com/Druthulu/ProjectArchitect/wiki/Install). Every
+switch: [INSTALL.md](project-architect-3.0/INSTALL.md).
 
-After copying, your project looks like this:
+## How it works
 
-```
-your-project/
-├─ (your existing code, or nothing yet)
-└─ project-architect-2.0/         <- the folder you just copied in
-```
-
-### Step 2: run the installer
-
-Open Claude Code in your project's root directory, enable Auto-Mode, and send this exact message:
-
-```
-Read SETUP.md and do it.
+```mermaid
+flowchart LR
+    you((You)) <--> router["router"]
+    router --> planners["planners"]
+    router --> expert["expert<br/>one per task"]
+    router --> critic["critic"]
+    expert --> coder["coder"]
+    expert --> retrievers["retrievers"]
 ```
 
-That is the whole installation. The assistant reads `project-architect-2.0/SETUP.md` and executes it. Expect a few permission prompts (it writes files, and a couple of them live under your `~/.claude` config directory). Approve them, or pick "allow edits this session" if Claude Code offers it.
-
-The installer will detect which of three situations you are in and confirm with you before doing anything:
-
-| Situation | What the installer does |
-| --- | --- |
-| **New project** (empty or nearly empty repo) | Interviews you about the idea, proposes a phased plan, and generates your project's permanent plan document. |
-| **Existing code, no process** | Reads your codebase first, then generates a plan that reflects what actually exists, with current technical debt written down honestly. |
-| **Old-methodology project** (has an older chat-era context file or scattered phase files) | Tidies the old files into the new layout with history preserved, carries forward the rules that still apply, retires the chat-only ones, and regenerates an up-to-date plan. Your old plan file is renamed and kept, never deleted. |
-
-The installer records its own work as the project's first phase, so if it is interrupted (a crash, a closed laptop) you can rerun the same instruction and it resumes where it left off.
-
-### Step 3: after install
-
-When the installer finishes it will tell you that you can delete the `project-architect-2.0/` folder from your project. It is safe to delete: the installer already added it to your project's `.gitignore`, and it copied the methodology reference into your project's `docs/` folder. Keep this repository as your master copy so you can install into the next project.
-
-Then start a fresh Claude Code session (the seeded memories and hooks activate at startup) and say `Begin Phase 1`.
-
----
-
-## What gets installed into your project
-
-The installer stamps a small, self-documenting file layout into your repo. Nothing here is generated by magic; every file is plain Markdown you can read and edit.
-
-```
-CLAUDE.md                 The entry point. Claude Code auto-reads it every session.
-                          It holds the protocols (how a session runs) and points at the rules.
-PROJECT_CONTEXT.md        The constitution: vision, key decisions, architecture, and the roadmap.
-                          Written once at install and never edited again.
-RULES_REGISTRY.md         Every rule that governs work on the project, in full text.
-                          Re-read and recited at the start of every session. Grows over time.
-phase-ends/               The build history.
-  PhaseEnd_PhaseN.md        One file per completed phase. Kept forever.
-  CURRENT_PHASE.md          The in-progress phase: the approved plan and a per-task log.
-  logs/                     Archived working logs, kept for reference, not auto-loaded.
-docs/                     Evolvable references.
-  project-architect.md      The full methodology (copied from this package).
-  effort-map.md             How hard the assistant should think, per task.
-  <project>-cookbook.md     A growing playbook of your project's recurring techniques.
-  ops-setup.md              Build, run, and test commands. The file a fresh machine rebuilds from.
-.claude-state/            The assistant's own memory and session transcripts, kept in your repo.
-tools/                    A script that backs the above state up into the repo.
-```
-
-You do not have to memorize any of this. The point is that everything the assistant needs lives in your repository, in version control, in files you can read. Nothing important is trapped in a chat window or on one machine.
-
----
-
-## How you work with it, day to day
-
-Once installed, a project runs on a small set of protocols. You do not have to run them by hand; the assistant follows them. This section explains what to expect so the process is not a black box.
-
-### Every session starts the same way
-
-When you open Claude Code and say "continue," the assistant runs the **Session Start Protocol** before touching anything:
-
-1. It reads the constitution, the rules registry, and the phase history in order.
-2. It states four things and nothing else: the current phase, which tasks are already done, the single next task, and the recommended thinking effort for that task.
-3. It recites every rule in the registry, in full.
-4. It waits for you.
-
-This is deliberate. It means a session that starts on a fresh machine, or after the conversation was compacted, or three months later, reconstructs the exact state of the project before doing any work. You always know where you are.
-
-After reciting the rules, it prompts you to switch into the right mode for what comes next, then waits. There are three cases:
-
-- **Starting a new phase** (no phase is in progress): it asks you to turn on Plan mode and set effort to Max, then it plans the phase and shows you the plan for approval. Planning is always done in Plan mode at Max.
-- **Resuming a phase that still has planned work left:** it rebuilds the task list from the in-progress phase automatically, so you get the live progress monitor back, then asks you to enable Auto-Mode and set the effort the next task needs, and resumes from where it stopped.
-- **Resuming a phase whose plan is finished but whose milestone is not yet met:** sometimes a phase needs more work than the last plan covered. Here it asks you to turn on Plan mode and set Max, plans the additional work within the same phase, and continues after you approve it.
-
-The assistant cannot flip these switches itself, so it prompts and waits for you each time. This turns picking a phase back up into a single confirmation instead of a series of manual steps.
-
-### Work happens in phases, with two checkpoints
-
-A phase is a chunk of work that produces something runnable and testable, ending in a milestone you can actually check (a passing test suite, a program that runs, output that matches byte for byte). Each phase has exactly two points where you are in control:
-
-- **Gate 1, the plan.** The assistant plans the whole phase up front and shows it to you as a task-by-task list. Nothing starts until you approve it.
-- **Gate 2, the milestone.** The phase ends only when you confirm that the milestone is met.
-
-Between those two gates the assistant works on its own. It does one task at a time, in order, and after each task it writes a line to the in-progress phase log and makes one git commit that contains both the task's changes and that log line. It does not stop to ask permission for planned work. It stops only for a short, fixed list of reasons: a fix that failed twice for different reasons, something that would break a rule, a change to the plan itself, or a blocker only you can clear.
-
-You always do the git push yourself. The assistant commits locally; pushing stays with you.
-
-### The in-progress phase file, and pausing safely
-
-While a phase is running, its live state sits in `phase-ends/CURRENT_PHASE.md`. This file holds the approved plan as a checklist, a pointer to the task currently in progress, a running log with a short rich note for each completed task (what it did and why), and any blockers. It is created from a template when the phase is planned, updated after every task, and archived into `phase-ends/logs/` when the phase ends. It is the recovery point: if a session crashes, the conversation gets compacted, or you just close the laptop, this file is how the next session knows exactly where things stood.
-
-Because each task is committed together with its checkpoint note in `CURRENT_PHASE.md`, the repository sits at a clean, well-documented checkpoint after every task. Each note captures why the task was done the way it was, not just the code, so a later session can pick the phase back up and write the phase summary from the log. That is what makes it safe to stop after any task and pick up later.
-
-To pause in the middle of a phase and resume in a fresh session:
-
-1. End on a committed task boundary. Let the current task finish and commit, so `CURRENT_PHASE.md` and the code are in sync. If a task is genuinely half-done, have the assistant write the partial state into the notes or blockers section of `CURRENT_PHASE.md` so the next session does not have to guess.
-2. Optionally run the backup script (`bash tools/backup-claude-state.sh`) to sweep the assistant's memory and transcript into the repo. The phase-close and session-end handling also do this on their own, so this is only for extra safety mid-phase.
-3. Push if you want an off-machine copy. The assistant has already committed; pushing is your call.
-
-To resume, open a new Claude Code session and say "continue." The Session Start Protocol reads `CURRENT_PHASE.md` as part of its normal startup, reports the phase, the completed tasks, and the single next task, rebuilds the task list, and asks you into the right mode for what is next (Auto-Mode to keep executing, or Plan mode at Max if the plan is finished but the phase still needs more work). Confirm and it continues. You are back exactly where you left off, with no re-explaining.
-
-Between phases there is no `CURRENT_PHASE.md`, because it was archived at the last phase close. In that case a fresh session simply starts the next phase by planning it, which is the normal Gate 1.
-
-### Ending a phase
-
-When you confirm a milestone, the assistant runs the **Phase Boundary Protocol**:
-
-1. It verifies every item on the phase checklist, including the easy-to-forget wiring steps.
-2. It writes a `PhaseEnd` file: what was built, what deviated from the plan, and a plain-English recap that a non-specialist can follow. That recap is the last thing in the file and the last thing it says to you.
-3. It records any new rules the phase produced into the registry.
-4. It backs up the assistant's memory and archives the working log.
-5. It commits, then stops. Hard.
-
-That hard stop is intentional. The next phase begins in a fresh session. This keeps each phase's context clean and stops the assistant from running ahead into work you have not approved.
-
-### How hard it thinks (effort)
-
-The system maps every task to a thinking-effort level, using Claude Code's `/effort` control:
-
-- **xHigh** is the everyday baseline for most work.
-- **Max** is reserved for deep work: planning a phase, writing a PhaseEnd, architecture decisions, and hard debugging. Planning is always done at Max.
-- **Ultracode** is for breadth: the same analysis across many independent items, run as parallel agents. It is turned on only when that shape of work appears, and turned off after.
-
-The assistant prompts you to switch levels at the right moments and waits for you to actually flip the switch. It cannot change its own effort setting.
-
-### The rules registry
-
-The registry is the single home for every rule. Some rules ship with the system (how sessions run, how commits work, how to verify that "done" really means done). More get added at the end of a phase, whenever the project teaches you a lesson worth writing down. Rules are never rewritten in place; a rule that gets superseded stays in the file with a note. The assistant recites the whole registry at the start of every session, which is what keeps the rules actually in force rather than quietly forgotten.
-
-### Memory and self-contained state
-
-Claude Code normally keeps its per-project memory and chat transcripts under your home directory, outside your repo. This system redirects them into the repo itself, under `.claude-state/`. Memory is versioned like any other file, transcripts are copied in when a session ends, and a backup script sweeps up anything that gets missed. If a machine dies, nothing irreplaceable is lost, because it is all in git.
-
-Note: transcripts capture full tool output, so `.claude-state/` is meant for a private repository. Leave it out of any public mirror.
-
----
-
-## What is in this repository
-
-If you want to understand or modify the system itself, here is the full package:
-
-| Path | What it is |
-| --- | --- |
-| `project-architect-2.0/SETUP.md` | The installer. The assistant executes this. |
-| `project-architect-2.0/project-architect-2.0.md` | The complete methodology and reference specification. |
-| `project-architect-2.0/templates/` | The files stamped into a project: the CLAUDE.md entry point, the constitution skeleton, the rules registry seed, the phase file templates, and the docs templates. |
-| `project-architect-2.0/corpus/` | The distilled, transferable lessons of two large prior projects, plus a synthesis of the engineering principles they independently converged on. The installer draws on these when generating a new project's rules. |
-| `project-architect-2.0/memory-seed/` | Starter assistant memories (working preferences and conventions) copied in at install. |
-| `project-architect-2.0/statusline/` | An optional Claude Code status bar that shows the model, the current effort level, context usage, and rate limits. |
-| `project-architect-2.0/tools/` | The state-backup script. |
-
-The methodology reference (`project-architect-2.0.md`) is the place to read if you want the full protocol text, the design rationale, or to adapt the system.
-
----
-
-## Using it in Claude Chat instead of Claude Code
-
-The system is built for Claude Code, but the core also works in a plain Claude chat. Attach three files to a new chat: `project-architect-2.0.md`, `templates/RULES_REGISTRY.seed.md`, and `templates/PROJECT_CONTEXT.skeleton.md`. Then brainstorm your idea. The assistant will run the same intake and generate your project's plan document as a file you can save. That output is designed so that if you later move the project into Claude Code, the installer's migration mode picks it up cleanly.
-
----
-
-## Updating and removing
-
-- **To update the system:** pull the latest of this repository, and copy the newer `project-architect-2.0/` folder into a project again. On a project that is already set up, the installer detects the existing governance and updates only what is missing or changed, without regenerating your constitution.
-- **To remove it from a project:** the governance is just files. Delete `CLAUDE.md`, `RULES_REGISTRY.md`, `PROJECT_CONTEXT.md`, the `phase-ends/` and `.claude-state/` folders, and the docs it added. Remove the `SessionEnd` hook and the `autoMemoryDirectory` line from `.claude/settings.json` and `.claude/settings.local.json`.
-
----
-
-## Frequently asked questions
-
-**Do I copy the whole repository into my project?**
-No. Copy only the `project-architect-2.0/` folder. The README and the git repo stay here.
-
-**Will it touch my global Claude Code settings?**
-It adds a status bar command and a default effort level to `~/.claude/settings.json`, only if those keys are not already set, and it backs the file up first. It never changes your configured model. If you already have a status bar it leaves yours alone.
-
-**Does it commit or push for me?**
-It commits, in small per-task steps, with clear messages and no AI attribution in them. It never pushes. Pushing is always your call.
-
-**What if the install is interrupted?**
-Run "Read SETUP.md and do it" again. The installer tracks its own progress and resumes.
-
-**Is my code sent anywhere unusual?**
-No more than normal Claude Code usage. The system is local files and Claude Code's normal operation. The only nuance is that it keeps the assistant's memory and transcripts inside your repo instead of your home directory. The harness itself makes no network calls of its own and no code leaves your computer through it. It collects no metrics or telemetry.
-
-**Can a large or messy existing project use this?**
-Yes. That is the migration mode. It was validated against a real multi-year project with dozens of out-of-order phase files and an old chat-era plan, and it tidied everything with git history intact.
-
----
-
-## Generalized example workflow (a Claude Code primer)
-
-New to Claude Code? This section walks through a normal working session from start to finish and explains the terms Project Architect uses along the way.
-
-**The Project Context file:**
-This is your project's source of truth and roadmap: the master plan for the whole project.
-
-**Generating a Project Context:**
-If you do not have one yet, this system builds it for you. Start a session and say you want to build a Project Context. It works for a brand new empty project and for a mature, established one. Expect a discussion of your idea and history, your goals, the scope, and the features you want after release. A few terms it uses:
-
-- **Generation:** a major stage of the project. 1.0 might be the first working release; 2.0 might be an evolution of that codebase into something more capable.
-- **Phase:** a part of a generation that builds one testable piece, working from boilerplate toward a finished result. Usually indicated by GEN.x.
-- **Subphase:** coding is iterative, so it is common to finish a phase and find that follow-up questions or extra work are needed before the next one. That work is a subphase, written as an Gen.x.1 appended to the last phase number.
-- **Roadmap:** the ordered list of generations and phases that gets you from the current state to the goal.
-- **Parking Lot:** a place for stray ideas that do not have a home on the roadmap yet.
-
-When a Project Context is generated, the first generation is planned out in detail as phases and the later generations are sketched in. When you finish a generation, you plan the next generation's phases. A project can have several plans over its life; there is no limit.
-
-**Starting Claude Code:**
-Open a terminal (Terminal, Command Prompt, or PowerShell) and change into your project's folder. On Windows you can also right-click the empty space inside the repo folder and choose "Open in Terminal."
-
-```
-C:\Users\You> cd Documents\git\my-repo
-C:\Users\You\Documents\git\my-repo> claude
-```
-
-The `cd` command moves you into the project directory. Typing `claude` then starts Claude Code in a fresh session.
-
-**Session start:**
-In a fresh session, type `continue`. The Session Start Protocol runs, lists all the rules, and presents the next task. Then turn on Plan mode.
-
-**Turning on Plan mode:**
-Press Shift+Tab to cycle the modes until Plan mode is on. Type `/effort` and set it to Max, then type `confirmed` to proceed. Plan mode reads your Project Context, finds the current generation and phase, and builds a plan to complete that phase. It may ask you questions; each one comes with a recommended answer plus other options. You can pick an option, type your own answer, or discuss it in detail first. When the plan is ready it is shown to you. Review it, ask for any changes, and once you approve it, turn on Auto Mode.
-
-**Turning on Auto Mode:**
-In Auto Mode, Claude Code works through the task list on its own. You can type at any time to comment on what you are seeing or ask for a change of direction. Ctrl+C cancels whatever it is currently thinking about, which is handy if you want it to skip or rethink something. Before each task it explains how and why it is coding it that way, then writes the code, finishes the task, and records the result in the Current Phase tracker.
-
-**Current Phase:**
-`CURRENT_PHASE.md` is the memory for the phase in progress. A phase can span more than one session. As a session fills up, Claude Code will suggest continuing in a fresh one; say that you want to and it checkpoints your progress first. To leave a session, press Ctrl+C twice to return to the terminal. Type `claude` to start a new session, or `claude --resume` to list this project's previous sessions and pick one up exactly where you left off. Resume is useful after a crash, a reboot, or simply picking the project back up another day.
-
-**Phase End:**
-When a phase is complete and you have verified its milestone, confirm it. The Phase End process runs automatically and needs no help from you. A session ends one of two ways: a Phase End, or a checkpoint when a phase takes more than one session.
-
-**Phases that span multiple sessions:**
-Debugging and larger tasks can use a lot of context. When a session gets full (watch the status line), checkpoint and start fresh. There is no penalty for this: Project Architect is built so a new session resumes the work with no loss.
-
-**The status line:**
-The status line sits just below your text input. Left to right it shows: the model and effort level, the session context length, your 5-hour usage and its reset time, and your weekly usage. If you cannot see it after setup, press Ctrl+C twice to exit, then run `claude --resume` to see this project's sessions, listed newest to oldest.
-
-**Git:**
-Git is version control, and you should use it on any coding project. Version control means you keep a full history of backups, so an outage, crash, or mistake does not destroy your work. GitHub is cloud storage for code, and a repository can be private or public. The GitHub Desktop app makes this easy to manage. Good practice is to push Claude Code's commits regularly.
-
-**Effort and models:**
-Effort is set with `/effort` on the ladder `low / medium / high / xHigh / Max`, which controls how hard a single agent reasons. Ultracode is not a deeper level; it runs at xHigh and adds multi-agent work (breadth) rather than depth. Max and Ultracode are session-only and reset each session, while xHigh is the highest level that persists. `docs/effort-map.md` is the source of truth and overrides this description where they differ. In practice, xHigh is the recommended default for coding, Max is worth it only for very deep reasoning or novel algorithm design, and lightweight work such as HTML, Markdown, or JSON needs less. The model is set with `/model`. Opus with the 1 million token context is the default and recommended model for coding; Sonnet is also a strong coder and a good fit on the Pro plan.
-
-**Evolving the workflow:**
-During normal use, if something is not going the way you want, you have two tools: a new rule or a new memory. Rules cover regular project work, and every session states all of them back at the start, which costs very few tokens and keeps the project from ever breaking one. Memories are reserved for the most important, highest-priority guidance and are kept light.
-
-**Context usage:**
-Session start uses roughly 100k tokens, about 10% of the 1M context. Plan mode uses roughly another 100k, depending on the phase. Once a session is around 400 to 600k (40 to 60%), starting a fresh one usually pays off, and it is best not to push much past 600k (60%): beyond that every turn is dragging a large context, and if the session fills up the tool auto-summarizes, which loses more than a clean reload from your phase file does. There is one exception: if you are only a task or two from finishing the phase, it is worth pushing through in the same session, because the phase summary comes out richer when it is written from a warm session rather than reconstructed. Claude watches all of this and, at each task boundary, will tell you the context size and whether it is a good moment to start fresh. The longer a single session runs, the faster it also consumes your 5-hour and weekly limits. Anthropic gives up to a 90% discount on cached tokens, but the cache expires after 5 minutes of inactivity. Do not feel pressured to finish a whole phase in one session or to fill the context before stopping; with Project Architect you can start fresh and resume with no loss at any time.
-
-
----
+You talk to one session, the router. A planner drafts each phase; after you approve it, the router runs one expert
+per task in a fresh context, the expert briefs coders and retrievers, and the critic judges any change to the plan.
+The phase closes when its milestone check passes, with a plain-English recap of what was done.
+[What PA3 is and does](https://github.com/Druthulu/ProjectArchitect/wiki/What-PA3-does) ·
+[The roles](https://github.com/Druthulu/ProjectArchitect/wiki/How-it-works) ·
+[A day in the life](https://github.com/Druthulu/ProjectArchitect/wiki/A-day-in-the-life)
+
+## Why Project Architect
+
+A long Claude Code session re-sends everything it has seen with every request: the files it read, the command
+output, its own reasoning. The context keeps growing, and every later request pays for all of it again. Project
+Architect changes the shape of the work:
+
+- **Memory that carries forward.** Every session, and every expert inside one, starts from the files the work left
+  behind (the plan, the task summaries, the decisions, the rules and techniques) instead of a long transcript.
+  Nothing has to stay in context to be remembered.
+- **Helpers that keep the weight off.** Retrievers read the long files and return one answer, coders run the edit,
+  build and test loops, and each expert starts its task with a small, fresh context. What they read never lands in
+  your session, and the statusline counts what that kept out.
+
+| | Vanilla | Project Architect |
+|---|---|---|
+| Average context per request | 459k to 547k tokens | 47k to 69k tokens |
+| Context when the work starts | 100k to 300k tokens | about 15k tokens |
+| Cost per request, at API prices | $0.35 to $0.42 | $0.08 to $0.11 |
+
+Vanilla: real projects worked in one long Claude Code session. Project Architect: its own first phases, measured the
+same way. [The whole story, with the measurements](https://github.com/Druthulu/ProjectArchitect/wiki/History).
+
+## Learn more
+
+The [wiki](https://github.com/Druthulu/ProjectArchitect/wiki) has the rest: the
+[statusline and the savings](https://github.com/Druthulu/ProjectArchitect/wiki/Statusline-and-savings),
+[the bench](https://github.com/Druthulu/ProjectArchitect/wiki/Bench) that measures the agents themselves (results in
+[`bench/results/`](bench/results/)), [why PA3 stays serial](https://github.com/Druthulu/ProjectArchitect/wiki/Speedups),
+and the [FAQ](https://github.com/Druthulu/ProjectArchitect/wiki/FAQ). What changed in each release:
+[CHANGES.md](project-architect-3.0/CHANGES.md).
 
 ## License
 
-Source-available, not open source. You are free to install and use Project Architect in your own projects, personal or commercial, including in your own public or private repositories, and to adapt its templates for your own use. You may not redistribute, repackage, or republish it as a standalone work. All rights reserved by the author. See `LICENSE` for the full terms. If you want to share it, link to this repository rather than copying it. The `project-architect-2.0/` package is self-contained Markdown and shell scripts with no third-party dependencies.
+See [LICENSE](LICENSE).

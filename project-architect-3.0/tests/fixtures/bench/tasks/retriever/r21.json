@@ -1,0 +1,29 @@
+{
+  "id": "r21",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Which functions call `Loan.days_late`? Cite each call site.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/fees.py",
+        "line": 15,
+        "symbol": "days_late"
+      },
+      {
+        "path": "shelf/reports.py",
+        "line": 15,
+        "symbol": "days_late"
+      }
+    ],
+    "tokens": [
+      "loan_fee_cents",
+      "overdue_report"
+    ]
+  },
+  "hidden": "—"
+}

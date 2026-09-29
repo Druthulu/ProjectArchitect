@@ -1,0 +1,30 @@
+{
+  "id": "r03",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Where is a new member's id (the letter M plus four digits) generated, and how does the registry keep ids unique when a saved library is loaded? Cite the line that builds the id, the line that moves the counter on load, and the line in the storage module that triggers it.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/members.py",
+        "line": 13,
+        "symbol": "member_id"
+      },
+      {
+        "path": "shelf/members.py",
+        "line": 22,
+        "symbol": "_next"
+      },
+      {
+        "path": "shelf/storage.py",
+        "line": 55,
+        "symbol": "members.add"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

@@ -1,0 +1,16 @@
+{
+  "id": "c20",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Loading a saved library breaks loan ids: after `storage.loads`, the next checkout is issued loan id 1 again and collides with a loaded loan.\n\n1. Fix it: after a load, the next checkout gets the largest loaded loan id plus one (1 when the document has no loans), however the saved loans are ordered or numbered. A document in which two loans share an id is refused with `ValueError`.\n2. Add `LoanDesk.get_loan(loan_id)`: the loan, or `NotFound`.\n3. Add `LoanDesk.restore(loans)`, which puts a desk into the state a load gives: its loans become exactly the given ones (any iterable) and ids continue as in 1; on a duplicate id it raises `ValueError` and leaves the desk unchanged.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/loans.py",
+      "shelf/storage.py"
+    ]
+  },
+  "hidden": "hidden/c20"
+}

@@ -1,0 +1,44 @@
+diff --git a/shelf/members.py b/shelf/members.py
+index c434f98..ebd0662 100644
+--- a/shelf/members.py
++++ b/shelf/members.py
+@@ -1,4 +1,7 @@
+ """Member registry. Ids are 'M' plus four digits, issued in order."""
++import csv
++import io
++
+ from . import policy
+ from .models import Member, NotFound
+ 
+@@ -36,6 +39,31 @@ class MemberRegistry:
+                 return member
+         return None
+ 
++    def import_csv(self, text):
++        """Register members from CSV text (header: name, email, optional kind); all or nothing."""
++        reader = csv.reader(io.StringIO(text))
++        header = [h.strip().lower() for h in next(reader, [])]
++        if "name" not in header or "email" not in header:
++            raise ValueError("CSV header needs name and email columns")
++        col = {h: i for i, h in enumerate(header)}
++        seen = {m.email.lower() for m in self._members.values()}
++        rows = []
++        for row in reader:
++            if not any(cell.strip() for cell in row):
++                continue
++            cells = [c.strip() for c in row] + [""] * len(header)
++            name, email = cells[col["name"]], cells[col["email"]]
++            kind = (cells[col["kind"]] if "kind" in col else "") or "standard"
++            if not name:
++                raise ValueError(f"line {reader.line_num}: empty name")
++            if kind not in policy.KINDS:
++                raise ValueError(f"line {reader.line_num}: unknown kind {kind!r}")
++            if email.lower() in seen:
++                continue
++            seen.add(email.lower())
++            rows.append((name, email, kind))
++        return [self.register(name, email, kind) for name, email, kind in rows]
++
+     def deactivate(self, member_id):
+         self.get(member_id).active = False
+ 

@@ -1,0 +1,26 @@
+{
+  "id": "r15",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "List every call site of `policy.loan_days` in the package (not its definition, not its aliases).\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 43,
+        "symbol": "loan_days"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 68,
+        "symbol": "loan_days"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

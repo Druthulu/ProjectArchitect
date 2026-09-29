@@ -1,0 +1,43 @@
+{
+  "id": "r18",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which modules of the shelf package import from shelf.models, and which names does each import?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/catalog.py",
+        "line": 3,
+        "symbol": "NotFound"
+      },
+      {
+        "path": "shelf/members.py",
+        "line": 3,
+        "symbol": "Member"
+      },
+      {
+        "path": "shelf/holds.py",
+        "line": 5,
+        "symbol": "NotFound"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 7,
+        "symbol": "InactiveMember"
+      },
+      {
+        "path": "shelf/storage.py",
+        "line": 8,
+        "symbol": "Loan"
+      }
+    ],
+    "tokens": [
+      "Unavailable",
+      "Book"
+    ]
+  },
+  "hidden": "—"
+}

@@ -1,0 +1,42 @@
+{
+  "id": "r14",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "A late loan is returned at the desk. Trace the fee the desk charges: which date does the day count measure against for a returned loan, where are the free grace days taken off and how many are there, and which function returns the fee to the caller of checkin? Cite each step.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 56,
+        "symbol": "loan_fee_cents"
+      },
+      {
+        "path": "shelf/fees.py",
+        "line": 15,
+        "symbol": "days_late"
+      },
+      {
+        "path": "shelf/models.py",
+        "line": 64,
+        "symbol": "returned"
+      },
+      {
+        "path": "shelf/fees.py",
+        "line": 7,
+        "symbol": "GRACE_DAYS"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 10,
+        "symbol": "GRACE_DAYS"
+      }
+    ],
+    "tokens": [
+      "loan_fee_cents"
+    ]
+  },
+  "hidden": "—"
+}

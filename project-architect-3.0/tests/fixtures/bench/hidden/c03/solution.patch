@@ -1,0 +1,33 @@
+diff --git a/shelf/catalog.py b/shelf/catalog.py
+index e82175f..94496b4 100644
+--- a/shelf/catalog.py
++++ b/shelf/catalog.py
+@@ -34,12 +34,22 @@ class Catalog:
+     def remove(self, isbn):
+         self._books.pop(self.get(isbn).isbn)
+ 
+-    def search(self, text):
+-        """Books whose title or author contains text (case-insensitive), sorted by title."""
+-        needle = text.strip().lower()
+-        hits = [b for b in self._books.values()
+-                if needle in b.title.lower() or needle in b.author.lower()]
+-        return sorted(hits, key=lambda b: b.title.lower())
++    def search(self, text, *, tag=None):
++        """Books where every word of text occurs in the title or the author (case-insensitive).
++
++        Optional tag filter; sorted by title, ties by ISBN; blank text finds nothing.
++        """
++        words = text.lower().split()
++        if not words:
++            return []
++        hits = []
++        for book in self._books.values():
++            if tag is not None and tag not in book.tags:
++                continue
++            fields = (book.title.lower(), book.author.lower())
++            if all(any(word in f for f in fields) for word in words):
++                hits.append(book)
++        return sorted(hits, key=lambda b: (b.title.lower(), b.isbn))
+ 
+     def by_tag(self, tag):
+         return sorted((b for b in self._books.values() if tag in b.tags), key=lambda b: b.isbn)

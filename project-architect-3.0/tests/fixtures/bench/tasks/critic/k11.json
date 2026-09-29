@@ -1,0 +1,17 @@
+{
+  "id": "k11",
+  "arm": "critic",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the critic contract.\n\nYou are the critic for the shelf project. Judge the proposed plan change below by your rules and return exactly your contract (DECISION, TIER, EDITS as `python tools/plan_edit.py` lines, WHY in three lines, BRIEF only for needs-developer). Do not read files or run commands.\n\nPlan, phase 1.5 Durable storage. Milestone: `loads` reads format 1 and still refuses others with `unsupported format`; after a load `LoanDesk.restore` makes the next loan id continue and `get_loan` finds loans; members carry `balance_cents` that blocks checkout at `FEE_BLOCK_CENTS` and survives a save; the whole suite stays green.\nContext: fees in integer cents; per-kind numbers live in shelf/policy.py; storage.FORMAT stays 2 (standing constraint).\nDeveloper decides: none.\nTasks:\n- T1 | done   | expert-opus55 | files: shelf/storage.py, tests/test_format1.py | done-when: loads reads format 1 and refuses others with unsupported format | verify: python -m unittest tests.test_format1 | deps: —\n- T2 | done   | expert-opus55 | files: shelf/loans.py, shelf/storage.py, tests/test_loan_ids.py | done-when: after a load LoanDesk.restore continues loan ids and get_loan finds loans | verify: python -m unittest tests.test_loan_ids | deps: T1\n- T3 | next   | expert-opus55 | files: shelf/members.py, shelf/storage.py, shelf/policy.py, tests/test_balances.py | done-when: balance_cents blocks checkout at FEE_BLOCK_CENTS and survives a save | verify: python -m unittest tests.test_balances | deps: T2\n- T4 | queued | expert-opus55 | files: tests/ | done-when: the whole suite passes after T1-T3 | verify: python -m unittest discover -s tests | deps: T1, T2, T3\n\nExpert on T3 returned `question`.\nQUESTION: T3 adds balance_cents to _member_to_dict and _member_from_dict in shelf/storage.py, the file T1 and T2 also edited. I changed no loan or format-1 code, and tests.test_balances is green, but T1's and T2's work might be affected by the new member fields.\nRECOMMENDED: reopen T1 and T2 as T1.1 and T2.1 and redo both tasks after T3, with fresh reviews of their storage code, before T4.\n",
+  "expect": {
+    "reference": {
+      "decision": "continue",
+      "tier": "additive",
+      "edits_must": []
+    }
+  },
+  "hidden": "—"
+}

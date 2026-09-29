@@ -1,0 +1,34 @@
+diff --git a/shelf/fees.py b/shelf/fees.py
+index 3a11d37..e1532cf 100644
+--- a/shelf/fees.py
++++ b/shelf/fees.py
+@@ -1,4 +1,6 @@
+ """Late fees. Amounts are integer cents throughout."""
++import re
++
+ from . import policy
+ 
+ 
+@@ -16,8 +18,20 @@ def loan_fee_cents(loan, today, kind="standard"):
+ 
+ 
+ def format_cents(cents):
+-    """1234 -> '$12.34'."""
+-    return f"${cents // 100}.{cents % 100:02d}"
++    """1234 -> '$12.34'; -123456 -> '-$1,234.56'."""
++    sign = "-" if cents < 0 else ""
++    dollars, rest = divmod(abs(cents), 100)
++    return f"{sign}${dollars:,}.{rest:02d}"
++
++
++def parse_cents(text):
++    """Inverse of format_cents: '-$1,234.50' -> -123450. '$', commas and cents are optional."""
++    m = re.fullmatch(r"(-?)\$?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d\d))?", text.strip())
++    if m is None:
++        raise ValueError(f"bad amount: {text!r}")
++    sign, dollars, cents = m.groups()
++    value = int(dollars.replace(",", "")) * 100 + int(cents or 0)
++    return -value if sign else value
+ 
+ 
+ def flat_fee(days):

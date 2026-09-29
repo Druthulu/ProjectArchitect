@@ -1,0 +1,18 @@
+{
+  "id": "c21",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "A customer tried to return a delivery on the last day of the returns window and was turned away. Steps: with 20 mugs in stock, create an order for 2 mugs on Monday 4 March 2024, then place, pick, ship and deliver it the same day. The customer portal status says the order is returnable until 3 April 2024. On 3 April 2024, 30 days after delivery, booking the return is refused with the message that returns closed on 2024-04-03. Expected: the return goes through on 3 April, because day 30 after delivery is still inside the window; only from 4 April (day 31) should it be refused. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/dates.py"
+    ]
+  },
+  "hidden": "hidden/c21",
+  "overlay": "overlay/c21",
+  "repo": "repo-depot"
+}

@@ -1,0 +1,20 @@
+{
+  "id": "k07",
+  "arm": "critic",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the critic contract.\n\nYou are the critic for the shelf project. Judge the proposed plan change below by your rules and return exactly your contract (DECISION, TIER, EDITS as `python tools/plan_edit.py` lines, WHY in three lines, BRIEF only for needs-developer). Do not read files or run commands.\n\nPlan, phase 1.7 Catalog tags. Milestone: `Catalog.tag` and `Catalog.untag` add and remove one tag on a book without duplicates; `tag_counts` counts books per tag, sorted by tag; the whole suite stays green.\nContext: tags are lowercase strings on Book.tags; storage.FORMAT stays 2 (standing constraint).\nDeveloper decides: none.\nTasks:\n- T1 | next   | expert-opus55 | files: shelf/catalog.py, tests/test_tags.py | done-when: Catalog.tag and Catalog.untag add and remove one tag on a book without duplicates | verify: python -m unittest tests.test_tags | deps: —\n- T2 | queued | expert-opus55 | files: shelf/catalog.py, tests/test_tag_counts.py | done-when: tag_counts counts books per tag, sorted by tag | verify: python -m unittest tests.test_tag_counts | deps: T1\n- T3 | queued | expert-opus55 | files: tests/ | done-when: the whole suite passes after T1-T2 | verify: python -m unittest discover -s tests | deps: T1, T2\n\nExpert on T1 returned `question`.\nQUESTION: Book.tags is a tuple on the frozen Book dataclass in shelf/models.py, so Catalog.tag cannot change it in place; it needs a Book.with_tags helper in shelf/models.py, which T1's files do not list. Book.to_dict already writes tags, so storage does not change. Nothing else changes.\nRECOMMENDED: reopen T1 as T1.1 with files expanded to shelf/models.py, done-when unchanged.\n",
+  "expect": {
+    "reference": {
+      "decision": "edit",
+      "tier": "additive",
+      "edits_must": [
+        "reopen T1",
+        "shelf/models.py"
+      ]
+    }
+  },
+  "hidden": "—"
+}

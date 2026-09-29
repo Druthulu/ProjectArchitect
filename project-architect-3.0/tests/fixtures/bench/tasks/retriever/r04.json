@@ -1,0 +1,38 @@
+{
+  "id": "r04",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which exception does the loan desk raise when a deactivated member tries to borrow, where is that exception class defined, where is the flag the desk tests set to false, and which base class lets a caller catch every error shelf raises on purpose?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/models.py",
+        "line": 22,
+        "symbol": "InactiveMember"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 35,
+        "symbol": "InactiveMember"
+      },
+      {
+        "path": "shelf/members.py",
+        "line": 40,
+        "symbol": "active = False"
+      },
+      {
+        "path": "shelf/models.py",
+        "line": 6,
+        "symbol": "ShelfError"
+      }
+    ],
+    "tokens": [
+      "InactiveMember",
+      "ShelfError"
+    ]
+  },
+  "hidden": "—"
+}

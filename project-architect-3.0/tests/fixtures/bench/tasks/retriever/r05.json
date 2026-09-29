@@ -1,0 +1,38 @@
+{
+  "id": "r05",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which format number does the storage module write into saved files, where is it set, where does loading refuse a file with any other number and with which exception, and which test in the suite pins that refusal?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/storage.py",
+        "line": 10,
+        "symbol": "FORMAT"
+      },
+      {
+        "path": "shelf/storage.py",
+        "line": 48,
+        "symbol": "FORMAT"
+      },
+      {
+        "path": "shelf/storage.py",
+        "line": 49,
+        "symbol": "ValueError"
+      },
+      {
+        "path": "tests/test_storage_reports.py",
+        "line": 23,
+        "symbol": "test_rejects_unknown_format"
+      }
+    ],
+    "tokens": [
+      "ValueError",
+      "test_rejects_unknown_format"
+    ]
+  },
+  "hidden": "—"
+}

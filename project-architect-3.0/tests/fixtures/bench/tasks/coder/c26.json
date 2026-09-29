@@ -1,0 +1,17 @@
+{
+  "id": "c26",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "full"
+  ],
+  "prompt": "The pick list comes out in a different order depending on the order in which we hand over the orders. Steps: besides the 8 kettles in bin B-01-02, receive 3 kettles into bin A-01-01, where the 20 mugs are; place an order for 4 kettles and another for 1 mug, and pick both together. Listing the kettle order first gives A-01-01 kettle x3, A-01-01 mug x1, B-01-02 kettle x1. Listing the mug order first gives A-01-01 mug x1, A-01-01 kettle x3, B-01-02 kettle x1. Expected: the same list either way, walked by location and, within one bin, by SKU, so KTL-0003 comes before MUG-0001. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/picking.py"
+    ]
+  },
+  "hidden": "hidden/c26",
+  "overlay": "overlay/c26",
+  "repo": "repo-depot"
+}

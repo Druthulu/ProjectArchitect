@@ -1,0 +1,42 @@
+{
+ "type": "cost-state",
+ "sessionId": "76c977f4-0000-4000-8000-000000000038",
+ "totalCostUSD": 77.27147875000001,
+ "totalAPIDuration": 4920593,
+ "totalAPIDurationWithoutRetries": 4920066,
+ "totalToolDuration": 1490846,
+ "totalLinesAdded": 2056,
+ "totalLinesRemoved": 144,
+ "totalDuration": 11508064,
+ "startTime": 1788735000599,
+ "modelUsage": {
+  "claude-fable-5-1": {
+   "inputTokens": 99184,
+   "outputTokens": 189558,
+   "thinkingTokens": 95890,
+   "cacheReadInputTokens": 22271897,
+   "cacheCreationInputTokens": 737664,
+   "webSearchRequests": 0,
+   "costUSD": 28.71869175
+  },
+  "claude-haiku-4-5-20251001": {
+   "inputTokens": 900,
+   "outputTokens": 14,
+   "thinkingTokens": 0,
+   "cacheReadInputTokens": 0,
+   "cacheCreationInputTokens": 0,
+   "webSearchRequests": 0,
+   "costUSD": 0.0009699999999999999
+  },
+  "claude-opus-5[1m]": {
+   "inputTokens": 748,
+   "outputTokens": 169358,
+   "thinkingTokens": 65215,
+   "cacheReadInputTokens": 76179534,
+   "cacheCreationInputTokens": 622436,
+   "webSearchRequests": 0,
+   "costUSD": 48.551816999999986
+  }
+ },
+ "hasUnknownModelCost": false
+}

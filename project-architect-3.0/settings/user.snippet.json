@@ -1,0 +1,126 @@
+{
+  "_comment": "Project Architect 3.0 — USER-level settings snippet (~/.claude/settings.json, or whatever CLAUDE_CONFIG_DIR points at). NOT a drop-in settings file: pa_install.py --root merges it key by key after writing settings.json.bak-<date>. Two placeholders are filled at install with ABSOLUTE paths (~ is not expanded reliably by the Windows spawn path): {{PY_EXE}} = the interpreter recorded from sys.executable (Windows: C:/Users/<u>/AppData/Local/Programs/Python/Python314/python.exe; WSL: /usr/bin/python3); {{PA3}} = the installed package dir (Windows: C:/Users/<u>/.claude/pa3; WSL: /home/<u>/.claude/pa3). Hooks are user-level ONLY — no project ever installs these.",
+
+  "_merge_rules": "add-if-absent for every key EXCEPT: todoFeatureEnabled — forced to false even if present (announced override; this is the one key the 2.0 never-overwrite rule does not protect; it removes the Task tools); cleanupPeriodDays — raise only, never lower an existing larger value; hooks — append the PA entries to each event's array, keep every pre-existing entry (bfm's Ghidra MCP start/stop stay), EXCEPT entries whose command contains ctx_guard.sh or ctx90.sh, which are removed (D46; the script files are renamed *.retired, never deleted), and PA entries already present are replaced in place so a second --root is byte-identical; statusLine — replace after backup (the old value is kept as statusline.sh.pa2 and the developer is asked, default replace); permissions.allow — union, order preserved, no duplicates; env — add-if-absent per variable, except CLAUDE_CODE_ENABLE_TODO_TOOLS, removed when truthy (it re-enables the Task tools; announced). NEVER touch model or modelSettings. Validate the merged JSON parses before writing; on any failure restore the .bak.",
+
+  "todoFeatureEnabled": false,
+  "cleanupPeriodDays": 3650,
+  "remoteControlAtStartup": true,
+  "inputNeededNotifEnabled": true,
+  "agentPushNotifEnabled": true,
+  "autoCompactEnabled": false,
+  "includeCoAuthoredBy": false,
+  "attribution": {
+    "commit": "",
+    "pr": "",
+    "sessionUrl": false
+  },
+
+  "env": {
+    "CLAUDE_CODE_TOTAL_TOKENS_REMINDER": "off",
+    "BASH_DEFAULT_TIMEOUT_MS": "600000",
+    "BASH_MAX_TIMEOUT_MS": "3600000",
+    "BASH_MAX_OUTPUT_LENGTH": "30000",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "3"
+  },
+
+  "permissions": {
+    "allow": [
+      "Bash(git status)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git branch:*)",
+      "Bash(git rev-parse:*)",
+      "Bash(git check-ignore:*)",
+      "Bash({{PY}} tools/pa3_update.py)"
+    ]
+  },
+
+  "statusLine": {
+    "type": "command",
+    "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_statusline.py"
+  },
+
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py session_start", "timeout": 15 }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py user_prompt_submit", "timeout": 5 }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py pre_tool_use", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py post_tool_use", "timeout": 5, "statusMessage": "pa ledger" }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py subagent_start", "timeout": 5 }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py subagent_stop", "timeout": 20 }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py stop", "timeout": 10 }
+        ]
+      }
+    ],
+    "StopFailure": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py stop_failure", "timeout": 5 }
+        ]
+      }
+    ],
+    "Notification": [
+      {
+        "matcher": "idle_prompt|permission_prompt|agent_needs_input|elicitation_dialog",
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py notification", "timeout": 5 }
+        ]
+      }
+    ],
+    "PostModelSwitch": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py model_switch", "timeout": 5 }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py session_end", "timeout": 20 }
+        ]
+      }
+    ]
+  }
+}

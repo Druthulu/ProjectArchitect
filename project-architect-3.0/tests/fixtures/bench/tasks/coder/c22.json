@@ -1,0 +1,18 @@
+{
+  "id": "c22",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "After cancelling a placed order, the available quantity of its products does not come back. Steps: receive 20 mugs into bin A-01-01 and 10 desk lamps into bin A-02-03; create an order for 3 mugs and 1 lamp and place it. Available now shows 17 mugs and 9 lamps, which is right. Cancel the order: available still shows 17 mugs and 9 lamps. The cancelled order holds no reservation any more, so we expected 20 mugs and 10 lamps. If we then receive 1 more mug, available jumps to 21, so the stock itself is fine; only the number shown after the cancel is stale. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/stock.py"
+    ]
+  },
+  "hidden": "hidden/c22",
+  "overlay": "overlay/c22",
+  "repo": "repo-depot"
+}

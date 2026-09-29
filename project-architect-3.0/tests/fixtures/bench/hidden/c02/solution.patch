@@ -1,0 +1,32 @@
+diff --git a/shelf/dates.py b/shelf/dates.py
+index 293a20b..33ec7f2 100644
+--- a/shelf/dates.py
++++ b/shelf/dates.py
+@@ -34,3 +34,27 @@ def next_business_day(d):
+     while is_weekend(d):
+         d += timedelta(days=1)
+     return d
++
++
++def business_days_between(start, end, holidays=()):
++    """Weekdays d with start < d <= end that are not holidays; 0 when end <= start."""
++    closed = set(holidays)
++    count = 0
++    d = start
++    while d < end:
++        d += timedelta(days=1)
++        if not is_weekend(d) and d not in closed:
++            count += 1
++    return count
++
++
++def add_business_days(d, n, holidays=()):
++    """The date n business days after d (weekends and holidays skipped); n == 0 returns d."""
++    if n < 0:
++        raise ValueError(f"n must be >= 0, got {n}")
++    closed = set(holidays)
++    while n > 0:
++        d += timedelta(days=1)
++        if not is_weekend(d) and d not in closed:
++            n -= 1
++    return d

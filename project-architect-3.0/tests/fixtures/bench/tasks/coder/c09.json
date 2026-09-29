@@ -1,0 +1,15 @@
+{
+  "id": "c09",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Make date parsing in `shelf/dates.py` more forgiving.\n\n`parse_date(text)` accepts, after stripping surrounding whitespace, exactly these forms: `YYYY-MM-DD` (as now), `YYYY/MM/DD`, `DD.MM.YYYY`, and `YYYYMMDD` (exactly eight digits). In the three separated forms month and day may have one or two digits (`2024-3-4`); the year always has four. Anything else, including impossible dates like `2023-02-29`, raises `ValueError`.\n\nAdd `parse_date_range(text)` for `'<date>..<date>'`: each side any form `parse_date` accepts, whitespace around the `..` allowed; returns a `(start, end)` tuple of dates. Raises `ValueError` when the `..` separator is missing or end is before start (equal is fine).\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/dates.py"
+    ]
+  },
+  "hidden": "hidden/c09"
+}

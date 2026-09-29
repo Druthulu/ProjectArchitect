@@ -1,0 +1,17 @@
+{
+  "id": "c15",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Hold queues vanish when the library is saved with `storage.dumps` and loaded back with `storage.loads`.\n\nMake holds survive a save and load: every queue comes back with the same members, in the same order, with the same `placed` dates, and a loaded desk saved again gives the same text. Documents saved before this change must still load (with no holds), and the format number stays 2.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/holds.py",
+      "shelf/storage.py"
+    ]
+  },
+  "hidden": "hidden/c15"
+}

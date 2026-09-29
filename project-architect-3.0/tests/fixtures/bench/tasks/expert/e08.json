@@ -1,0 +1,30 @@
+{
+  "id": "e08",
+  "arm": "expert",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the coder brief.\n\nYou are the expert for task T3 of phase 1.5 of the shelf project. This directory is the project: `shelf/` the package, `tests/` its unittest suite, interpreter `python`. Read the code as you need, then write the brief you would hand the coder. Do not spawn agents, do not edit files and do not run the change yourself: the brief is your whole answer.\n\nPlan task entry:\n- T3 | next | expert-opus55 | coder: opus55 | effort: medium | files: shelf/loans.py, shelf/policy.py | done-when: see below | verify: python -m unittest discover -s tests | reads: — | deps: — | review: no\n\ndone-when (the task's specification):\nRenewal limits become per member kind.\n\n1. `shelf/policy.py`: `MAX_RENEWALS` becomes a dict `{\"standard\": 2, \"student\": 1, \"staff\": 5}`; add `max_renewals(kind)`, which validates the kind like the other helpers there (unknown kind -> `ValueError`).\n2. `shelf/loans.py`: `LoanDesk.renew` uses `max_renewals` for the member's kind (everything else about renewing stays as it is). Add `LoanDesk.renewals_left(loan_id)`: how many more renewals the loan may get now; 0 for a returned or overdue loan; `NotFound` for an unknown id.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).\n\nThe coder brief contract, in this order: `CODER TASK T3.c1`, `CHANGE` (at most 8 lines), `INTERFACES` (the functions and records the change touches, with their files), `CONSTRAINTS`, `BUILD/TEST` (the exact command from the entry's verify and what green means), `DONE WHEN`, `LOG: logs/T3.c1.md`, `RETURN: the coder contract`. Name every repo file the coder edits or must read as a repo-relative path (`shelf/x.py`, `tests/x.py`); name no file the change does not need.\n\nReturn only the brief, nothing else.\n",
+  "expect": {
+    "files": [
+      "shelf/loans.py",
+      "shelf/models.py",
+      "shelf/policy.py",
+      "shelf/storage.py",
+      "tests/*.py"
+    ],
+    "must_files": [
+      "shelf/loans.py",
+      "shelf/policy.py"
+    ],
+    "build_test": "python -m unittest discover -s tests",
+    "based_on": "c12"
+  },
+  "hidden": "—",
+  "cli": [
+    "--disallowedTools",
+    "Agent"
+  ]
+}

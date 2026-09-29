@@ -1,0 +1,30 @@
+{
+  "id": "r19",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "When storage.loads rebuilds the member registry, how are members inserted, and why do later `register` calls not reuse a loaded member's id?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/storage.py",
+        "line": 55,
+        "symbol": "members.add"
+      },
+      {
+        "path": "shelf/members.py",
+        "line": 19,
+        "symbol": "add"
+      },
+      {
+        "path": "shelf/members.py",
+        "line": 22,
+        "symbol": "_next"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

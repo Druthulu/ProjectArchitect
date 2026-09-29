@@ -1,0 +1,17 @@
+{
+  "id": "c27",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Shipping quotes for orders that need more than one parcel are absurd. Steps: an office chair weighs 8 kg, and an order for one chair is quoted 10.40 EUR, which is right. An order for 3 chairs (24 kg) is packed into two parcels of 16 kg and 8 kg and quoted 18036.00 EUR, the parcels priced 12018.00 EUR and 6018.00 EUR. Expected 28.20 EUR: 17.80 EUR for the 16 kg parcel plus 10.40 EUR for the 8 kg parcel, each priced exactly as it would be if shipped alone. Every service level shows the problem; shipments that fit in one parcel are fine. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/shipping.py"
+    ]
+  },
+  "hidden": "hidden/c27",
+  "overlay": "overlay/c27",
+  "repo": "repo-depot"
+}

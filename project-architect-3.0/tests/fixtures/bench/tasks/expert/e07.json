@@ -1,0 +1,31 @@
+{
+  "id": "e07",
+  "arm": "expert",
+  "tier": 2,
+  "suites": [
+    "canary",
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the coder brief.\n\nYou are the expert for task T4 of phase 1.4 of the shelf project. This directory is the project: `shelf/` the package, `tests/` its unittest suite, interpreter `python`. Read the code as you need, then write the brief you would hand the coder. Do not spawn agents, do not edit files and do not run the change yourself: the brief is your whole answer.\n\nPlan task entry:\n- T4 | next | expert-opus55 | coder: opus55 | effort: medium | files: shelf/holds.py, shelf/loans.py | done-when: see below | verify: python -m unittest discover -s tests | reads: — | deps: — | review: no\n\ndone-when (the task's specification):\nMake the loan desk honour holds.\n\n1. `shelf/holds.py`: add `HoldQueue.count(isbn)`, the number of holds on that ISBN.\n2. `shelf/loans.py`, `LoanDesk.checkout(isbn, member_id)`: when the book has holds, a member who holds it may check it out only if their place in the queue (1-based) is at most the number of free copies; a member without a hold may check it out only if free copies exceed the number of holds; otherwise raise `Unavailable`. A successful checkout by a holder removes that member's hold. Books without holds behave as before.\n3. `LoanDesk` gets a list attribute `notices`, empty at creation. After `checkin(loan_id)` returns a book (it still returns the fee), if the book now has `k` free copies and at least `k` holds, append `(member_id, isbn)` of the `k`-th hold in the queue to `desk.notices`.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).\n\nThe coder brief contract, in this order: `CODER TASK T4.c1`, `CHANGE` (at most 8 lines), `INTERFACES` (the functions and records the change touches, with their files), `CONSTRAINTS`, `BUILD/TEST` (the exact command from the entry's verify and what green means), `DONE WHEN`, `LOG: logs/T4.c1.md`, `RETURN: the coder contract`. Name every repo file the coder edits or must read as a repo-relative path (`shelf/x.py`, `tests/x.py`); name no file the change does not need.\n\nReturn only the brief, nothing else.\n",
+  "expect": {
+    "files": [
+      "shelf/holds.py",
+      "shelf/loans.py",
+      "shelf/models.py",
+      "shelf/storage.py",
+      "tests/*.py"
+    ],
+    "must_files": [
+      "shelf/holds.py",
+      "shelf/loans.py"
+    ],
+    "build_test": "python -m unittest discover -s tests",
+    "based_on": "c11"
+  },
+  "hidden": "—",
+  "cli": [
+    "--disallowedTools",
+    "Agent"
+  ]
+}

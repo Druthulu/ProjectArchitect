@@ -1,0 +1,42 @@
+{
+  "id": "r09",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Where does LoanDesk get the current date from, how can a caller substitute a different date source, how does the test suite do that and on which date do its tests start, and how does a desk rebuilt from a saved file get its date source?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 14,
+        "symbol": "clock"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 19,
+        "symbol": "today"
+      },
+      {
+        "path": "tests/helpers.py",
+        "line": 28,
+        "symbol": "Clock"
+      },
+      {
+        "path": "tests/helpers.py",
+        "line": 9,
+        "symbol": "MONDAY"
+      },
+      {
+        "path": "shelf/storage.py",
+        "line": 56,
+        "symbol": "LoanDesk"
+      }
+    ],
+    "tokens": [
+      "2024"
+    ]
+  },
+  "hidden": "—"
+}

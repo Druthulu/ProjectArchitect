@@ -1,0 +1,38 @@
+{
+  "_comment": "Project Architect 3.0 — PROJECT-level settings snippet (<repo>/.claude/settings.json, committed). Merged by pa_install.py --project (step P7) after backing the file up. {{PY}} is filled at copy time with the project interpreter (python on Windows, python3 on WSL) — the same value as pa.json.python. NO hooks: every PA3 hook is user-level, installed once per config dir by pa_install.py --root. A pre-existing project hook that is not PA2's SessionEnd backup (bfm's Ghidra MCP start/stop) is left alone; the PA2 SessionEnd backup hook is removed, its job having moved to session_end.py. .claude/settings.local.json is never touched, except autoMemoryDirectory when the memory migration needs it.",
+
+  "_merge_rules": "add-if-absent for every key EXCEPT: todoFeatureEnabled — forced to false (announced override; removes the Task tools); permissions.allow and permissions.deny — union with what is already there, order preserved, no duplicates, an existing allow entry never removed; env — add-if-absent per variable; model and modelSettings — add-if-absent here and only here (the pa-session's pinned model and effort land once on a fresh install; a hand-edited value is never overwritten; the user-level merge never touches them). Validate the merged JSON parses before writing; on any failure restore the .bak.",
+
+  "agent": "pa-session",
+  "model": "claude-sonnet-5[1m]",
+  "modelSettings": {
+    "claude-sonnet-5": { "effortLevel": "medium" },
+    "claude-fable-5-1": { "effortLevel": "medium" }
+  },
+  "todoFeatureEnabled": false,
+  "autoCompactEnabled": false,
+  "awaySummaryEnabled": false,
+
+  "env": {
+    "CLAUDE_CODE_GOAL_CHECKIN_MINUTES": "0",
+    "CLAUDE_CODE_TOTAL_TOKENS_REMINDER": "off",
+    "BASH_DEFAULT_TIMEOUT_MS": "600000",
+    "BASH_MAX_TIMEOUT_MS": "3600000",
+    "BASH_MAX_OUTPUT_LENGTH": "30000",
+    "CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH": "3"
+  },
+
+  "permissions": {
+    "defaultMode": "auto",
+    "allow": [
+      "Bash({{PY}} tools/*)",
+      "Bash(bash tools/*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git mv:*)"
+    ],
+    "deny": [
+      "Bash(git push:*)"
+    ]
+  }
+}

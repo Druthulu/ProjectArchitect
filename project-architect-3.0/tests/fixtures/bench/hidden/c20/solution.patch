@@ -1,0 +1,37 @@
+diff --git a/shelf/loans.py b/shelf/loans.py
+index 77acf01..d74d264 100644
+--- a/shelf/loans.py
++++ b/shelf/loans.py
+@@ -82,6 +82,19 @@ class LoanDesk:
+         self.members.get(member_id)
+         return self.holds.place(book.isbn, member_id, self.today())
+ 
++    def get_loan(self, loan_id):
++        """The loan with this id; raises NotFound."""
++        return self._loan(loan_id)
++
++    def restore(self, loans):
++        """Replace every loan (storage uses this); later ids continue after the largest."""
++        loans = sorted(loans, key=lambda loan: loan.loan_id)
++        ids = [loan.loan_id for loan in loans]
++        if len(set(ids)) != len(ids):
++            raise ValueError("duplicate loan ids")
++        self.loans = loans
++        self._next_id = ids[-1] + 1 if ids else 1
++
+     def _loan(self, loan_id):
+         for loan in self.loans:
+             if loan.loan_id == loan_id:
+diff --git a/shelf/storage.py b/shelf/storage.py
+index e77d487..008073e 100644
+--- a/shelf/storage.py
++++ b/shelf/storage.py
+@@ -54,7 +54,7 @@ def loads(text, clock=None):
+     for d in data["members"]:
+         members.add(Member(**d))
+     desk = LoanDesk(catalog, members, clock)
+-    desk.loans = [_loan_from_dict(d) for d in data["loans"]]
++    desk.restore(_loan_from_dict(d) for d in data["loans"])
+     return catalog, members, desk
+ 
+ 

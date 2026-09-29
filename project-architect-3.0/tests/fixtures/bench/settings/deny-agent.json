@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Agent|TaskStop",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo bench: call recorded, not run 1>&2; exit 2"
+          }
+        ]
+      }
+    ]
+  }
+}

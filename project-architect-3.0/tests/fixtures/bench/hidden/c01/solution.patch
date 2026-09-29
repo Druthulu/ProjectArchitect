@@ -1,0 +1,31 @@
+diff --git a/shelf/isbn.py b/shelf/isbn.py
+index 08712bf..f91de9d 100644
+--- a/shelf/isbn.py
++++ b/shelf/isbn.py
+@@ -32,6 +32,26 @@ def is_valid_isbn(raw):
+     return is_valid_isbn10(s) if len(s) == 10 else is_valid_isbn13(s)
+ 
+ 
++def isbn10_to_isbn13(raw):
++    """ISBN-10 -> ISBN-13 ('978' prefix, recomputed check digit). Raises ValueError."""
++    s = normalize_isbn(raw)
++    if not is_valid_isbn10(s):
++        raise ValueError(f"not an ISBN-10: {raw!r}")
++    body = "978" + s[:9]
++    total = sum(int(c) * (1 if i % 2 == 0 else 3) for i, c in enumerate(body))
++    return body + str((10 - total % 10) % 10)
++
++
++def isbn13_to_isbn10(raw):
++    """ISBN-13 with a '978' prefix -> ISBN-10. Raises ValueError."""
++    s = normalize_isbn(raw)
++    if not is_valid_isbn13(s) or not s.startswith("978"):
++        raise ValueError(f"not a 978 ISBN-13: {raw!r}")
++    body = s[3:12]
++    check = (11 - sum((10 - i) * int(c) for i, c in enumerate(body)) % 11) % 11
++    return body + ("X" if check == 10 else str(check))
++
++
+ def check_isbn(raw):
+     """Deprecated since 0.3: ISBN-10 only and ignores spaces badly. Use is_valid_isbn."""
+     s = raw.replace("-", "")

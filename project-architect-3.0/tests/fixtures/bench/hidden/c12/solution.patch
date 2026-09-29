@@ -1,0 +1,52 @@
+diff --git a/shelf/loans.py b/shelf/loans.py
+index 77acf01..6609ed6 100644
+--- a/shelf/loans.py
++++ b/shelf/loans.py
+@@ -62,13 +62,21 @@ class LoanDesk:
+             raise ValueError(f"loan {loan_id} already returned")
+         if loan.is_overdue(self.today()):
+             raise LimitReached(f"loan {loan_id} is overdue")
+-        if loan.renewals >= policy.MAX_RENEWALS:
+-            raise LimitReached(f"loan {loan_id} renewed {loan.renewals} times")
+         kind = self.members.get(loan.member_id).kind
++        if loan.renewals >= policy.max_renewals(kind):
++            raise LimitReached(f"loan {loan_id} renewed {loan.renewals} times")
+         loan.due = add_days(loan.due, policy.loan_days(kind))
+         loan.renewals += 1
+         return loan
+ 
++    def renewals_left(self, loan_id):
++        """Renewals still allowed on this loan: 0 once returned or overdue."""
++        loan = self._loan(loan_id)
++        if not loan.is_open or loan.is_overdue(self.today()):
++            return 0
++        kind = self.members.get(loan.member_id).kind
++        return max(0, policy.max_renewals(kind) - loan.renewals)
++
+     def overdue(self, today=None):
+         today = today or self.today()
+         return sorted((loan for loan in self.loans if loan.is_overdue(today)),
+diff --git a/shelf/policy.py b/shelf/policy.py
+index b8c30cc..91dd4e6 100644
+--- a/shelf/policy.py
++++ b/shelf/policy.py
+@@ -6,7 +6,7 @@ LOAN_DAYS = {"standard": 21, "student": 14, "staff": 42}
+ MAX_LOANS = {"standard": 5, "student": 3, "staff": 10}
+ DAILY_FEE_CENTS = {"standard": 25, "student": 10, "staff": 0}
+ 
+-MAX_RENEWALS = 2
++MAX_RENEWALS = {"standard": 2, "student": 1, "staff": 5}   # was 2 for every kind
+ GRACE_DAYS = 1
+ FEE_CAP_CENTS = 1000
+ 
+@@ -30,6 +30,10 @@ def daily_fee(kind):
+     return DAILY_FEE_CENTS[check_kind(kind)]
+ 
+ 
++def max_renewals(kind):
++    return MAX_RENEWALS[check_kind(kind)]
++
++
+ def loan_period(kind):
+     """Deprecated alias of loan_days kept for 0.2 callers; silently defaults to 21 days."""
+     return LOAN_DAYS.get(kind, 21)

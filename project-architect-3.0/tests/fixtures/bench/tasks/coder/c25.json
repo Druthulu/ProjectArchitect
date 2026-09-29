@@ -1,0 +1,17 @@
+{
+  "id": "c25",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Tags leak from one product to another. Steps, using the product catalog on its own: add a serving tray (900 g, 14.50 EUR) without any tags and tag it fragile; then add napkins (200 g, 3.99 EUR), also without tags. The napkins come out already tagged fragile. A brand-new catalog shows the same: the first product we add to it without tags is tagged fragile too. Expected: a product added without tags starts with an empty tag list of its own, and tagging one product never changes the tags of another, in the same catalog or another one. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/catalog.py"
+    ]
+  },
+  "hidden": "hidden/c25",
+  "overlay": "overlay/c25",
+  "repo": "repo-depot"
+}

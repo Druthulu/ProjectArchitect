@@ -1,0 +1,28 @@
+{
+  "id": "e01",
+  "arm": "expert",
+  "tier": 1,
+  "suites": [
+    "canary",
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the coder brief.\n\nYou are the expert for task T2 of phase 1.1 of the shelf project. This directory is the project: `shelf/` the package, `tests/` its unittest suite, interpreter `python`. Read the code as you need, then write the brief you would hand the coder. Do not spawn agents, do not edit files and do not run the change yourself: the brief is your whole answer.\n\nPlan task entry:\n- T2 | next | expert-opus55 | coder: opus55 | effort: medium | files: shelf/isbn.py | done-when: see below | verify: python -m unittest discover -s tests | reads: — | deps: — | review: no\n\ndone-when (the task's specification):\nIn `shelf/isbn.py` add two conversion functions.\n\n`isbn10_to_isbn13(raw)`: accept an ISBN-10 in any form `normalize_isbn` accepts (hyphens, spaces, lower-case `x`); raise `ValueError` unless it is a valid ISBN-10 (a 13-digit ISBN is also an error); return the 13-digit string made of `978`, the first nine digits of the ISBN-10, and a freshly computed ISBN-13 check digit.\n\n`isbn13_to_isbn10(raw)`: the inverse for valid ISBN-13s that start with `978`: return the 10-character form (the nine digits after `978` plus a computed ISBN-10 check digit, `X` for 10). Raise `ValueError` for anything that is not a valid ISBN-13 or that starts with `979`.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).\n\nThe coder brief contract, in this order: `CODER TASK T2.c1`, `CHANGE` (at most 8 lines), `INTERFACES` (the functions and records the change touches, with their files), `CONSTRAINTS`, `BUILD/TEST` (the exact command from the entry's verify and what green means), `DONE WHEN`, `LOG: logs/T2.c1.md`, `RETURN: the coder contract`. Name every repo file the coder edits or must read as a repo-relative path (`shelf/x.py`, `tests/x.py`); name no file the change does not need.\n\nReturn only the brief, nothing else.\n",
+  "expect": {
+    "files": [
+      "shelf/catalog.py",
+      "shelf/isbn.py",
+      "tests/*.py"
+    ],
+    "must_files": [
+      "shelf/isbn.py"
+    ],
+    "build_test": "python -m unittest discover -s tests",
+    "based_on": "c01"
+  },
+  "hidden": "—",
+  "cli": [
+    "--disallowedTools",
+    "Agent"
+  ]
+}

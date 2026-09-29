@@ -1,0 +1,35 @@
+diff --git a/shelf/reports.py b/shelf/reports.py
+index d0d9021..5395ab5 100644
+--- a/shelf/reports.py
++++ b/shelf/reports.py
+@@ -35,3 +35,30 @@ def member_loans(desk, member_id):
+ def popular_titles(desk, n=10):
+     """Old name used by the 0.2 web page; titles only. Prefer popular()."""
+     return [desk.catalog.get(isbn).title for isbn, _ in popular(desk, n)]
++
++
++AGING_BUCKETS = (("1-7", 1, 7), ("8-30", 8, 30), ("31+", 31, None))
++
++
++def aging_report(desk, today=None):
++    """Open overdue loans by days late: {'1-7'|'8-30'|'31+': {'count': n, 'fees': cents}}."""
++    today = today or desk.today()
++    out = {name: {"count": 0, "fees": 0} for name, _, _ in AGING_BUCKETS}
++    for loan in desk.overdue(today):
++        days = loan.days_late(today)
++        for name, low, high in AGING_BUCKETS:
++            if days >= low and (high is None or days <= high):
++                kind = desk.members.get(loan.member_id).kind
++                out[name]["count"] += 1
++                out[name]["fees"] += loan_fee_cents(loan, today, kind)
++                break
++    return out
++
++
++def aging_lines(desk, today=None):
++    """'<bucket>: <n> loan(s), <fees>' per bucket."""
++    lines = []
++    for name, row in aging_report(desk, today).items():
++        noun = "loan" if row["count"] == 1 else "loans"
++        lines.append(f"{name}: {row['count']} {noun}, {format_cents(row['fees'])}")
++    return lines

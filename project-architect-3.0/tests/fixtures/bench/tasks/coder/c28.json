@@ -1,0 +1,17 @@
+{
+  "id": "c28",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "full"
+  ],
+  "prompt": "A stock count import zeroed a bin instead of rejecting a bad row. Steps: with 20 mugs in bin A-01-01 and 10 desk lamps in bin A-02-03, import a count sheet with the header sku,bin,qty and the two rows MUG-0001,A-01-01,twelve and LMP-0002,A-02-03,9. The result says 2 rows applied, 0 rejected; the mugs in A-01-01 are now 0 and the lamps 9. Expected: the mug row (line 2) is reported as an error because its quantity is not a whole non-negative number, the mug stock stays at 20, and the lamp row is applied, so 1 row applied and 1 rejected. The same goes for quantities like -3, 4.5 or an empty cell. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/importer.py"
+    ]
+  },
+  "hidden": "hidden/c28",
+  "overlay": "overlay/c28",
+  "repo": "repo-depot"
+}

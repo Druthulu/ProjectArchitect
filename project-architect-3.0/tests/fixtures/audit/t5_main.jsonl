@@ -1,0 +1,14 @@
+{"message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t5u1", "name": "Bash", "input": {"command": "cat bigfile.txt | head -n 500"}}]}}
+{"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t5u1", "content": "<persisted-output>\nOutput too large (25.0KB). Full output saved to: /test/sess1/tool-results/t5spill.txt\n\nPreview (first 2KB):\nsome preview content"}]}}
+{"message": {"role": "assistant", "content": "ok", "model": "claude-opus-4-6[1m]", "usage": {"input_tokens": 5000, "output_tokens": 500}}}
+{"message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t5u2", "name": "Read", "input": {"file_path": "/test/sess1/tool-results/t5spill.txt"}}]}}
+{"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t5u2", "content": "the full spilled content aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}}
+{"message": {"role": "assistant", "content": "read it", "model": "claude-opus-4-6[1m]", "usage": {"input_tokens": 5000, "output_tokens": 500}}}
+{"message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t5u3", "name": "Bash", "input": {"command": "git add ."}}]}}
+{"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t5u3", "content": "warning: in the working copy of 'a.py'\nOK\nwarning: in the working copy of 'b.py'"}]}}
+{"message": {"role": "assistant", "content": "added", "model": "claude-opus-4-6[1m]", "usage": {"input_tokens": 5000, "output_tokens": 500}}}
+{"message": {"role": "assistant", "content": [{"type": "tool_use", "id": "t5u4", "name": "Read", "input": {"file_path": "/proj/tools/plan_edit.py"}}]}}
+{"message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t5u4", "content": "#!/usr/bin/env python3\nimport sys\ndef main():\n    pass\n"}]}}
+{"message": {"role": "assistant", "content": "read source", "model": "claude-opus-4-6[1m]", "usage": {"input_tokens": 5000, "output_tokens": 500}}}
+{"message": {"role": "user", "content": [{"type": "text", "text": "<system-reminder>\nTools available from the \"filesystem\" MCP server:\n- read_file: Read a file\n- write_file: Write a file\n</system-reminder>"}]}}
+{"message": {"role": "assistant", "content": "understood", "model": "claude-opus-4-6[1m]", "usage": {"input_tokens": 5000, "output_tokens": 500}}}

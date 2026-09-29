@@ -1,0 +1,2 @@
+{"type": "user", "sessionId": "ref-o04", "message": {"role": "user", "content": "bench prompt"}}
+{"type": "assistant", "sessionId": "ref-o04", "message": {"role": "assistant", "content": [{"type": "text", "text": "Every task of phase 1.4 is done and no review is open. Anything else before I close?"}]}}

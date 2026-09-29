@@ -1,0 +1,104 @@
+diff --git a/shelf/catalog.py b/shelf/catalog.py
+index e82175f..1e0321f 100644
+--- a/shelf/catalog.py
++++ b/shelf/catalog.py
+@@ -1,5 +1,5 @@
+-"""The catalog: books keyed by normalised ISBN."""
+-from .isbn import is_valid_isbn, normalize_isbn
++"""The catalog: books keyed by ISBN-13 (ISBN-10s are converted)."""
++from .isbn import to_isbn13
+ from .models import NotFound
+ 
+ 
+@@ -9,9 +9,10 @@ class Catalog:
+ 
+     def add(self, book):
+         """Add a book, or add its copies to the existing record. Returns the stored Book."""
+-        isbn = normalize_isbn(book.isbn)
+-        if not is_valid_isbn(isbn):
+-            raise ValueError(f"invalid ISBN: {book.isbn!r}")
++        try:
++            isbn = to_isbn13(book.isbn)
++        except ValueError:
++            raise ValueError(f"invalid ISBN: {book.isbn!r}") from None
+         existing = self._books.get(isbn)
+         if existing is not None:
+             existing.copies += book.copies
+@@ -22,14 +23,21 @@ class Catalog:
+ 
+     def get(self, isbn):
+         """The book with this ISBN; raises NotFound."""
+-        book = self._books.get(normalize_isbn(isbn))
++        book = self._books.get(self._key(isbn))
+         if book is None:
+             raise NotFound(f"no book {isbn}")
+         return book
+ 
+     def find(self, isbn):
+         """Like get, but returns None when absent."""
+-        return self._books.get(normalize_isbn(isbn))
++        return self._books.get(self._key(isbn))
++
++    @staticmethod
++    def _key(isbn):
++        try:
++            return to_isbn13(isbn)
++        except ValueError:
++            return None
+ 
+     def remove(self, isbn):
+         self._books.pop(self.get(isbn).isbn)
+diff --git a/shelf/isbn.py b/shelf/isbn.py
+index 08712bf..0dc21d3 100644
+--- a/shelf/isbn.py
++++ b/shelf/isbn.py
+@@ -32,6 +32,18 @@ def is_valid_isbn(raw):
+     return is_valid_isbn10(s) if len(s) == 10 else is_valid_isbn13(s)
+ 
+ 
++def to_isbn13(raw):
++    """Canonical ISBN-13 for a valid ISBN-10 or ISBN-13; raises ValueError."""
++    s = normalize_isbn(raw)
++    if is_valid_isbn13(s):
++        return s
++    if not is_valid_isbn10(s):
++        raise ValueError(f"invalid ISBN: {raw!r}")
++    body = "978" + s[:9]
++    total = sum(int(c) * (1 if i % 2 == 0 else 3) for i, c in enumerate(body))
++    return body + str((10 - total % 10) % 10)
++
++
+ def check_isbn(raw):
+     """Deprecated since 0.3: ISBN-10 only and ignores spaces badly. Use is_valid_isbn."""
+     s = raw.replace("-", "")
+diff --git a/shelf/storage.py b/shelf/storage.py
+index e77d487..49cb6c9 100644
+--- a/shelf/storage.py
++++ b/shelf/storage.py
+@@ -3,6 +3,7 @@ import json
+ 
+ from .catalog import Catalog
+ from .dates import format_date, parse_date
++from .isbn import to_isbn13
+ from .loans import LoanDesk
+ from .members import MemberRegistry
+ from .models import Book, Loan, Member
+@@ -27,9 +28,17 @@ def _loan_to_dict(loan):
+             "renewals": loan.renewals}
+ 
+ 
++def _catalog_key(isbn):
++    """The ISBN-13 the catalog keys a book by; older files may carry ISBN-10s."""
++    try:
++        return to_isbn13(isbn)
++    except ValueError:
++        return isbn
++
++
+ def _loan_from_dict(d):
+     returned = d.get("returned")
+-    return Loan(d["loan_id"], d["isbn"], d["member_id"], parse_date(d["start"]),
++    return Loan(d["loan_id"], _catalog_key(d["isbn"]), d["member_id"], parse_date(d["start"]),
+                 parse_date(d["due"]), parse_date(returned) if returned else None,
+                 d["renewals"])
+ 

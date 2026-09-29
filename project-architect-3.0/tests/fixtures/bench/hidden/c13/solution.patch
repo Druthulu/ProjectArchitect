@@ -1,0 +1,75 @@
+diff --git a/shelf/fees.py b/shelf/fees.py
+index 3a11d37..5555108 100644
+--- a/shelf/fees.py
++++ b/shelf/fees.py
+@@ -7,7 +7,7 @@ def late_fee_cents(days_late, kind="standard"):
+     billable = days_late - policy.GRACE_DAYS
+     if billable <= 0:
+         return 0
+-    return min(billable * policy.daily_fee(kind), policy.FEE_CAP_CENTS)
++    return min(billable * policy.daily_fee(kind), policy.fee_cap(kind))
+ 
+ 
+ def loan_fee_cents(loan, today, kind="standard"):
+@@ -15,6 +15,23 @@ def loan_fee_cents(loan, today, kind="standard"):
+     return late_fee_cents(loan.days_late(today), kind)
+ 
+ 
++def outstanding_cents(desk, member_id, today=None):
++    """Fees accrued so far on a member's open loans."""
++    today = today or desk.today()
++    kind = desk.members.get(member_id).kind
++    return sum(loan_fee_cents(loan, today, kind) for loan in desk.open_loans(member_id))
++
++
++def fee_summary(desk, today=None):
++    """member_id -> outstanding cents, for members owing anything, in id order."""
++    out = {}
++    for member in desk.members:
++        cents = outstanding_cents(desk, member.member_id, today)
++        if cents:
++            out[member.member_id] = cents
++    return out
++
++
+ def format_cents(cents):
+     """1234 -> '$12.34'."""
+     return f"${cents // 100}.{cents % 100:02d}"
+diff --git a/shelf/loans.py b/shelf/loans.py
+index 77acf01..0f9e8cc 100644
+--- a/shelf/loans.py
++++ b/shelf/loans.py
+@@ -64,6 +64,8 @@ class LoanDesk:
+             raise LimitReached(f"loan {loan_id} is overdue")
+         if loan.renewals >= policy.MAX_RENEWALS:
+             raise LimitReached(f"loan {loan_id} renewed {loan.renewals} times")
++        if fees.outstanding_cents(self, loan.member_id):
++            raise LimitReached(f"{loan.member_id} owes late fees")
+         kind = self.members.get(loan.member_id).kind
+         loan.due = add_days(loan.due, policy.loan_days(kind))
+         loan.renewals += 1
+diff --git a/shelf/policy.py b/shelf/policy.py
+index b8c30cc..e8573ea 100644
+--- a/shelf/policy.py
++++ b/shelf/policy.py
+@@ -8,7 +8,8 @@ DAILY_FEE_CENTS = {"standard": 25, "student": 10, "staff": 0}
+ 
+ MAX_RENEWALS = 2
+ GRACE_DAYS = 1
+-FEE_CAP_CENTS = 1000
++FEE_CAP_CENTS = 1000   # the standard cap; fee_cap(kind) is the live one
++FEE_CAP_CENTS_BY_KIND = {"standard": 1000, "student": 400, "staff": 0}
+ 
+ 
+ def check_kind(kind):
+@@ -30,6 +31,10 @@ def daily_fee(kind):
+     return DAILY_FEE_CENTS[check_kind(kind)]
+ 
+ 
++def fee_cap(kind):
++    return FEE_CAP_CENTS_BY_KIND[check_kind(kind)]
++
++
+ def loan_period(kind):
+     """Deprecated alias of loan_days kept for 0.2 callers; silently defaults to 21 days."""
+     return LOAN_DAYS.get(kind, 21)

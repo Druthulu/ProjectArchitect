@@ -1,0 +1,17 @@
+{
+  "id": "k08",
+  "arm": "critic",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the critic contract.\n\nYou are the critic for the shelf project. Judge the proposed plan change below by your rules and return exactly your contract (DECISION, TIER, EDITS as `python tools/plan_edit.py` lines, WHY in three lines, BRIEF only for needs-developer). Do not read files or run commands.\n\nPlan, phase 1.8 Member lookups. Milestone: `MemberRegistry.search` finds members whose name contains the text, case-insensitively, sorted by member id; `reactivate` undoes `deactivate` and `change_email` refuses an email another member already holds; the whole suite stays green.\nContext: member ids are unique strings; members live in shelf/members.py; storage.FORMAT stays 2 (standing constraint).\nDeveloper decides: none.\nTasks:\n- T1 | next   | expert-opus55 | files: shelf/members.py, tests/test_member_search.py | done-when: MemberRegistry.search finds members whose name contains the text, case-insensitively, sorted by member id | verify: python -m unittest tests.test_member_search | deps: —\n- T2 | queued | expert-opus55 | files: shelf/members.py, tests/test_member_edits.py | done-when: reactivate undoes deactivate; change_email refuses an email another member already holds | verify: python -m unittest tests.test_member_edits | deps: —\n- T3 | queued | expert-opus55 | files: tests/ | done-when: the whole suite passes after T1-T2 | verify: python -m unittest discover -s tests | deps: T1, T2\n\nExpert on T1 returned `question`.\nQUESTION: two members can share a name, so search results need a fixed order. Should they be sorted by name, with the member id breaking ties, or by member id alone? Staff might prefer names.\nRECOMMENDED: add a task after T1: search(text, sort_by=\"name\") lets staff choose the order (files shelf/members.py, tests/test_member_sort.py).\n",
+  "expect": {
+    "reference": {
+      "decision": "continue",
+      "tier": "additive",
+      "edits_must": []
+    }
+  },
+  "hidden": "—"
+}

@@ -1,0 +1,28 @@
+{
+  "id": "r01",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Which function decides whether a book's ISBN is valid when it is added to the catalog, where is it defined, and where does the catalog call it? Name only the function on that path, not other ISBN helpers.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/isbn.py",
+        "line": 29,
+        "symbol": "is_valid_isbn"
+      },
+      {
+        "path": "shelf/catalog.py",
+        "line": 13,
+        "symbol": "is_valid_isbn"
+      }
+    ],
+    "tokens": [
+      "is_valid_isbn"
+    ]
+  },
+  "hidden": "—"
+}

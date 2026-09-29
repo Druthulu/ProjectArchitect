@@ -1,0 +1,49 @@
+{
+  "id": "p12",
+  "arm": "planner",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the draft path.\n\nYou are the phase planner for the shelf project. This directory is the project: `GENERATION_PLAN.md` (generation 1, twelve phases), `PROJECT_CONTEXT.md`, `HOW_WE_WORK.md`, `PHASE_SEED.md` (the phase-plan template and its task-line grammar), `shelf/` the package and `tests/` its suite. There is no `phase-ends/` and no plan tool; read the files directly.\n\nDraft the phase plan for phase 1.12 (Fast search) and write it to `.run/PHASE_PLAN.draft.md`. The draft's Milestone line carries phase 1.12's milestone clauses; every clause must be covered by some task whose `done-when:` or `verify:` names what the clause names; every task line has `files:` and a runnable `verify:`. Do not write any other file and do not start the work.\n\nReturn only one line: `DRAFT: .run/PHASE_PLAN.draft.md`.\n",
+  "expect": {
+    "phase": "1.12",
+    "draft": ".run/PHASE_PLAN.draft.md",
+    "milestone": [
+      {
+        "clause": "`Catalog.search` answers from an index that `add` and `remove` keep current instead of scanning every book (verified by: `python -m unittest tests.test_search_index`)",
+        "tokens": [
+          "search",
+          "remove"
+        ]
+      },
+      {
+        "clause": "`search` returns exactly what the old scan returned for every query, substrings and case included (verified by: `python -m unittest tests.test_search_same`)",
+        "tokens": [
+          "test_search_same"
+        ]
+      },
+      {
+        "clause": "the whole suite stays green (verified by: `python -m unittest discover -s tests`)",
+        "tokens": [
+          "unittest discover"
+        ]
+      }
+    ],
+    "rubric_items": [
+      "`Catalog.search` answers from an index that add and remove keep current, tested in tests/test_search_index.py.",
+      "The draft chooses the index itself and says why in Rationale (for example a trigram map of lowercased title and author to ISBNs with a scan for queries under three characters), because substring results must equal the old scan.",
+      "Developer decides holds no index or data-structure choice: it is none, or only a genuine product or scope call.",
+      "search returns exactly the old scan's results for every query, substrings and case included, sorted by title (tests/test_search_same.py).",
+      "Catalog.add merging copies into an existing book, and remove, keep the index right.",
+      "Stdlib only; no new dependency; tasks touch only shelf/ and tests/.",
+      "The last task or the milestone check runs `python -m unittest discover -s tests`."
+    ]
+  },
+  "hidden": "—",
+  "overlay": "plan",
+  "files": [
+    "plan2/GENERATION_PLAN.md"
+  ],
+  "rubric": "rubric/planner.md"
+}

@@ -1,0 +1,41 @@
+{
+  "id": "r17",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Where is `Catalog.get` called from outside shelf/catalog.py? List every call site.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/loans.py",
+        "line": 24,
+        "symbol": "catalog.get"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 39,
+        "symbol": "catalog.get"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 81,
+        "symbol": "catalog.get"
+      },
+      {
+        "path": "shelf/reports.py",
+        "line": 30,
+        "symbol": "catalog.get"
+      },
+      {
+        "path": "shelf/reports.py",
+        "line": 37,
+        "symbol": "catalog.get"
+      }
+    ],
+    "tokens": []
+  },
+  "hidden": "—"
+}

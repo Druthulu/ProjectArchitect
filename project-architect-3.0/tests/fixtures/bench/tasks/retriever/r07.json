@@ -1,0 +1,32 @@
+{
+  "id": "r07",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "How many times may a loan be renewed, where is that limit defined, where does the loan desk enforce it, and which exception does the desk raise there? Cite that exception's class definition too.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/policy.py",
+        "line": 9,
+        "symbol": "MAX_RENEWALS"
+      },
+      {
+        "path": "shelf/loans.py",
+        "line": 65,
+        "symbol": "MAX_RENEWALS"
+      },
+      {
+        "path": "shelf/models.py",
+        "line": 18,
+        "symbol": "LimitReached"
+      }
+    ],
+    "tokens": [
+      "LimitReached"
+    ]
+  },
+  "hidden": "—"
+}

@@ -1,0 +1,44 @@
+diff --git a/shelf/models.py b/shelf/models.py
+index 9a90238..e84c6a1 100644
+--- a/shelf/models.py
++++ b/shelf/models.py
+@@ -63,3 +63,9 @@ class Loan:
+         """Days past due at return (or at today while still open); never negative."""
+         end = self.returned or today
+         return max(0, (end - self.due).days)
++
++    def status(self, today):
++        """'returned', 'overdue' or 'open' as of today."""
++        if not self.is_open:
++            return "returned"
++        return "overdue" if self.is_overdue(today) else "open"
+diff --git a/shelf/reports.py b/shelf/reports.py
+index d0d9021..7cc04a6 100644
+--- a/shelf/reports.py
++++ b/shelf/reports.py
+@@ -32,6 +32,25 @@ def member_loans(desk, member_id):
+     return out
+ 
+ 
++def member_statement(desk, member_id, today=None):
++    """Text statement of a member's loans and fees as of today."""
++    today = today or desk.today()
++    member = desk.members.get(member_id)
++    lines = [f"Statement for {member.name} ({member.member_id}, {member.kind}) on {today.isoformat()}"]
++    total = 0
++    for loan in sorted(desk.history(member_id), key=lambda loan: (loan.start, loan.loan_id)):
++        title = desk.catalog.get(loan.isbn).title
++        line = f"{loan.loan_id} {title} | due {loan.due.isoformat()} | {loan.status(today)}"
++        fee = loan_fee_cents(loan, today, member.kind)
++        if fee:
++            line += f" | fee {format_cents(fee)}"
++        if loan.is_open:
++            total += fee
++        lines.append(line)
++    lines.append(f"Total due: {format_cents(total)}")
++    return lines
++
++
+ def popular_titles(desk, n=10):
+     """Old name used by the 0.2 web page; titles only. Prefer popular()."""
+     return [desk.catalog.get(isbn).title for isbn, _ in popular(desk, n)]

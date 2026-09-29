@@ -1,0 +1,17 @@
+{
+  "id": "c24",
+  "arm": "coder",
+  "tier": 3,
+  "suites": [
+    "full"
+  ],
+  "prompt": "We were able to cancel an order that had already been picked. Steps: with 10 desk lamps in stock, create an order for 2 lamps, place it and pick it, so the 2 lamps are off the shelf and at the packing bench. Cancelling it succeeds: the order shows cancelled and available lamps go back to 10 although 2 of them are no longer on the shelf. The same happens after the order has shipped. Expected: only a draft or a placed order can be cancelled; cancelling a picked, shipped or delivered order is refused with the invalid transition error and the order keeps its state. Fix it and keep the existing tests passing (python -m unittest discover -s tests).",
+  "expect": {
+    "files": [
+      "depot/orders.py"
+    ]
+  },
+  "hidden": "hidden/c24",
+  "overlay": "overlay/c24",
+  "repo": "repo-depot"
+}

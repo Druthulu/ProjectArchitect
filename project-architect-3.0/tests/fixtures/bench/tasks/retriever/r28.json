@@ -1,0 +1,30 @@
+{
+  "id": "r28",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "In the test suite, which members and kinds does the library() helper create, and where are the loan limits for those kinds defined?\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "tests/helpers.py",
+        "line": 41,
+        "to": 51,
+        "symbol": "library"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 6,
+        "symbol": "MAX_LOANS"
+      }
+    ],
+    "tokens": [
+      "M0002",
+      "student",
+      "staff"
+    ]
+  },
+  "hidden": "—"
+}

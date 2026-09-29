@@ -1,0 +1,20 @@
+{
+  "id": "c14",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Track unpaid fees on members.\n\n1. `shelf/models.py`: `Member` gains a field `balance_cents: int = 0`; add `class FeesOwed(ShelfError)`.\n2. `shelf/policy.py`: add `FEE_BLOCK_CENTS = 500`.\n3. `shelf/loans.py`: `checkin` adds the returned loan's fee to the member's `balance_cents` (and still returns the fee). `checkout` raises `FeesOwed` when the member's balance is at or above `FEE_BLOCK_CENTS`; this check comes after the inactive-member check and before the loan-limit check.\n4. `shelf/members.py`: `MemberRegistry.pay(member_id, cents)` subtracts a payment and returns the new balance; `ValueError` if `cents <= 0` or `cents` exceeds the balance.\n5. `shelf/storage.py`: the balance survives `dumps`/`loads`, and format-2 documents written before this change (members without `balance_cents`) load with balance 0.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/models.py",
+      "shelf/policy.py",
+      "shelf/loans.py",
+      "shelf/members.py",
+      "shelf/storage.py"
+    ]
+  },
+  "hidden": "hidden/c14"
+}

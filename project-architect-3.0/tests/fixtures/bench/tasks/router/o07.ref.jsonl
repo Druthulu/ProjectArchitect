@@ -1,0 +1,2 @@
+{"type": "user", "sessionId": "ref-o07", "message": {"role": "user", "content": "bench prompt"}}
+{"type": "assistant", "sessionId": "ref-o07", "message": {"role": "assistant", "content": [{"type": "text", "text": "Holds cannot be saved without a new storage format, and the generation plan fixes the format at 2. Either allow format 3 for holds only, or drop \"holds survive dumps and loads\" from this phase and plan it for 1.5.\n\nRecommended: drop the clause here and plan it in 1.5, since 1.5 already owns storage. Which do you choose?"}]}}

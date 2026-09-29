@@ -1,0 +1,17 @@
+{
+  "id": "c02",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "canary",
+    "light",
+    "full"
+  ],
+  "prompt": "In `shelf/dates.py` add business-day helpers. Weekends are Saturday and Sunday; `holidays` is any iterable of `date`s (a list, set or generator).\n\n`business_days_between(start, end, holidays=())`: the number of days `d` with `start < d <= end` that are weekdays and not holidays; 0 when `end <= start`.\n\n`add_business_days(d, n, holidays=())`: the date `n` business days after `d`, skipping weekends and holidays; `n == 0` returns `d` unchanged (even on a weekend); a negative `n` raises `ValueError`.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/dates.py"
+    ]
+  },
+  "hidden": "hidden/c02"
+}

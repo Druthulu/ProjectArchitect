@@ -1,0 +1,23 @@
+{
+  "id": "r02",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "How many days is a student's loan period, and where is that number defined? Cite the live definition only.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/policy.py",
+        "line": 5,
+        "symbol": "LOAN_DAYS"
+      }
+    ],
+    "tokens": [
+      "14"
+    ]
+  },
+  "hidden": "—"
+}

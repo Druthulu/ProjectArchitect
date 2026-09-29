@@ -1,0 +1,16 @@
+{
+  "id": "c05",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Add `MemberRegistry.import_csv(text)` in `shelf/members.py`.\n\n`text` is CSV (use the `csv` module). The first row is a header naming at least `name` and `email` columns, in any order, and optionally `kind`. Blank rows are skipped; whitespace around cells is stripped. Each row registers a member through `register` (kind `standard` when there is no `kind` column or the cell is empty). A row whose email matches an existing member's email case-insensitively, including rows imported earlier in the same call, is skipped.\n\nA header without `name` or `email` raises `ValueError`. An empty name or an unknown kind raises `ValueError` whose message contains `line N`, N being the 1-based line number in `text` (the header is line 1), and in that case the call leaves the registry exactly as it was. Returns the newly registered members in row order.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/members.py"
+    ]
+  },
+  "hidden": "hidden/c05"
+}

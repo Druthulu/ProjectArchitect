@@ -1,0 +1,56 @@
+{
+  "id": "p05",
+  "arm": "planner",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the draft path.\n\nYou are the phase planner for the shelf project. This directory is the project: `GENERATION_PLAN.md` (generation 1, six phases), `PROJECT_CONTEXT.md`, `HOW_WE_WORK.md`, `PHASE_SEED.md` (the phase-plan template and its task-line grammar), `shelf/` the package and `tests/` its suite. There is no `phase-ends/` and no plan tool; read the files directly.\n\nDraft the phase plan for phase 1.5 (Durable storage) and write it to `.run/PHASE_PLAN.draft.md`. The draft's Milestone line carries phase 1.5's milestone clauses; every clause must be covered by some task whose `done-when:` or `verify:` names what the clause names; every task line has `files:` and a runnable `verify:`. Do not write any other file and do not start the work.\n\nReturn only one line: `DRAFT: .run/PHASE_PLAN.draft.md`.\n",
+  "expect": {
+    "phase": "1.5",
+    "draft": ".run/PHASE_PLAN.draft.md",
+    "milestone": [
+      {
+        "clause": "`loads` reads format 1 and still refuses others with `unsupported format` (verified by: `python -m unittest tests.test_format1`)",
+        "tokens": [
+          "unsupported format",
+          "tests.test_format1"
+        ]
+      },
+      {
+        "clause": "after a load `LoanDesk.restore` makes the next loan id continue and `get_loan` finds loans (verified by: `python -m unittest tests.test_loan_ids`)",
+        "tokens": [
+          "restore",
+          "get_loan"
+        ]
+      },
+      {
+        "clause": "members carry `balance_cents` that blocks checkout at `FEE_BLOCK_CENTS` and survives a save (verified by: `python -m unittest tests.test_balances`)",
+        "tokens": [
+          "balance_cents",
+          "FEE_BLOCK_CENTS"
+        ]
+      },
+      {
+        "clause": "the whole suite stays green (verified by: `python -m unittest discover -s tests`)",
+        "tokens": [
+          "unittest discover"
+        ]
+      }
+    ],
+    "rubric_items": [
+      "storage.loads reads format 1 documents through an explicit upgrade step, still reads format 2, and refuses any other format with ValueError `unsupported format` (tests/test_format1.py).",
+      "dumps keeps writing storage.FORMAT 2.",
+      "`LoanDesk.restore` takes the loaded loans and sets the next loan id past the highest loaded one; today loads assigns desk.loans directly and leaves the next id at 1, so new loans reuse ids.",
+      "`get_loan(loan_id)` is a public lookup that raises NotFound for an unknown id (tests/test_loan_ids.py).",
+      "Member gains `balance_cents` defaulting to 0, written by dumps and read back with the default for documents that lack it.",
+      "`FEE_BLOCK_CENTS` is a new constant in shelf/policy.py and checkout refuses a member whose balance_cents reaches it with a ShelfError (tests/test_balances.py).",
+      "Holds saved by phase 1.4 still round trip through dumps and loads.",
+      "The last task or the milestone check runs `python -m unittest discover -s tests`."
+    ]
+  },
+  "hidden": "—",
+  "overlay": "plan",
+  "rubric": "rubric/planner.md"
+}

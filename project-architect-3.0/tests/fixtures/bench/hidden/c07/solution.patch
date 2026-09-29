@@ -1,0 +1,51 @@
+diff --git a/shelf/storage.py b/shelf/storage.py
+index e77d487..10f7335 100644
+--- a/shelf/storage.py
++++ b/shelf/storage.py
+@@ -1,8 +1,10 @@
+ """Save and load the whole library as JSON (format 2)."""
+ import json
++from datetime import date
+ 
+ from .catalog import Catalog
+ from .dates import format_date, parse_date
++from .isbn import normalize_isbn
+ from .loans import LoanDesk
+ from .members import MemberRegistry
+ from .models import Book, Loan, Member
+@@ -34,6 +36,26 @@ def _loan_from_dict(d):
+                 d["renewals"])
+ 
+ 
++def _v1_date(text):
++    day, month, year = text.split("/")
++    return format_date(date(int(year), int(month), int(day)))
++
++
++def _upgrade_v1(data):
++    """Rewrite a format-1 (shelf 0.2) document as format 2."""
++    books = [dict({"copies": 1, "tags": []}, **b) for b in data["books"]]
++    members = [dict({"kind": "standard", "active": True}, **m) for m in data["members"]]
++    loans = []
++    for loan in data["loans"]:
++        loan = dict({"renewals": 0}, **loan)
++        loan["isbn"] = normalize_isbn(loan["isbn"])   # 0.2 kept ISBNs as typed; the desk matches loans by the catalog key
++        for key in ("start", "due", "returned"):
++            if loan.get(key):
++                loan[key] = _v1_date(loan[key])
++        loans.append(loan)
++    return {"format": FORMAT, "books": books, "members": members, "loans": loans}
++
++
+ def dumps(catalog, members, desk):
+     data = {"format": FORMAT,
+             "books": [_book_to_dict(b) for b in catalog],
+@@ -45,6 +67,8 @@ def dumps(catalog, members, desk):
+ def loads(text, clock=None):
+     """Rebuild (catalog, members, desk) from dumps() output."""
+     data = json.loads(text)
++    if data.get("format") == 1:
++        data = _upgrade_v1(data)
+     if data.get("format") != FORMAT:
+         raise ValueError(f"unsupported format {data.get('format')}")
+     catalog = Catalog()

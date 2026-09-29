@@ -1,0 +1,4 @@
+{"type": "user", "sessionId": "ref-o11", "message": {"role": "user", "content": "bench prompt"}}
+{"type": "assistant", "sessionId": "ref-o11", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_ref1", "name": "Agent", "input": {"description": "route", "subagent_type": "expert-opus55", "prompt": "TASK: FIX · ROW: S3 saved: - on the Session line · DONE WHEN: doctor 0 FAIL and the statusline shows the value"}}]}}
+{"type": "user", "sessionId": "ref-o11", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_ref1", "is_error": true, "content": "Permission to use Agent has been denied."}]}}
+{"type": "assistant", "sessionId": "ref-o11", "message": {"role": "assistant", "content": [{"type": "text", "text": "T3 done and committed; statusline repair spawned before T4. Waiting."}]}}

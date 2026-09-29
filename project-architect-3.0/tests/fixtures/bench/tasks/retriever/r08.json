@@ -1,0 +1,28 @@
+{
+  "id": "r08",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "What is the maximum late fee on one loan, and at which line is that cap applied to the computed fee? Cite only the fee code the desk uses.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/fees.py",
+        "line": 10,
+        "symbol": "FEE_CAP_CENTS"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 11,
+        "symbol": "FEE_CAP_CENTS"
+      }
+    ],
+    "tokens": [
+      "1000"
+    ]
+  },
+  "hidden": "—"
+}

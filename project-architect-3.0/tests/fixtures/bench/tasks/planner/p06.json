@@ -1,0 +1,54 @@
+{
+  "id": "p06",
+  "arm": "planner",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the draft path.\n\nYou are the phase planner for the shelf project. This directory is the project: `GENERATION_PLAN.md` (generation 1, six phases), `PROJECT_CONTEXT.md`, `HOW_WE_WORK.md`, `PHASE_SEED.md` (the phase-plan template and its task-line grammar), `shelf/` the package and `tests/` its suite. There is no `phase-ends/` and no plan tool; read the files directly.\n\nDraft the phase plan for phase 1.6 (Reports) and write it to `.run/PHASE_PLAN.draft.md`. The draft's Milestone line carries phase 1.6's milestone clauses; every clause must be covered by some task whose `done-when:` or `verify:` names what the clause names; every task line has `files:` and a runnable `verify:`. Do not write any other file and do not start the work.\n\nReturn only one line: `DRAFT: .run/PHASE_PLAN.draft.md`.\n",
+  "expect": {
+    "phase": "1.6",
+    "draft": ".run/PHASE_PLAN.draft.md",
+    "milestone": [
+      {
+        "clause": "`aging_report` and `aging_lines` bucket overdue loans into 1-7, 8-30 and 31+ (verified by: `python -m unittest tests.test_aging`)",
+        "tokens": [
+          "aging_report",
+          "aging_lines"
+        ]
+      },
+      {
+        "clause": "`member_statement` lists a member's loans with status and fees and a total (verified by: `python -m unittest tests.test_statement`)",
+        "tokens": [
+          "member_statement"
+        ]
+      },
+      {
+        "clause": "`author_ranking` groups loans by `author_key` (verified by: `python -m unittest tests.test_author_ranking`)",
+        "tokens": [
+          "author_ranking",
+          "author_key"
+        ]
+      },
+      {
+        "clause": "the whole suite stays green (verified by: `python -m unittest discover -s tests`)",
+        "tokens": [
+          "unittest discover"
+        ]
+      }
+    ],
+    "rubric_items": [
+      "`aging_report` buckets overdue loans by days late into 1-7, 8-30 and 31+ with the boundaries tested (tests/test_aging.py).",
+      "`aging_lines` prints each bucket's count and fees through format_cents plus a total that equals the sum of the buckets.",
+      "`member_statement` lists a member's loans with status (open, overdue, returned) and fee plus a total line (tests/test_statement.py).",
+      "Fees in the reports come from loan_fee_cents with the member's kind, so the per-kind caps of phase 1.3 apply.",
+      "`author_key` normalises author names (case, spacing, `Last, First` against `First Last`) and is tested.",
+      "`author_ranking` groups every loan by the author_key of its book's author, with a deterministic tie-break (tests/test_author_ranking.py).",
+      "The existing reports (overdue_report, popular, member_loans, popular_titles) keep their output.",
+      "The last task or the milestone check runs `python -m unittest discover -s tests`."
+    ]
+  },
+  "hidden": "—",
+  "overlay": "plan",
+  "rubric": "rubric/planner.md"
+}

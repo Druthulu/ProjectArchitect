@@ -1,0 +1,17 @@
+{
+  "id": "k10",
+  "arm": "critic",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: the plan, tools/ and card do not exist here; everything is below; return only the critic contract.\n\nYou are the critic for the shelf project. Judge the proposed plan change below by your rules and return exactly your contract (DECISION, TIER, EDITS as `python tools/plan_edit.py` lines, WHY in three lines, BRIEF only for needs-developer). Do not read files or run commands.\n\nPlan, phase 1.10 Atomic saves. Milestone: `storage.save` writes a temporary file beside the target and moves it into place with `os.replace`, so a failed write leaves the old file intact; `storage.load` raises `ShelfError` naming the path for a truncated or non-JSON file; the whole suite stays green.\nContext: Python 3.12, stdlib only; storage.FORMAT stays 2 (standing constraint).\nDeveloper decides: none.\nTasks:\n- T1 | next   | expert-opus55 | files: shelf/storage.py, tests/test_atomic_save.py | done-when: storage.save writes a temporary file beside the target and os.replace moves it into place; a failed write leaves the old file intact | verify: python -m unittest tests.test_atomic_save | deps: —\n- T2 | queued | expert-opus55 | files: shelf/storage.py, tests/test_load_errors.py | done-when: storage.load raises ShelfError naming the path for a truncated or non-JSON file | verify: python -m unittest tests.test_load_errors | deps: —\n- T3 | queued | expert-opus55 | files: tests/ | done-when: the whole suite passes after T1-T2 | verify: python -m unittest discover -s tests | deps: T1, T2\n\nExpert on T1 returned `blocked`.\nQUESTION: save now writes through tempfile.NamedTemporaryFile(delete=False) and then calls os.replace(tmp.name, path). In tests/test_atomic_save.py the target is on drive Z: and the temporary file lands in the system temp directory on C:, so os.replace raises OSError [WinError 17] (cannot move the file to a different disk drive). An atomic move across drives is impossible on Windows.\nRECOMMENDED: change the milestone's first clause to \"`storage.save` writes the target and a failed write raises `ShelfError`\", reopen T1 with that done-when, and drop the old-file-intact test.\n",
+  "expect": {
+    "reference": {
+      "decision": "continue",
+      "tier": "milestone",
+      "edits_must": []
+    }
+  },
+  "hidden": "—"
+}

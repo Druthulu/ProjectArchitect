@@ -1,0 +1,102 @@
+diff --git a/shelf/loans.py b/shelf/loans.py
+index 77acf01..917a608 100644
+--- a/shelf/loans.py
++++ b/shelf/loans.py
+@@ -4,7 +4,7 @@ from datetime import date
+ from . import fees, policy
+ from .dates import add_days
+ from .holds import HoldQueue
+-from .models import InactiveMember, LimitReached, Loan, NotFound, Unavailable
++from .models import FeesOwed, InactiveMember, LimitReached, Loan, NotFound, Unavailable
+ 
+ 
+ class LoanDesk:
+@@ -33,6 +33,8 @@ class LoanDesk:
+         member = self.members.get(member_id)
+         if not member.active:
+             raise InactiveMember(member_id)
++        if member.balance_cents >= policy.FEE_BLOCK_CENTS:
++            raise FeesOwed(f"{member_id} owes {member.balance_cents} cents")
+         limit = policy.max_loans(member.kind)
+         if len(self.open_loans(member_id)) >= limit:
+             raise LimitReached(f"{member_id} already has {limit} loans")
+@@ -52,8 +54,10 @@ class LoanDesk:
+         if not loan.is_open:
+             raise ValueError(f"loan {loan_id} already returned")
+         loan.returned = self.today()
+-        kind = self.members.get(loan.member_id).kind
+-        return fees.loan_fee_cents(loan, loan.returned, kind)
++        member = self.members.get(loan.member_id)
++        fee = fees.loan_fee_cents(loan, loan.returned, member.kind)
++        member.balance_cents += fee
++        return fee
+ 
+     def renew(self, loan_id):
+         """Extend an open, not-overdue loan by one loan period."""
+diff --git a/shelf/members.py b/shelf/members.py
+index c434f98..1e7a7d3 100644
+--- a/shelf/members.py
++++ b/shelf/members.py
+@@ -36,6 +36,14 @@ class MemberRegistry:
+                 return member
+         return None
+ 
++    def pay(self, member_id, cents):
++        """Record a payment against a member's balance; returns the new balance."""
++        member = self.get(member_id)
++        if cents <= 0 or cents > member.balance_cents:
++            raise ValueError(f"bad payment {cents} against balance {member.balance_cents}")
++        member.balance_cents -= cents
++        return member.balance_cents
++
+     def deactivate(self, member_id):
+         self.get(member_id).active = False
+ 
+diff --git a/shelf/models.py b/shelf/models.py
+index 9a90238..7f9e022 100644
+--- a/shelf/models.py
++++ b/shelf/models.py
+@@ -23,6 +23,10 @@ class InactiveMember(ShelfError):
+     """The member has been deactivated."""
+ 
+ 
++class FeesOwed(ShelfError):
++    """The member's unpaid fees block new loans."""
++
++
+ @dataclass
+ class Book:
+     isbn: str
+@@ -40,6 +44,7 @@ class Member:
+     email: str = ""
+     kind: str = "standard"
+     active: bool = True
++    balance_cents: int = 0
+ 
+ 
+ @dataclass
+diff --git a/shelf/policy.py b/shelf/policy.py
+index b8c30cc..6c2980c 100644
+--- a/shelf/policy.py
++++ b/shelf/policy.py
+@@ -9,6 +9,7 @@ DAILY_FEE_CENTS = {"standard": 25, "student": 10, "staff": 0}
+ MAX_RENEWALS = 2
+ GRACE_DAYS = 1
+ FEE_CAP_CENTS = 1000
++FEE_BLOCK_CENTS = 500   # unpaid balance at which checkout is refused
+ 
+ 
+ def check_kind(kind):
+diff --git a/shelf/storage.py b/shelf/storage.py
+index e77d487..904f145 100644
+--- a/shelf/storage.py
++++ b/shelf/storage.py
+@@ -17,7 +17,7 @@ def _book_to_dict(book):
+ 
+ def _member_to_dict(member):
+     return {"member_id": member.member_id, "name": member.name, "email": member.email,
+-            "kind": member.kind, "active": member.active}
++            "kind": member.kind, "active": member.active, "balance_cents": member.balance_cents}
+ 
+ 
+ def _loan_to_dict(loan):

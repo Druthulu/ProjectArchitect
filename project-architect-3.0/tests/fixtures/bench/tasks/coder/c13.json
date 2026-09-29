@@ -1,0 +1,18 @@
+{
+  "id": "c13",
+  "arm": "coder",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "Fee caps become per member kind, and the desk can report what members owe.\n\n1. `shelf/policy.py`: add `FEE_CAP_CENTS_BY_KIND = {\"standard\": 1000, \"student\": 400, \"staff\": 0}` and `fee_cap(kind)` (validates the kind like the other helpers). Keep `FEE_CAP_CENTS` for old callers.\n2. `shelf/fees.py`: `late_fee_cents(days_late, kind)` caps at `fee_cap(kind)`. Add `outstanding_cents(desk, member_id, today=None)`: the sum of `loan_fee_cents` over the member's open loans as of `today` (default `desk.today()`), using the member's kind; unknown member -> `NotFound`. Add `fee_summary(desk, today=None)`: a dict member_id -> outstanding cents for every member whose amount is non-zero, keys in ascending member_id order.\n3. Members with unpaid late fees on their open loans cannot renew: `LoanDesk.renew` raises `LimitReached` for them; everything else about renewing stays as it is.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/policy.py",
+      "shelf/fees.py",
+      "shelf/loans.py"
+    ]
+  },
+  "hidden": "hidden/c13"
+}

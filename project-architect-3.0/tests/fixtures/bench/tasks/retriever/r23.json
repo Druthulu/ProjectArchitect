@@ -1,0 +1,42 @@
+{
+  "id": "r23",
+  "arm": "retriever",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Where is a member kind validated? Cite the validating function and every place that calls it; leave out code that looks kinds up without validating.\n\nCite every code location you rely on as a repo-relative `path:line` (for example `shelf/models.py:12`).",
+  "expect": {
+    "refs": [
+      {
+        "path": "shelf/policy.py",
+        "line": 14,
+        "symbol": "check_kind"
+      },
+      {
+        "path": "shelf/members.py",
+        "line": 12,
+        "symbol": "check_kind"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 22,
+        "symbol": "check_kind"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 26,
+        "symbol": "check_kind"
+      },
+      {
+        "path": "shelf/policy.py",
+        "line": 30,
+        "symbol": "check_kind"
+      }
+    ],
+    "tokens": [
+      "check_kind"
+    ]
+  },
+  "hidden": "—"
+}

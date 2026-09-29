@@ -1,0 +1,15 @@
+{
+  "id": "c08",
+  "arm": "coder",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Extend `HoldQueue` in `shelf/holds.py` with three methods.\n\n`position(isbn, member_id)`: the member's 1-based place in that ISBN's queue, or `None` when they hold nothing there.\n\n`expire(today, max_days)`: remove every hold, for any ISBN, placed more than `max_days` days before `today`; return the removed holds sorted by `(placed, isbn, member_id)`. Remaining holds keep their order.\n\n`isbns()`: sorted list of the ISBNs that currently have at least one hold.\n\nKeep the existing tests passing (`python -m unittest discover -s tests`).",
+  "expect": {
+    "files": [
+      "shelf/holds.py"
+    ]
+  },
+  "hidden": "hidden/c08"
+}

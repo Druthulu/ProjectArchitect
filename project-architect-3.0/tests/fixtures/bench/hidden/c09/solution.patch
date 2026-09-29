@@ -1,0 +1,48 @@
+diff --git a/shelf/dates.py b/shelf/dates.py
+index 293a20b..831dffe 100644
+--- a/shelf/dates.py
++++ b/shelf/dates.py
+@@ -1,14 +1,37 @@
+ """Date helpers. Dates are datetime.date; text dates are ISO 'YYYY-MM-DD'."""
++import re
+ from datetime import date, timedelta
+ 
++# (pattern, index of year, month, day among its groups)
++_FORMATS = (
++    (re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})"), (0, 1, 2)),
++    (re.compile(r"(\d{4})/(\d{1,2})/(\d{1,2})"), (0, 1, 2)),
++    (re.compile(r"(\d{1,2})\.(\d{1,2})\.(\d{4})"), (2, 1, 0)),
++    (re.compile(r"(\d{4})(\d{2})(\d{2})"), (0, 1, 2)),
++)
++
+ 
+ def parse_date(text):
+-    """Parse 'YYYY-MM-DD' into a date. Raises ValueError on anything else."""
+-    parts = text.strip().split("-")
+-    if len(parts) != 3 or not all(p.isdigit() for p in parts):
+-        raise ValueError(f"bad date: {text!r}")
+-    year, month, day = (int(p) for p in parts)
+-    return date(year, month, day)
++    """Parse YYYY-MM-DD, YYYY/MM/DD, DD.MM.YYYY or YYYYMMDD into a date. Raises ValueError."""
++    s = text.strip()
++    for pattern, order in _FORMATS:
++        m = pattern.fullmatch(s)
++        if m:
++            parts = m.groups()
++            year, month, day = (int(parts[i]) for i in order)
++            return date(year, month, day)
++    raise ValueError(f"bad date: {text!r}")
++
++
++def parse_date_range(text):
++    """'<date>..<date>' -> (start, end); ValueError without '..' or when end < start."""
++    left, sep, right = text.partition("..")
++    if not sep:
++        raise ValueError(f"not a date range: {text!r}")
++    start, end = parse_date(left), parse_date(right)
++    if end < start:
++        raise ValueError(f"range ends before it starts: {text!r}")
++    return start, end
+ 
+ 
+ def format_date(d):
