@@ -925,7 +925,7 @@ class TestLaunch(ToolCase):
     def test_state_router_when_the_plan_is_approved(self):
         out, cmd = self.dry()
         self.assertIn("state=router (approved plan)", out)
-        self.assertEqual(cmd, 'claude --agent pa-session --model claude-sonnet-5[1m] '
+        self.assertEqual(cmd, 'claude --agent pa-session --model claude-sonnet-5-5[1m] '
                               '--effort medium --permission-mode auto '
                               '--name "pa:demo:router:P24"')
         seed = read(os.path.join(self.root, ".run", "seed.md"))
@@ -936,7 +936,7 @@ class TestLaunch(ToolCase):
         launch = json.loads(read(os.path.join(self.root, ".run", "launch.json")))
         self.assertEqual(launch["mode"], "router")
         self.assertEqual(launch["phase"], "24")
-        self.assertEqual(launch["model"], "claude-sonnet-5[1m]")
+        self.assertEqual(launch["model"], "claude-sonnet-5-5[1m]")
 
     def test_seed_names_the_running_expert_after_a_resume(self):
         """A session resumed mid-task: the seed tells the router which run to continue."""
@@ -1046,7 +1046,7 @@ class TestLaunch(ToolCase):
         out, cmd = self.dry()
         self.assertIn("state=planner-gen", out)
         self.assertIn("--agent pa-session", cmd)
-        self.assertIn("--model claude-sonnet-5[1m]", cmd)
+        self.assertIn("--model claude-sonnet-5-5[1m]", cmd)
         self.assertIn("--effort medium", cmd)
         self.assertNotIn("--permission-mode", cmd)
 
@@ -1077,7 +1077,7 @@ class TestLaunch(ToolCase):
         write(os.path.join(self.cur, "REVIEW.md"), "What ran: the bake\n")
         out, cmd = self.dry()
         self.assertIn("state=review (REVIEW.md present)", out)
-        self.assertEqual(cmd, 'claude --agent pa-session --model claude-sonnet-5[1m] '
+        self.assertEqual(cmd, 'claude --agent pa-session --model claude-sonnet-5-5[1m] '
                               '--effort medium --name "pa:demo:review:P24"')
 
     def test_next_mode_overrides_once(self):

@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pa import transcript as T  # noqa: E402
 
 REF = ("C:/Users/you/.claude/projects/Z--Storage-git-Vantage/"
-       "e2eed858-0000-4000-8000-00000000008c/subagents/agent-abfdf578000000016.jsonl")
+       "e2eed858-0000-4000-8000-000000000015/subagents/agent-abfdf578000000016.jsonl")
 
 
 def _assistant(mid, out, ts="2026-09-12T10:00:00.000Z", model="claude-sonnet-5",

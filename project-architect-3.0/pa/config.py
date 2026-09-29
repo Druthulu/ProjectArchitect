@@ -56,8 +56,8 @@ DEFAULTS = {
         }
     },
     "pinned_models": {
-        "router": "claude-sonnet-5",
-        "pa-session": "claude-sonnet-5",
+        "router": "claude-sonnet-5-5",  # was claude-sonnet-5
+        "pa-session": "claude-sonnet-5-5",  # was claude-sonnet-5
         "planner-gen": "claude-opus-5-5",  # was claude-fable-5-1
         "planner-phase": "claude-opus-5-5",  # was claude-fable-5-1
         "review": "claude-fable-5-1",
@@ -66,9 +66,9 @@ DEFAULTS = {
         "coder-opus46": "claude-opus-4-6",
         "coder-opus55": "claude-opus-5-5",
         "coder-sonnet": "claude-sonnet-5",
-        "retriever-code": "claude-haiku-4-5",
-        "retriever-digest": "claude-sonnet-5",
-        "retriever-web": "claude-sonnet-5",
+        "retriever-code": "claude-sonnet-5-5",  # was claude-haiku-4-5
+        "retriever-digest": "claude-sonnet-5-5",  # was claude-sonnet-5
+        "retriever-web": "claude-sonnet-5-5",  # was claude-sonnet-5
         "critic": "claude-fable-5-1",
     },
     "ttl_default": {

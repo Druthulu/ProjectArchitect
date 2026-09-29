@@ -64,7 +64,7 @@ class UnstopTest(unittest.TestCase):
         self.root = _setup_project(self.tmpdir)
 
         # transcript layout: session_dir strips .jsonl; subagents_dir appends /subagents
-        self.sid = "aaaa1111-0000-4000-8000-00000000005b"
+        self.sid = "aaaa1111-0000-4000-8000-00000000000f"
         self.base = os.path.join(self.tmpdir, "transcripts")
         self.transcript_path = os.path.join(self.base, self.sid + ".jsonl")
         os.makedirs(os.path.dirname(self.transcript_path), exist_ok=True)

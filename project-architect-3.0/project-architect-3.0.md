@@ -124,13 +124,13 @@ junction so a fresh machine restores it with `pa_install --project`.
 |---|---|---|---|---|---|
 | Planner (generation) | planner-gen | Opus 5.5 | medium | retrievers | — |
 | Planner (phase) | planner-phase | Opus 5.5 | medium | retrievers | — |
-| Router | pa-session | Sonnet 5 | medium | experts, planners, critic, review, discuss, curator | — |
+| Router | pa-session | Sonnet 5.5 | medium | experts, planners, critic, review, discuss, curator | — |
 | Expert (default) | expert-opus55 | Opus 5.5 | medium | coders, retrievers | — |
 | Expert (hard, `effort: high`) | expert-fable | Fable 5.1 | medium | coders, retrievers | — |
 | Coder (default) | coder-opus55 | Opus 5.5 | medium | retriever-code | — |
-| Retriever (code) | retriever-code | Haiku 4.5 | — | — | Read, Grep, Glob, Write |
-| Retriever (digest) | retriever-digest | Sonnet 5 | medium | — | Read, Grep, Glob, Write |
-| Retriever (web) | retriever-web | Sonnet 5 | medium | — | WebSearch, WebFetch, Write |
+| Retriever (code) | retriever-code | Sonnet 5.5 | medium | — | Read, Grep, Glob, Write |
+| Retriever (digest) | retriever-digest | Sonnet 5.5 | medium | — | Read, Grep, Glob, Write |
+| Retriever (web) | retriever-web | Sonnet 5.5 | medium | — | WebSearch, WebFetch, Write |
 | Critic | critic | Fable 5.1 | medium | — | — |
 | Review | review | Fable 5.1 | medium | retriever-code, retriever-digest | — |
 | Discussion | discuss, discuss-high, discuss-max | Opus 5.5 | medium, high, max | — | — |
@@ -139,8 +139,8 @@ junction so a fresh machine restores it with `pa_install --project`.
 Models and efforts are pinned per agent file; the developer never touches `/effort` or
 `/model`. The cost structure follows from the pinning: Opus 5.5 is the default builder and
 expert (coders, the planners since 3.9.5 and the medium-effort expert), Fable 5.1 the thinker for hard tasks (
-the critic, the hard-tier expert), Haiku the cheapest lookup (code retrievers), and
-Sonnet the middle ground (the router, digest/web retrievers). The router runs
+the critic, the hard-tier expert), and
+Sonnet the middle ground (the router, all three retrievers). The router runs
 on Sonnet because it is purely mechanical: it reads a seed, picks the next task, spawns an
 expert and waits. Judgment lives in the subagents. The phase planner marks `effort: high` only
 when a task's done-when rests on a judgment no test can arbitrate (a design decision, a harness

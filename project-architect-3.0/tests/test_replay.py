@@ -20,8 +20,8 @@ sys.path.insert(0, ROOT)
 
 from pa import config, db, paths, prices, replay, summary  # noqa: E402
 
-SID_A = "aaaa1111-0000-4000-8000-00000000005b"
-SID_B = "bbbb1111-0000-4000-8000-00000000006a"
+SID_A = "aaaa1111-0000-4000-8000-00000000000f"
+SID_B = "bbbb1111-0000-4000-8000-000000000012"
 RUN_A = SID_A
 RUN_B = SID_B
 ACCOUNT = "dev@example.com"

@@ -265,6 +265,27 @@ class GradeRetriever(unittest.TestCase):
         self.assertIn("shelf/loans.py:40", detail)
         self.assertIn("shelf/fees.py:10", detail)
 
+    def test_comma_list_cites_every_item(self):   # 2026-09-29 T2: r09#a1 cited `shelf/storage.py:45,56`
+        key = {"refs": [{"path": "shelf/storage.py", "line": 56, "symbol": "x"}], "tokens": []}
+        for text in ("see `shelf/storage.py:45,56`", "see shelf/storage.py:42, 56."):
+            self.assertTrue(grade.grade_retriever(text, key)[0], text)
+        ok, detail = grade.grade_retriever("see shelf/storage.py:45, then 56 more", key)
+        self.assertFalse(ok)
+        self.assertIn("missing ref shelf/storage.py:56", detail)
+
+    def test_comma_range_list(self):
+        key = {"refs": [{"path": "shelf/loans.py", "line": 11, "symbol": "a"},
+                        {"path": "shelf/loans.py", "line": 20, "symbol": "b"}], "tokens": []}
+        self.assertTrue(grade.grade_retriever("see shelf/loans.py:11-14,19-20", key)[0])
+        self.assertTrue(grade.grade_retriever("see shelf/loans.py:11-14, 19-20", key)[0])
+
+    def test_comma_list_first_item_unchanged(self):
+        key = {"refs": [{"path": "shelf/storage.py", "line": 45, "symbol": "x"}], "tokens": []}
+        self.assertTrue(grade.grade_retriever("see shelf/storage.py:45,56", key)[0])
+        self.assertEqual(grade._citations("see shelf/storage.py:45,56"),
+                         [("shelf/storage.py", 45, 45), ("shelf/storage.py", 56, 56)])
+        self.assertEqual(grade._citations("see a/b.py:7-9, `c.py:3`"), [("a/b.py", 7, 9), ("c.py", 3, 3)])
+
     def test_range_gets_line_slack(self):
         key = {"refs": [{"path": "shelf/fees.py", "line": 5, "symbol": "x"}], "tokens": []}
         self.assertTrue(grade.grade_retriever("see shelf/fees.py:7-10", key)[0])

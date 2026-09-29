@@ -971,7 +971,7 @@ class ModelMismatchTest(LedgerCase):
         inp = {"session_id": "mm-2", "cwd": self.root, "tool_name": "Agent",
                "tool_input": {"subagent_type": "retriever-code"},
                "tool_response": {"agentId": "a888888800000000e", "agentType": "retriever-code",
-                                 "resolvedModel": "claude-haiku-4-5-20251001",
+                                 "resolvedModel": "claude-sonnet-5-5",
                                  "status": "completed"}}
         post_tool_use.run(inp, self.cfg)
         self.assertEqual(self.rows("SELECT COUNT(*) FROM events WHERE kind='model_mismatch'"),

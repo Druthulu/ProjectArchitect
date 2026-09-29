@@ -311,8 +311,9 @@ class TestFreshInstall(ProjectCase):
         self.assertNotIn("hooks", settings)
         self.assertNotIn("statusLine", settings)
         self.assertEqual(settings["agent"], "pa-session")                     # 3.1 T9
-        self.assertEqual(settings["model"], "claude-sonnet-5[1m]")
-        self.assertEqual(settings["modelSettings"]["claude-sonnet-5"]["effortLevel"], "medium")
+        self.assertEqual(settings["model"], "claude-sonnet-5-5[1m]")            # 3.12 T1: was sonnet-5
+        self.assertEqual(settings["modelSettings"]["claude-sonnet-5-5"]["effortLevel"], "medium")
+        self.assertNotIn("claude-sonnet-5", settings["modelSettings"])
         self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"], "medium")
         allow = settings["permissions"]["allow"]
         self.assertIn("Bash(%s tools/*)" % PY.replace("\\", "/"), allow)      # 3.11 T15: was tools/*:*,
@@ -330,6 +331,7 @@ class TestFreshInstall(ProjectCase):
         settings = json.loads(read(self.path(".claude", "settings.json")))
         self.assertEqual(settings["model"], "claude-sonnet-5")                # hand-set: kept
         self.assertEqual(settings["modelSettings"]["claude-sonnet-5"]["effortLevel"], "high")
+        self.assertEqual(settings["modelSettings"]["claude-sonnet-5-5"]["effortLevel"], "medium")
         self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"], "medium")
         self.assertIn("Bash(cargo test:*)", settings["permissions"]["allow"])
         self.assertEqual(settings["env"]["RUST_BACKTRACE"], "1")
@@ -341,6 +343,37 @@ class TestFreshInstall(ProjectCase):
         backups = [n for n in os.listdir(bak_dir)
                    if n.startswith(".claude--settings.json.bak-")]
         self.assertEqual(len(backups), 1, backups)
+
+    def test_settings_old_default_model_migrates(self):
+        """3.12 T1: the old shipped Sonnet 5 defaults move to Sonnet 5.5; other keys stay."""
+        write(self.path(".claude", "settings.json"), json.dumps(
+            {"model": "claude-sonnet-5[1m]",
+             "modelSettings": {"claude-sonnet-5": {"effortLevel": "medium"},
+                               "claude-fable-5-1": {"effortLevel": "high"}}}, indent=2) + "\n")
+        self.install()
+        settings = json.loads(read(self.path(".claude", "settings.json")))
+        self.assertEqual(settings["model"], "claude-sonnet-5-5[1m]")
+        self.assertNotIn("claude-sonnet-5", settings["modelSettings"])
+        self.assertEqual(settings["modelSettings"]["claude-sonnet-5-5"], {"effortLevel": "medium"})
+        self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"], "high")
+
+    def test_pa3_upgrade_migrates_only_the_old_model_defaults(self):
+        """3.12 T1: a pa3 re-install migrates model/modelSettings and touches nothing else."""
+        self.install()
+        rel = self.path(".claude", "settings.json")
+        settings = json.loads(read(rel))
+        settings["model"] = "claude-sonnet-5[1m]"
+        settings["modelSettings"] = {"claude-sonnet-5": {"effortLevel": "medium"}}
+        settings["env"] = {"MINE": "1"}
+        write(rel, json.dumps(settings, indent=2) + "\n")
+        out = self.install()
+        after = json.loads(read(rel))
+        self.assertEqual(after["model"], "claude-sonnet-5-5[1m]", out)
+        self.assertEqual(after["modelSettings"], {"claude-sonnet-5-5": {"effortLevel": "medium"}})
+        self.assertEqual(after["env"], {"MINE": "1"})                        # no merge on pa3
+        out = self.install()
+        self.assertEqual(json.loads(read(rel)), after)                        # idempotent
+        self.assertIn("left alone", out)
 
     def test_gitignore_block_is_appended_once(self):
         write(self.path(".gitignore"), "target/\n")

@@ -24,7 +24,7 @@ except Exception:
 MIN_CC = (2, 1, 270)
 FABLE = "claude-fable-5-1[1m]"
 SESSION = "pa-session"                    # the one main-thread agent; router/planner/review are its modes
-SONNET = "claude-sonnet-5[1m]"            # the pa-session model (mechanical router); planners and experts run Opus 5.5 / Fable per agent file
+SONNET = "claude-sonnet-5-5[1m]"          # the pa-session model (mechanical router); planners and experts run Opus 5.5 / Fable per agent file
 PLANNER_LABEL = "claude-opus-5-5/medium"  # was claude-fable-5-1/medium (T18, 2026-09-24), before that /xhigh; planner-gen / planner-phase run as medium subagents of pa-session
 MODES = {
     "planner-gen":   {"agent": SESSION, "model": SONNET, "effort": "medium", "perm": None},

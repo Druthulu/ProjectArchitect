@@ -256,11 +256,11 @@ class RootWindowsTest(unittest.TestCase):
             text = fh.read()
         from pa import __version__
         self.assertIn("version: %s" % __version__, text)
-        self.assertEqual(text.splitlines()[0], "version: 3.11")    # I11
+        self.assertEqual(text.splitlines()[0], "version: 3.12")    # I11
         self.assertRegex(text, r"git: [0-9a-f]{6,40}")
 
     def test_version_parse_forms_and_fallback(self):
-        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.11``."""
+        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.12``."""
         import pa
         self.assertEqual(pa.parse_version("3.11\n"), "3.11")
         self.assertEqual(pa.parse_version("version: 3.12\ngit: abc\n"), "3.12")
@@ -283,8 +283,8 @@ class RootWindowsTest(unittest.TestCase):
                                   text=True, check=True).stdout.strip()
         self.assertEqual(ver("3.12\n"), "3.12")
         self.assertEqual(ver("version: 3.13\ngit: abc\n"), "3.13")
-        self.assertEqual(ver(None), "3.11")
-        self.assertEqual(ver("garbage: x\n"), "3.11")
+        self.assertEqual(ver(None), "3.12")
+        self.assertEqual(ver("garbage: x\n"), "3.12")
 
     def test_ledger_has_every_table(self):
         conn = db.connect(os.path.join(self.ledger, "ledger.sqlite"), create=False)

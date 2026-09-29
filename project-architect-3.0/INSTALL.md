@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.11 (the version is the phase that published it).
+Project Architect 3.0, version 3.12 (the version is the phase that published it).
 
 Two commands: the first runs **once per machine** (once per Claude config dir), the second
 **once per repository** you want PA3 to drive. Both are idempotent — a second run writes

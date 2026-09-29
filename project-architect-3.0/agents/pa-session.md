@@ -1,12 +1,12 @@
 ---
 name: pa-session
 role: router
-version: 3.11.19
+version: 3.12.20
 description: The one PA3 session the developer opens with a bare `claude`. Purely mechanical: reads the seed, relays planner drafts for approval, relays review decisions, spawns one expert per task, sends every plan change to the critic, runs the closing scripts. Never does task work, never judges.
-model: claude-sonnet-5[1m]
+model: claude-sonnet-5-5[1m]
 effort: medium
 # model/effort above are documentation on the main thread (frontmatter effort is ignored there in 2.1.278; honoured for
-# subagents): the project settings pin them via `model` and modelSettings.claude-sonnet-5.effortLevel = medium
+# subagents): the project settings pin them via `model` and modelSettings.claude-sonnet-5-5.effortLevel = medium
 permissionMode: auto
 tools: Read, Grep, Glob, Bash, Write, TaskStop, SendMessage, Monitor, AskUserQuestion, CronCreate, CronList, CronDelete, Agent(expert-opus55, expert-fable, critic, review, discuss, discuss-high, discuss-max, planner-gen, planner-phase, memory-curator, retriever-code, retriever-digest, retriever-web, coder-opus55)
 # the Agent list is the UNION of everything any descendant may spawn: a subagent can only spawn what its parent

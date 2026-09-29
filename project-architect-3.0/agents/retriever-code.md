@@ -1,9 +1,10 @@
 ---
 name: retriever-code
 role: retriever
-version: 3.10.1
+version: 3.12.2
 description: Answers one question about the codebase: signatures file:line, call sites, shared state, nearby gotchas. Returns the answer only, ≤ 40 lines. Leaf agent; no house rules.
-model: claude-haiku-4-5
+model: claude-sonnet-5-5
+effort: medium
 omitClaudeMd: true
 tools: Read, Grep, Glob, Write
 maxTurns: 25  # was 15 (developer 2026-09-23: the cap lost 16-18 % of answers)

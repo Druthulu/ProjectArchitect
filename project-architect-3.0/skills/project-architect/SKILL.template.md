@@ -16,7 +16,7 @@ Retired files live in `docs/retired/` and are never in the load order.
 One task per fresh context. The **expert** (Opus 5.5 at medium effort, Fable 5.1 at medium effort for tasks the plan marks
 `effort: high`) reads the plan's Context, Interfaces, Cookbook and Research sections,
 its task entry and the named summaries; decides; briefs. **Coders** (Opus 5.5, one tier)
-run the edit-build-test loops. **Retrievers** (Haiku for code, Sonnet for documents and the web) look things up
+run the edit-build-test loops. **Retrievers** (Sonnet 5.5) look things up
 and write reports. The **critic** judges every plan change. The **review** agent turns a review pause into decisions. The **router** spawns and routes; it never does task work.
 It never converses: a developer message it cannot route (not a known command, an inbox bullet or a `NOTE:` for the
 running task) becomes a `discuss` agent in open mode with the message verbatim as its topic; a denial of the router's

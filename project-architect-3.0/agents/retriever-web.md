@@ -1,9 +1,9 @@
 ---
 name: retriever-web
 role: retriever
-version: 3.10.1
+version: 3.12.2
 description: Researches one question on the web for a stated purpose, writes a research report with dated sources, and returns only what matters. Leaf agent; no house rules.
-model: claude-sonnet-5
+model: claude-sonnet-5-5
 effort: medium
 omitClaudeMd: true
 tools: WebSearch, WebFetch, Write

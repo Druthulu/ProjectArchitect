@@ -195,7 +195,7 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(cfg["handoff"]["roles"], ["expert", "coder"])
         self.assertEqual(cfg["handoff"]["threshold_tokens"], 350000)   # untouched key survives
         self.assertEqual(cfg["pinned_models"]["expert-fable"], "claude-opus-5")
-        self.assertEqual(cfg["pinned_models"]["router"], "claude-sonnet-5")
+        self.assertEqual(cfg["pinned_models"]["router"], "claude-sonnet-5-5")
 
     def test_user_layer_only_stored_keys(self):
         """fix-14: user_layer() is config.json as stored, no defaults merged."""
@@ -234,7 +234,7 @@ class LoadTest(unittest.TestCase):
         for key in config.USER_KEYS:
             self.assertIn(key, raw)
         cached = config.load(self.path)
-        self.assertEqual(cached["pinned_models"]["router"], "claude-sonnet-5")
+        self.assertEqual(cached["pinned_models"]["router"], "claude-sonnet-5-5")
         self.assertEqual(cached["statusline"]["max_width"], 120)
 
     def test_slim_drops_empty_dicts_and_reports(self):
@@ -287,7 +287,7 @@ class RoleMapTest(unittest.TestCase):
 
     def test_pinned_model_for(self):
         self.assertEqual(config.pinned_model_for("expert-fable", self.cfg), "claude-fable-5-1")
-        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-haiku-4-5")
+        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-sonnet-5-5")
         self.assertEqual(config.pinned_model_for("coder-opus46", self.cfg), "claude-opus-4-6")
         self.assertIsNone(config.pinned_model_for("nobody", self.cfg))
         self.assertIsNone(config.pinned_model_for(None, self.cfg))
@@ -325,7 +325,7 @@ class LadderPinTest(unittest.TestCase):
         self.assertEqual(config.pinned_model_for("critic", self.cfg), "claude-opus-5-5")
         self.assertEqual(config.pinned_model_for("Auditor", self.cfg), "claude-opus-5-5")
         self.assertEqual(config.pinned_model_for("expert-fable", self.cfg), "claude-fable-5-1")
-        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-haiku-4-5")
+        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-sonnet-5-5")
         config._set_ladder_tier("max5")
         self.assertEqual(config.pinned_model_for("review", self.cfg), "claude-fable-5-1")
 

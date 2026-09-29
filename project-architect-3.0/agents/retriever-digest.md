@@ -1,9 +1,9 @@
 ---
 name: retriever-digest
 role: retriever
-version: 3.10.1
+version: 3.12.2
 description: Reads long material (logs, PhaseEnds, task summaries, reports, docs) for one stated purpose, writes a research report, and returns only what matters for the task. Leaf agent; no house rules.
-model: claude-sonnet-5
+model: claude-sonnet-5-5
 effort: medium
 omitClaudeMd: true
 tools: Read, Grep, Glob, Write

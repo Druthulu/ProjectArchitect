@@ -2,6 +2,15 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, the router reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.12 — The Sonnet 5.5 upgrade
+
+- The router and all three retrievers now run on Sonnet 5.5 at medium effort. The router and the document and web retrievers moved from Sonnet 5, the code retriever from Haiku 4.5. The experts and the coder are unchanged.
+- Each move was measured first: the agent was benched on its old model and on Sonnet 5.5, with nothing else different. The router passed 14 of its 15 tasks on Sonnet 5.5 against 13 on Sonnet 5, and cost $0.77 against $0.88. The document retriever answered all 28 of its tasks against 27, for $1.44 against $1.54 and in fewer turns. The code retriever matched Haiku 4.5 in accuracy and cost and answered in about 9 seconds instead of 16. Sonnet 5.5 costs the same per token as Sonnet 5; the web retriever moved with the others on that, since the bench has no web questions to measure it with.
+- An update moves a project still on the old default: if its settings carry the router model PA3 shipped before (Sonnet 5 at medium effort), they now say Sonnet 5.5. A model you chose yourself is kept.
+- The bench has new baselines for the four moved agents, published with the other results. Its grader now reads citations written as a list, such as `file.py:45,56`, which Sonnet 5.5 writes; before, only the first line number counted, and a correct answer could fail.
+- A rule for model upgrades: when a new version of a model comes out, every agent on the old version is benched against it and moves only on the developer's word, and the upgrade is finished only when the wiki and the docs name the old model in history alone. The wiki's Bench page describes it.
+- Publishing now checks the wiki's roles table against the agents themselves: a model or effort in the table that differs from what the agent runs stops the wiki from being published, naming the row and both values.
+
 ## 3.11 — The publish
 
 - Project Architect 3.0 is public at version 3.11: the public repository now holds the package, the README and the bench results. Version 2.0 is retired and no longer distributed.

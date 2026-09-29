@@ -88,7 +88,9 @@ def grade_scored(clone, task, fixtures=None):
     return score >= float(exp.get("pass_score", 1.0)), tail, score
 
 
-_CITE = re.compile(r"([\w./\-]+):(\d+)(?:\s*[-–]\s*(\d+))?")
+_CITE = re.compile(r"([\w./\-]+):(\d+)(?:\s*[-–]\s*(\d+))?((?:\s*,\s*\d+(?:\s*[-–]\s*\d+)?(?!\w))*)")
+# 2026-09-29 T2: the comma tail of a cite (`path:45,56`, `path:11-14, 19-20`), one item each.
+_CITE_ITEM = re.compile(r"(\d+)(?:\s*[-–]\s*(\d+))?")
 # 3.9.7 T2: a line named apart from its path counts when a path was cited earlier in the same paragraph.
 _PATH_CTX = re.compile(r"[\w./\-]*[\w-]\.(?:py|md|json|txt|toml|cfg|ini|ya?ml|sh)\b")
 _LINE_MENTION = re.compile(r"(?:\blines?|\bl\.)\s*(\d+)(?:\s*[-–]\s*(\d+))?", re.I)
@@ -102,14 +104,18 @@ def _span(lo, hi):
 
 
 def _citations(answer):
-    """[(posix path, first line, last line)] for every path:N or path:N-M in the answer, plus `line N`,
+    """[(posix path, first line, last line)] for every path:N or path:N-M in the answer, each item of a
+    comma list continuing it (`path:45,56`, `path:11-14, 19-20`), plus `line N`,
     `lines N-M`, `(line N)`, `l. N` or a bare `:N` after the last cited path in the same paragraph."""
     out = []
     for para in re.split(r"\n[ \t]*\n", answer):
         events, taken = [], []
         for m in _CITE.finditer(para):
             taken.append(m.span())
-            events.append((m.start(), m.group(1).replace("\\", "/"), *_span(m.group(2), m.group(3))))
+            path = m.group(1).replace("\\", "/")
+            events.append((m.start(), path, *_span(m.group(2), m.group(3))))
+            for k in _CITE_ITEM.finditer(m.group(4)):
+                events.append((m.start(4) + k.start(), path, *_span(k.group(1), k.group(2))))
         free = lambda m: not any(a <= m.start() < b for a, b in taken)  # noqa: E731
         for m in _PATH_CTX.finditer(para):
             if free(m):

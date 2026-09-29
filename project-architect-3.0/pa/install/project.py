@@ -1155,6 +1155,52 @@ def retire_claude_md(env):
     return rel
 
 
+# 3.12 T1: the pa-session's shipped pin moved Sonnet 5 -> Sonnet 5.5; an untouched old default migrates
+_OLD_MODEL, _NEW_MODEL = "claude-sonnet-5[1m]", "claude-sonnet-5-5[1m]"
+_OLD_KEY, _NEW_KEY = "claude-sonnet-5", "claude-sonnet-5-5"
+_OLD_EFFORT = {"effortLevel": "medium"}
+
+
+def migrate_model_defaults(settings):
+    """Swap the old shipped ``model``/``modelSettings`` defaults in ``settings`` (in place).
+
+    Only the exact old default values move; any other value is the developer's and is kept.
+    Returns ``[(key, old, new), ...]`` in the merge report's ``changed`` shape."""
+    changed = []
+    if settings.get("model") == _OLD_MODEL:
+        settings["model"] = _NEW_MODEL
+        changed.append(("model", _OLD_MODEL, _NEW_MODEL))
+    ms = settings.get("modelSettings")
+    if isinstance(ms, dict) and ms.get(_OLD_KEY) == _OLD_EFFORT:
+        del ms[_OLD_KEY]
+        changed.append(("modelSettings." + _OLD_KEY, dict(_OLD_EFFORT), "<removed>"))
+        if _NEW_KEY not in ms:
+            ms[_NEW_KEY] = dict(_OLD_EFFORT)
+            changed.append(("modelSettings." + _NEW_KEY, None, dict(_OLD_EFFORT)))
+    return changed
+
+
+def migrate_pa3_settings(env):
+    """P7 on a pa3 upgrade: migrate only the old model defaults in ``.claude/settings.json``."""
+    rel = ".claude/settings.json"
+    path = env.path(rel)
+    current = fsutil.read_json(path, None) if os.path.isfile(path) else None
+    if not isinstance(current, dict):
+        return []
+    migrated = json.loads(json.dumps(current))
+    moved = migrate_model_defaults(migrated)
+    if not moved:
+        env.man.skipped.append(rel)
+        return []
+    text = sm.render(migrated)
+    try:
+        json.loads(text)
+    except ValueError as exc:                                    # pragma: no cover
+        raise sm.MergeError("migrated settings do not parse: %s" % exc)
+    write_changed(env, rel, text)
+    return moved
+
+
 def merge_project_settings(env):
     """Merge ``settings/project.snippet.json`` into ``.claude/settings.json``."""
     rel = ".claude/settings.json"
@@ -1165,7 +1211,10 @@ def merge_project_settings(env):
     else:
         current = fsutil.read_json(path, {}) or {}
     snippet = sm.fill(sm.load_snippet(name="project"), env.py_exe, env.pa3_dir)
-    merged, report = sm.merge(current, snippet, scope="project")
+    migrated = json.loads(json.dumps(current))
+    moved = migrate_model_defaults(migrated)
+    merged, report = sm.merge(migrated, snippet, scope="project")
+    report["changed"][:0] = moved
     if merged == current:
         env.man.skipped.append(rel)
         return "same", report, None
@@ -1184,9 +1233,21 @@ def _absent(env, rel, make):
 def claude_and_settings(env):
     """P7: CLAUDE.md (+ retire), project settings, HOW_WE_WORK.md."""
     if env.layout == "pa3":
-        step("P7", "claude + settings", "SKIP",
-             "pa3 upgrade: CLAUDE.md, settings.json, HOW_WE_WORK.md left alone")
-        return "SKIP"
+        # 3.12 T1: CLAUDE.md, HOW_WE_WORK.md and every other setting stay; old model defaults migrate
+        mark = env.man.mark()
+        moved = migrate_pa3_settings(env)
+        if not moved:
+            step("P7", "claude + settings", "SKIP",
+                 "pa3 upgrade: CLAUDE.md, settings.json, HOW_WE_WORK.md left alone")
+            return "SKIP"
+        done = env.man.since(mark)
+        status = "SKIP" if (env.dry_run or not Manifest.changed(done)) else "DONE"
+        step("P7", "claude + settings", status,
+             _reason(env, done, ".claude/settings.json (old model defaults migrated)"))
+        for key, old, new in moved:
+            note("~ settings  %s: %s -> %s"
+                 % (key, json.dumps(old, default=str), json.dumps(new, default=str)))
+        return status
     mark = env.man.mark()
 
     retired = retire_claude_md(env)
