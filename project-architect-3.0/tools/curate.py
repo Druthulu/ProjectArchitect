@@ -2,6 +2,11 @@
 """curate.py -- generation-start curator: demote memories, cookbook, rules; trim HOW_WE_WORK.
 
 Subcommands: memory, cookbook, rules, how-we-work, discussions, ops.
+memory --route FILE=STORE: write each memory's fact to its store (developer and
+how-we-work: a bullet in that HOW_WE_WORK.md section, within card.max_chars; rule:
+rules_add.py; cookbook: cookbook_add.sh; ops: docs/ops/<stem>.md + its index row;
+archive: nothing), then demote it to gen<G>.md. Every route is validated first;
+any refusal writes nothing and exits 1.
 ops --sunset --gen G: retire unreferenced ops topics; ops --reindex: refresh the
 docs/ops/INDEX.md line counts and append rows for unindexed docs/ops/*.md.
 Every subcommand takes --dry-run and prints a table of what it would do.
@@ -10,8 +15,10 @@ Stdlib only; no imports from `pa/`.
 
 import argparse
 import hashlib
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -109,7 +116,204 @@ def _count_gen_entries(text):
     return sum(1 for line in text.split("\n") if line.startswith("## "))
 
 
+_ROUTE_STORES = ("developer", "how-we-work", "rule", "cookbook", "ops", "archive")
+_CARD_SECTIONS = {"developer": r"^## Developer\b",
+                  "how-we-work": r"^## Conventions & house style\b"}
+
+
+def _card_cap(root):
+    """card.max_chars from .claude/pa.json, default 7000 (mirrors card.py:_max_chars)."""
+    try:
+        with open(os.path.join(root, ".claude", "pa.json"), encoding="utf-8") as fh:
+            return json.load(fh).get("card", {}).get("max_chars", 7000)
+    except (OSError, ValueError, AttributeError):
+        return 7000
+
+
+def _split_frontmatter(text):
+    """-> (frontmatter dict, body) for an optional leading `---` YAML block."""
+    t = text.replace("\r\n", "\n")
+    fm = {}
+    if t.startswith("---\n"):
+        end = t.find("\n---", 3)
+        if end != -1:
+            for ln in t[4:end].split("\n"):
+                key, sep, val = ln.partition(":")
+                if sep and key.strip():
+                    fm[key.strip()] = val.strip().strip("\"'")
+            nl = t.find("\n", end + 4)
+            t = t[nl + 1:] if nl != -1 else ""
+    return fm, t.strip("\n")
+
+
+def _one_line(s):
+    return " ".join(s.split())
+
+
+def _card_add_bullet(text, pattern, bullet):
+    """Insert `bullet` as the last bullet of the section whose heading matches; None if absent."""
+    lines = text.split("\n")
+    cr = "\r" if "\r\n" in text else ""
+    start = next((i for i, ln in enumerate(lines) if re.match(pattern, ln.rstrip("\r"))), None)
+    if start is None:
+        return None
+    end = next((j for j in range(start + 1, len(lines)) if lines[j].startswith("## ")),
+               len(lines))
+    at, in_bullet, last_text = None, False, start + 1
+    for j in range(start + 1, end):
+        s = lines[j].rstrip("\r")
+        if s.startswith("- "):
+            at, in_bullet = j + 1, True
+        elif in_bullet and s.strip() and s[:1] in " \t":
+            at = j + 1
+        else:
+            in_bullet = False
+        if s.strip():
+            last_text = j + 1
+    lines.insert(at if at is not None else last_text, bullet + cr)
+    return "\n".join(lines)
+
+
+def _plan_routes(specs, root, memdir, index_lines, gen):
+    """Validate every --route spec; -> (routes, refusals, card). Nothing is written."""
+    routes, refusals, seen = [], [], set()
+    card_path = os.path.join(root, "HOW_WE_WORK.md")
+    card_text = read_text(card_path) if os.path.isfile(card_path) else None
+    card_start = card_text
+    cap = _card_cap(root)
+    rules_dir = os.path.join(root, "rules")
+    used = set()
+    if os.path.isfile(os.path.join(rules_dir, "INDEX.md")):
+        used |= {int(m) for m in re.findall(r"(?m)^L(\d+)\b",
+                                            read_text(os.path.join(rules_dir, "INDEX.md")))}
+    if os.path.isdir(rules_dir):
+        used |= {int(m.group(1)) for m in (re.match(r"^L(\d+)\.md$", n)
+                                           for n in os.listdir(rules_dir)) if m}
+    next_rule = max(used) + 1 if used else 1
+    cb_dir = os.path.join(root, "cookbook")
+    cb_taken = set(os.listdir(cb_dir)) if os.path.isdir(cb_dir) else set()
+    next_cb = 1
+    bash = shutil.which("bash")
+    for spec in specs:
+        fname, sep, store = spec.rpartition("=")
+        if not sep or not fname:
+            refusals.append((spec, "expected FILE=STORE"))
+            continue
+        if store not in _ROUTE_STORES:
+            refusals.append((fname, "unknown store %r (one of %s)"
+                             % (store, ", ".join(_ROUTE_STORES))))
+            continue
+        if fname in seen:
+            refusals.append((fname, "routed twice"))
+            continue
+        seen.add(fname)
+        fpath = os.path.join(memdir, fname)
+        if not os.path.isfile(fpath):
+            refusals.append((fname, "no memory file at %s" % fpath))
+            continue
+        entry = None
+        for line in index_lines:
+            m = re.match(r"^-\s+\[([^\]]+)\]\(([^)]+)\)\s*(?:[—–-]\s*)?(.*)$", line)
+            if m and m.group(2) == fname:
+                entry = m
+                break
+        if entry is None:
+            refusals.append((fname, "no index line in MEMORY.md"))
+            continue
+        fm, body = _split_frontmatter(read_text(fpath))
+        title = _one_line(fm.get("name") or entry.group(1))
+        summary = _one_line(fm.get("description") or entry.group(3))
+        r = {"file": fname, "store": store, "title": title, "summary": summary, "body": body}
+        stem = os.path.splitext(fname)[0]
+        if store in _CARD_SECTIONS:
+            if card_text is None:
+                refusals.append((fname, "no HOW_WE_WORK.md"))
+                continue
+            new = _card_add_bullet(card_text, _CARD_SECTIONS[store],
+                                   "- %s: %s" % (title, summary))
+            if new is None:
+                refusals.append((fname, "HOW_WE_WORK.md has no section matching %s"
+                                 % _CARD_SECTIONS[store]))
+                continue
+            if len(new) > cap:
+                refusals.append((fname, "HOW_WE_WORK.md would be %d/%d chars"
+                                 % (len(new), cap)))
+                continue
+            card_text = new
+            r["target"] = "HOW_WE_WORK.md"
+        elif store == "rule":
+            r["id"] = "L%d" % next_rule
+            next_rule += 1
+            r["target"] = "rules/%s.md" % r["id"]
+        elif store == "cookbook":
+            if bash is None:
+                refusals.append((fname, "no bash on PATH for cookbook_add.sh"))
+                continue
+            if not os.path.isfile(os.path.join(root, ".claude", "pa.json")):
+                refusals.append((fname, "no .claude/pa.json at the root "
+                                 "(cookbook_add.sh would resolve another root)"))
+                continue
+            while "C%04d.md" % next_cb in cb_taken:
+                next_cb += 1
+            r["target"] = "cookbook/C%04d.md" % next_cb
+            next_cb += 1
+        elif store == "ops":
+            if not os.path.isfile(os.path.join(root, "docs", "ops", "INDEX.md")):
+                refusals.append((fname, "no docs/ops/INDEX.md"))
+                continue
+            r["target"] = "docs/ops/%s.md" % stem
+            if os.path.exists(os.path.join(root, r["target"])):
+                refusals.append((fname, "%s exists" % r["target"]))
+                continue
+        else:
+            r["target"] = rel(root, _gen_archive_path(memdir, gen))
+        routes.append(r)
+    card = None
+    if card_text is not None and card_text != card_start:
+        card = (card_path, card_text, len(card_text) - len(card_start))
+    return routes, refusals, card
+
+
+def _apply_routes(routes, card, root):
+    """Write each route's fact to its store (the demote follows in cmd_memory)."""
+    if card:
+        write_text(card[0], card[1])
+        _cnote(card[0], script="curate.py", sub="memory", added=card[2], root=root)
+    here = os.path.dirname(os.path.abspath(__file__))
+    env = dict(os.environ, PA_PROJECT_ROOT=root, PA_PYTHON=sys.executable)
+    scratch = os.path.join(root, ".run")
+    ops = False
+    for r in routes:
+        origin = "legacy memory %s" % r["file"]
+        if r["store"] in ("rule", "cookbook"):
+            body = os.path.join(scratch, "curate-route-%s" % r["file"])
+            write_text(body, r["body"] + "\n")
+            if r["store"] == "rule":
+                cmd = [sys.executable, os.path.join(here, "rules_add.py"), "add",
+                       "--id", r["id"], "--title", r["title"], "--file", body,
+                       "--origin", origin, "--tags", "legacy,memory"]
+            else:
+                cmd = [shutil.which("bash"),
+                       os.path.join(here, "cookbook_add.sh").replace("\\", "/"),
+                       "--title", r["title"], "--tags", "legacy,memory",
+                       "--origin", origin, "--file", body.replace("\\", "/")]
+            res = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
+            os.remove(body)
+            if res.returncode != 0:
+                die("%s: %s: %s" % (r["file"], os.path.basename(cmd[1]),
+                                    (res.stdout + res.stderr).strip()))
+        elif r["store"] == "ops":
+            path = os.path.join(root, r["target"])
+            write_text(path, "# %s\n\n%s\n" % (r["title"], r["body"]))
+            _cnote(path, script="curate.py", sub="memory", whole=True, root=root)
+            ops = True
+    if ops:
+        _ops_reindex(argparse.Namespace(dry_run=False), root)
+
+
 def cmd_memory(args, root):
+    if not args.demote and not args.route:
+        die("--demote or --route is required")
     memdir = args.dir or os.path.join(root, ".claude-state", "memory")
     gen = args.gen
     index_path = _memory_index_path(memdir)
@@ -119,7 +323,11 @@ def cmd_memory(args, root):
     actions = []
     index_lines = read_text(index_path).rstrip("\n").split("\n")
 
-    for fname in args.demote:
+    demote = list(args.demote or [])
+    routes, refusals, card = _plan_routes(args.route or [], root, memdir, index_lines, gen)
+    demote += [r["file"] for r in routes if r["file"] not in demote]
+
+    for fname in demote:
         fpath = os.path.join(memdir, fname)
         if not os.path.isfile(fpath):
             die("no memory file at %s" % fpath)
@@ -141,17 +349,28 @@ def cmd_memory(args, root):
         existing_count = _count_gen_entries(read_text(archive_path))
     new_count = existing_count + len(actions)
 
-    sys.stdout.write("memory --demote --gen %s\n" % gen)
+    if args.route:
+        sys.stdout.write("memory --route --gen %s\n" % gen)
+    else:
+        sys.stdout.write("memory --demote --gen %s\n" % gen)
+    for r in routes:
+        sys.stdout.write("  route: %s -> %s (%s)\n" % (r["file"], r["store"], r["target"]))
     for a in actions:
         sys.stdout.write("  demote: %s -> gen%s.md\n" % (a["file"], gen))
     sys.stdout.write("  archive: %s (%d entries after)\n"
                      % (rel(root, archive_path), new_count))
     link_line = "- [Generation %s memories](gen%s.md) — %d entries" % (gen, gen, new_count)
     sys.stdout.write("  link: %s\n" % link_line)
+    for fname, why in refusals:
+        sys.stdout.write("refused: %s: %s\n" % (fname, why))
+    if refusals:
+        return 1
 
     if args.dry_run:
         sys.stdout.write("dry-run: no changes\n")
         return 0
+
+    _apply_routes(routes, card, root)
 
     # append each memory to the archive
     archive_parts = []
@@ -780,10 +999,18 @@ def main(argv=None):
                     "trim HOW_WE_WORK.md.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    s = sub.add_parser("memory", help="demote memory files to a generation archive")
+    s = sub.add_parser("memory", help="route memory facts to their stores; demote memory "
+                                      "files to a generation archive")
     _add_dry_run(s)
-    s.add_argument("--demote", nargs="+", required=True, metavar="FILE",
-                   help="memory filenames to demote")
+    s.add_argument("--demote", nargs="+", metavar="FILE",
+                   help="memory filenames to demote (this or --route is required)")
+    s.add_argument("--route", nargs="+", metavar="FILE=STORE",
+                   help="write the memory's fact to STORE, then demote it; STORE: "
+                        "developer | how-we-work (a bullet in that HOW_WE_WORK.md section, "
+                        "refused past card.max_chars) | rule (rules_add.py, next free L<n>) | "
+                        "cookbook (cookbook_add.sh) | ops (docs/ops/<stem>.md + index row) | "
+                        "archive (demote only). All routes are checked first; any refusal "
+                        "writes nothing and exits 1")
     s.add_argument("--gen", required=True, help="generation id (e.g. 3 or legacy)")
     s.add_argument("--dir", help="memory directory (default: <root>/.claude-state/memory)")
 

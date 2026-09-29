@@ -1,0 +1,7 @@
+- [Drew's profile](user-profile.md) — solo dev, wants recommendations
+- [Commit style](feedback-commits.md) — imperative commit lines, 100 chars max
+- [Never force-push](feedback-no-force.md) — history is never rewritten
+- [Bake retry](project-bake-retry.md) — retry a flaky bake once before debugging
+- [Deploy steps](reference-deploy.md) — how the site is deployed
+- [Phase 12 state](project-phase12.md) — phase 12 closed at abc1234
+- [Keep me](keep.md) — stays in the index

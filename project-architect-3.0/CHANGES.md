@@ -2,6 +2,12 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, the router reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.13 — The router's reach and the migrated memories
+
+- The auditor now runs at every generation start. The router's instructions called for it there, but the router was not allowed to start it, so every attempt failed with "Agent type 'auditor' not found". A test now fails whenever the router's instructions name an agent it cannot start.
+- The memory curator is required at every generation start. Before it runs, the router asks you once and says it is required; you can run it now or pause, not skip it.
+- A project upgraded from 2.0 has its old memories moved where PA3 keeps such things: standing facts into HOW_WE_WORK.md, rules into the project's rules, techniques into the cookbook and environment facts into docs/ops/. The rest are archived, and the curator's recap and the router tell you the archive's path. Nothing is deleted: the full text of every memory stays in the archive.
+
 ## 3.12 — The Sonnet 5.5 upgrade
 
 - The router and all three retrievers now run on Sonnet 5.5 at medium effort. The router and the document and web retrievers moved from Sonnet 5, the code retriever from Haiku 4.5. The experts and the coder are unchanged.
