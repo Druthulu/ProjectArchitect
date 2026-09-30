@@ -2,6 +2,14 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, the router reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.14.1 — The discussion stays open, the toasts say something
+
+- Desktop toasts from a project in WSL now show their title and message. Before, PA3 handed the text to Windows with a setting that only works in the other direction (Windows to WSL), so every toast from WSL read just "Project Architect".
+- The router no longer takes each reply of a discuss agent as the end of the discussion. Claude Code marks a background agent done after every reply, and your next message in its view picks it up again. The router now treats only the return that carries the record (after `/proceed`) as the end and stays quiet on every other reply.
+- The keep-warm ping's one-character reply from a discuss agent no longer raises a "discussion turn ended" toast.
+- The router no longer crashes at launch in a project that has a PhaseEnd named like `PhaseEnd_Phase3_5.md` (common after a 2.0 migration) next to numbered ones like `37.5`. The launcher now sorts PhaseEnds with the same rule as the rest of PA3.
+- The PhaseEnd's seed-size line "previous phase" now names the phase that really came before: phases were sorted as text, so 3.10 came before 3.9.
+
 ## 3.14 — The migrated memories, finished
 
 - A project upgraded from 2.0 no longer turns old 2.0 habits into rules. Memories such as "capture knowledge before a fresh session" or "plain-English recaps" describe practices PA3 already covers, or replaced, so the memory curator now archives them instead, and its recap lists them under "superseded by PA3". Nothing is deleted: their full text stays in the archive.

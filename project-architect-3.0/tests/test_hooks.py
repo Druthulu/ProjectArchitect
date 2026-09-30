@@ -1307,6 +1307,12 @@ class ToastPolicyTest(LedgerCase):
         row = self._last()
         self.assertEqual((row["cause"], row["sent"]), ("discussion", 1))
 
+    def test_discuss_warmer_ping_reply_does_not_toast(self):
+        """3.14.1: the "." reply to a warmer ping ends a turn the developer did not take."""
+        self._subagent_stop("discuss", "d3333333333333333", ".")
+        self.assertEqual(self.toast_rows(), [])
+        self.assertEqual(self.toasts, [])
+
     def test_coder_subagent_stop_writes_no_toast_event(self):
         self._subagent_stop("coder-opus55", "c1111111111111111", "STATUS: done")
         self.assertEqual(self.toast_rows(), [])

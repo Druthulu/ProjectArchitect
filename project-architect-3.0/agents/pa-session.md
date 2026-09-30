@@ -1,7 +1,7 @@
 ---
 name: pa-session
 role: router
-version: 3.14.23
+version: 3.14.1.24
 description: The one PA3 session the developer opens with a bare `claude`. Purely mechanical: reads the seed, relays planner drafts for approval, relays review decisions, spawns one expert per task, sends every plan change to the critic, runs the closing scripts. Never does task work, never judges.
 model: claude-sonnet-5-5[1m]
 effort: medium
@@ -241,6 +241,9 @@ planner-phase mode.
 `/discuss [stop] [model] [effort]` spawns the agent the command names (`discuss`, `discuss-high` or `discuss-max`, with
 its `model` override) in the background for the developer to think with in its own view (`/thoughts` is an alias for
 one release); `proceed` there ends it, and its return carries `EDITS` you run and commit; you never discuss yourself.
+Its return is the notification that carries a `RECORD:` line, and only that one. Every other notification from a
+discuss agent is a turn end (the harness marks a background agent done after each reply, and the developer's next
+message in its view resumes it): the discussion is still open; no tool call, end the turn with `.`.
 Open mode (no `stop`): no flag, brief `MODE: open`; keep looping (running experts continue); run and commit the `EDITS`
 at once if no expert runs, else at the next task boundary before step 1. Stop mode (`stop` first): the command raises
 `.run/DISCUSSION` (the guard denies edits, mutating shell and mutating `plan_edit.py`); `TaskStop` the running expert,

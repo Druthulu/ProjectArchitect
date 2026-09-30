@@ -347,11 +347,9 @@ def _audit_flag_line(root):
                     pe_files.append((os.path.join(sub, name), m.group(1)))
     if not pe_files:
         return None
-    # natural sort: split phase id into numeric parts
-    def _sort_key(item):
-        parts = re.split(r"[.\-]", item[1])
-        return [int(p) if p.isdigit() else p for p in parts]
-    pe_files.sort(key=_sort_key)
+    # natural sort, the one rule (3.14.1: a local splitter raised TypeError on ids like 3_5 beside 37.5)
+    from phaseend_index import natural_key
+    pe_files.sort(key=lambda item: natural_key(item[1]))
     newest_rel, newest_phase = pe_files[-1]
     newest_path = os.path.join(pe_dir, newest_rel)
     # count '- flag:' lines under '## Audit'

@@ -144,7 +144,8 @@ def build_command(title, body, tag=None, cfg=None, machine=None):
                "-ExecutionPolicy", "Bypass", "-File", _win_script_path(machine)]
         if machine == "wsl":
             wslenv = os.environ.get("WSLENV", "")
-            extra = "PA_TOAST_TITLE/u:PA_TOAST_BODY/u:PA_TOAST_TAG/u"
+            # /w: shared when WSL starts a Win32 program (3.14.1; /u, the reverse direction, left the toast blank)
+            extra = "PA_TOAST_TITLE/w:PA_TOAST_BODY/w:PA_TOAST_TAG/w"
             env["WSLENV"] = (wslenv + ":" + extra) if wslenv else extra
         return cmd, env, ("toast-wsl" if machine == "wsl" else "toast-win")
     if machine == "wsl" and _which("notify-send"):

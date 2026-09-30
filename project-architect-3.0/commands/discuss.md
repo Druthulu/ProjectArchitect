@@ -22,13 +22,15 @@ If you are the pa-session (the router), you never discuss here yourself:
 - Open mode: spawn that agent, with that override, in the background with the brief `MODE: open · TOPIC: <TOPIC> ·
   PLAN: PY tools/plan_edit.py show --section Context (Interfaces, Cookbook, Research) · HOW: HOW_WE_WORK.md`, print one
   line — "Discussion open: click the discuss agent below and talk there; say proceed there when done" — and continue
-  the loop (do not end the turn waiting on it; if an expert is running, end the turn as step 3 does). On its return:
+  the loop (do not end the turn waiting on it; if an expert is running, end the turn as step 3 does). Its return is
+  the notification with a `RECORD:` line; any other notification from it is a turn end (the harness marks it done
+  after each reply; the developer's next message resumes it): no tool call, end the turn with `.`. On its return:
   if no expert is running, run every `EDITS` line verbatim and commit them at once
   (`bash tools/commit_task.sh router "<what>" phase-ends/current/PHASE_PLAN.md`); else hold them and run and commit
   them at the next task boundary, before step 1. Print its `DECISIONS`.
 - Stop mode: if an expert is running, `TaskStop` it and run `{{PY}} tools/status.py set --task T<n> --agent <same>
   --kind relaunch --attempt <k+1>`. Spawn that agent as above with `MODE: stop` in place of `MODE: open`, print the same
-  line, and end your turn; spawn nothing else while `.run/DISCUSSION` exists. On its return (after `/proceed`): run
+  line, and end your turn; spawn nothing else while `.run/DISCUSSION` exists. On its return (the `RECORD:` notification after `/proceed`; any other is a turn end, as above): run
   every `EDITS` line verbatim, commit them, run `{{PY}} tools/discussion.py off` if `.run/DISCUSSION` still exists,
   print its `DECISIONS`, then respawn the stopped task with the same brief plus
   `NOTE: paused for a discussion; run git diff --stat first` and continue the loop.

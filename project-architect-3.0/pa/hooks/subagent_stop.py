@@ -64,7 +64,8 @@ def run(inp, cfg):
     close_follow_tab(agent_id)
     _cleanup(inp, cfg, sid, agent_id, role)
     _warm_end(inp, sid, agent_id)
-    if str(agent_type or "") in ("discuss", "discuss-high", "discuss-max"):     # 3.9.5 T2/T13: the discussion's turn ended; no other type toasts
+    if (str(agent_type or "") in ("discuss", "discuss-high", "discuss-max")     # 3.9.5 T2/T13: the discussion's turn ended; no other type toasts
+            and str(answer).strip() != "."):                                   # 3.14.1: a warmer ping's reply is no turn for the developer
         toast(cfg, "PA3 · %s · discussion turn ended" % (project_name(inp) or "session"),
               str(answer)[-240:] or "(no message)", kind="waiting", session_id=sid,
               project_cfg=project_config(governed(inp)), cause="discussion", run_id=agent_id)

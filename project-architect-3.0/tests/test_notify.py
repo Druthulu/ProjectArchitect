@@ -66,6 +66,18 @@ class NotifyTest(unittest.TestCase):
             self.assertEqual(cmd[cmd.index("-WindowStyle") + 1], "Hidden")   # a hidden console: toasts need one
             self.assertEqual(cmd[-1].replace("\\", "/").split("/")[-1], "notify_toast.ps1")
 
+    def test_wsl_forwards_the_text_to_windows(self):
+        """3.14.1: WSLENV ``/w`` reaches powershell.exe from WSL; ``/u`` (Win32 -> WSL) left it blank."""
+        real = notify._exists
+        notify._exists = lambda path: True
+        try:
+            cmd, env, channel = notify.build_command("PA3 · t", "b", tag="g", machine="wsl")
+        finally:
+            notify._exists = real
+        self.assertEqual(channel, "toast-wsl")
+        flags = dict(v.split("/", 1) for v in env["WSLENV"].split(":") if v.startswith("PA_TOAST_"))
+        self.assertEqual(flags, {"PA_TOAST_TITLE": "w", "PA_TOAST_BODY": "w", "PA_TOAST_TAG": "w"})
+
     def test_toast_script_exists_next_to_the_module(self):
         self.assertTrue(os.path.exists(notify.script_path()))
 

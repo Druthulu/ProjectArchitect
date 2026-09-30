@@ -374,7 +374,7 @@ def audit_lines(root, phase, phases_avail=None):
                 mid_i = n // 2
                 med = (vals[mid_i - 1] + vals[mid_i]) // 2 if n % 2 == 0 else vals[mid_i]
                 mx = max(vals)
-                sorted_phases = sorted(by_phase.keys())
+                sorted_phases = sorted(by_phase.keys(), key=natural_key)   # 3.14.1: was text order, 3.10 before 3.9
                 idx = sorted_phases.index(str(phase)) if str(phase) in sorted_phases else -1
                 if idx > 0:
                     prev_phase = sorted_phases[idx - 1]

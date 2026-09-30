@@ -494,5 +494,25 @@ class SeedCurateTest(SeedDeferredTest):
         self.assertNotIn("curate:", self._dry())
 
 
+class AuditFlagSortTest(unittest.TestCase):
+    """3.14.1: the newest PhaseEnd by the natural rule; an id like 3_5 beside 37.5 raised TypeError."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="pa3-launch-pe-")
+        sys.path.insert(0, TOOLS)
+        import launch
+        self.launch = launch
+
+    def tearDown(self):
+        sys.path.remove(TOOLS)
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_mixed_ids_pick_the_newest(self):
+        pe = os.path.join(self.root, "phase-ends")
+        for pid in ("3_5", "9", "37.5", "37.10", "12a"):
+            write(os.path.join(pe, "PhaseEnd_Phase%s.md" % pid), "# PhaseEnd %s\n\n## Audit\n- flag: %s\n" % (pid, pid))
+        self.assertEqual(self.launch._audit_flag_line(self.root), "Audit flag: 1 flags in PhaseEnd_Phase37.10.md")
+
+
 if __name__ == "__main__":
     unittest.main()
