@@ -1512,10 +1512,11 @@ def rebuild(conn, cfg=None, windows_only=False, sessions_only=False, readers=Non
 
     try:
         return fsutil.locked_update(paths.summary_path(), _patch, timeout_ms=2000, default={})
-    except Exception:
+    except Exception as exc:
         from . import log
 
-        log.log("summary_rebuild_failed")
+        # the error text: 59 bare lines hid a missing column for three days (3.14.2 T2)
+        log.log("summary_rebuild_failed", error=("%s: %s" % (type(exc).__name__, exc))[:200])
         return None
 
 

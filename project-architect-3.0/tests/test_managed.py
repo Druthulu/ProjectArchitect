@@ -195,7 +195,7 @@ class PackageVersionTest(unittest.TestCase):
     def test_upstream_version_from_package_version_file(self):
         """I11: the record's ``upstream_version`` is the package VERSION, else ``__version__``."""
         from pa import __version__
-        self.assertEqual(managed._package_version(HERE), "3.14.1")
+        self.assertEqual(managed._package_version(HERE), "3.14.2")
         d = tempfile.mkdtemp(prefix="pa3-pkgver-")
         try:
             self.assertEqual(managed._package_version(d), __version__)

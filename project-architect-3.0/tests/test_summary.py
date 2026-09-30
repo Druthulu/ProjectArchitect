@@ -622,5 +622,39 @@ class WeeksByWindowTest(unittest.TestCase):
         self.assertAlmostEqual(lt["unrated_usd"], 5.0, places=6)
 
 
+class RebuildFailureLogTest(unittest.TestCase):
+    """A failed rebuild names its error in hooks.log (3.14.2 T2: the WSL ledger logged 59 bare
+    ``summary_rebuild_failed`` lines while a missing column failed every rebuild)."""
+
+    def test_the_failure_line_carries_the_exception(self):
+        import shutil
+        import tempfile
+        from unittest import mock
+
+        from pa import log
+
+        tmp = tempfile.mkdtemp(prefix="pa3-summary-")
+        old_env, old_log = os.environ.get("PA_LEDGER_DIR"), log._LOG_PATH
+        os.environ["PA_LEDGER_DIR"] = tmp
+        log.set_log_path(os.path.join(tmp, "hooks.log"))
+        try:
+            boom = sqlite3.OperationalError("no such column: fit_detail")
+            with mock.patch.object(summary, "era_start", return_value=""), \
+                    mock.patch.object(summary, "accounts_block", side_effect=boom):
+                self.assertIsNone(summary.rebuild(sqlite3.connect(":memory:"), {}))
+            with open(os.path.join(tmp, "hooks.log"), encoding="utf-8") as fh:
+                line = fh.read().strip().splitlines()[-1]
+            self.assertIn("summary_rebuild_failed", line)
+            self.assertIn("OperationalError: no such column: fit_detail", line)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "summary.json")))   # nothing written
+        finally:
+            log.set_log_path(old_log)
+            if old_env is None:
+                os.environ.pop("PA_LEDGER_DIR", None)
+            else:
+                os.environ["PA_LEDGER_DIR"] = old_env
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

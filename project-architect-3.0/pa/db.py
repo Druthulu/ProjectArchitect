@@ -281,6 +281,7 @@ def init_schema(conn, machine=None):
     _bench_v4(conn)   # a v3 bench left by IF NOT EXISTS (hooks and the installer call init_schema)
     _sessions_v5(conn)   # likewise a v4 sessions table (T30)
     _accounts_v7(conn)   # likewise a v6 accounts table (3.10.6 T1)
+    _window_instances_v2(conn)   # likewise a v1 window_instances table (T2.1; 3.14.2 T1)
     now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
     if get_meta(conn, "created") is None:
         set_meta(conn, "created", now)
@@ -307,7 +308,8 @@ def migrate(conn):
 
     v1 is the first schema: ``init_schema`` is idempotent (``IF NOT EXISTS``
     everywhere), so migrating is running it again.  Later versions add their
-    ``ALTER TABLE`` steps here, keyed on the stored version.  v2 -> v3 adds the
+    ``ALTER TABLE`` steps here, keyed on the stored version.  v1 -> v2 adds
+    ``window_instances.fit_detail`` (:func:`_window_instances_v2`, T2.1).  v2 -> v3 adds the
     ``bench`` table (``BENCH_SQL``).  v3 -> v4 recreates ``bench`` with the
     ``attempt`` key (:func:`_bench_v4`: old rows become attempt 1, one
     transaction; SQLite cannot alter a primary key).  v4 -> v5 adds
@@ -321,10 +323,7 @@ def migrate(conn):
         return have
     # v1 -> v2: add fit_detail TEXT to window_instances (T2.1)
     if have < 2:
-        try:
-            conn.execute("ALTER TABLE window_instances ADD COLUMN fit_detail TEXT")
-        except sqlite3.OperationalError:
-            pass  # column already exists (idempotent)
+        _window_instances_v2(conn)
     # v2 -> v3: the bench table (T3); init_schema re-runs SCHEMA_SQL, which includes it too
     if have < 3:
         conn.executescript(BENCH_SQL)
@@ -342,6 +341,18 @@ def migrate(conn):
         _accounts_v7(conn)
     init_schema(conn)
     return SCHEMA_VERSION
+
+
+def _window_instances_v2(conn):
+    """Add ``window_instances.fit_detail`` to a pre-v2 table (T2.1); no-op when present.
+
+    init_schema calls it too: a pre-v2 ledger first opened by a hook or the installer was
+    stamped current without the column, and migrate never ran for it (3.14.2 T1)."""
+    have = [r[1] for r in conn.execute("PRAGMA table_info(window_instances)").fetchall()]
+    if not have or "fit_detail" in have:
+        return False
+    conn.execute("ALTER TABLE window_instances ADD COLUMN fit_detail TEXT")
+    return True
 
 
 def _sessions_v5(conn):

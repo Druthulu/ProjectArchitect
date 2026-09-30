@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 3.14.1" src="https://img.shields.io/badge/version-3.14.1-3b82f6">
+  <img alt="version 3.14.2" src="https://img.shields.io/badge/version-3.14.2-3b82f6">
   <img alt="for Claude Code" src="https://img.shields.io/badge/for-Claude%20Code-d97757">
   <img alt="Windows, WSL, Linux, macOS" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20WSL%20%7C%20Linux%20%7C%20macOS-64748b">
 </p>

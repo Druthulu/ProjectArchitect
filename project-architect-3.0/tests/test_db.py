@@ -55,6 +55,40 @@ class SchemaTest(unittest.TestCase):
         self.assertEqual(db.migrate(self.conn), db.SCHEMA_VERSION)
 
 
+class MigrateV2Test(unittest.TestCase):
+    """v1 -> v2 adds window_instances.fit_detail (T2.1); a ledger stamped current without it
+    heals on its next init_schema (3.14.2 T1: the WSL ledger failed every summary rebuild)."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pa3-db-")
+        self.conn = db.connect(os.path.join(self.dir, "ledger.sqlite"))
+        self.assertEqual(db.SCHEMA_SQL.count("fit_detail TEXT, "), 1)
+        self.conn.executescript(db.SCHEMA_SQL.replace("fit_detail TEXT, ", ""))   # v1 window_instances
+
+    def tearDown(self):
+        db.close(self.conn)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _cols(self):
+        return [r[1] for r in self.conn.execute("PRAGMA table_info(window_instances)")]
+
+    def test_v1_to_current(self):
+        db.set_meta(self.conn, "schema_version", "1")
+        self.assertNotIn("fit_detail", self._cols())
+        self.assertEqual(db.migrate(self.conn), db.SCHEMA_VERSION)
+        self.assertIn("fit_detail", self._cols())
+        self.assertEqual(db.migrate(self.conn), db.SCHEMA_VERSION)     # second migrate: no-op
+
+    def test_stamped_current_without_the_column_heals_on_init_schema(self):
+        db.set_meta(self.conn, "schema_version", str(db.SCHEMA_VERSION))
+        self.assertEqual(db.migrate(self.conn), db.SCHEMA_VERSION)     # migrate trusts the stamp
+        self.assertNotIn("fit_detail", self._cols())
+        db.init_schema(self.conn)                  # the hooks' and the installer's path (open_db too)
+        self.assertIn("fit_detail", self._cols())
+        db.init_schema(self.conn)                  # idempotent
+        self.assertEqual(self._cols().count("fit_detail"), 1)
+
+
 class MigrateV3Test(unittest.TestCase):
     """v2 -> v3 adds the bench table (T3), ending at the v4 shape; a newer stamp is never lowered."""
 

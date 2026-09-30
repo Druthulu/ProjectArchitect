@@ -152,7 +152,7 @@ class BenchRun(unittest.TestCase):
         self.assertEqual((t["turns"], t["turns_source"], t["cache_write"]), (2, "transcript", 40))
         self.assertEqual((coder["model"], coder["effort"], coder["w5h_before"]), ("claude-opus-5-5", "medium", 10.0))
         self.assertEqual(doc["claude_code"], "2.1.282")
-        self.assertEqual(doc["harness_version"], "3.14.1")        # I11: the package VERSION
+        self.assertEqual(doc["harness_version"], "3.14.2")        # I11: the package VERSION
         self.assertIn("coder coder-opus55 claude-opus-5-5/medium pass 4/4", text)
         self.assertTrue(list((SCRATCH / "work").glob("*/planner/p01.rubric.txt")))
         p01 = doc["arms"][2]["tasks"][0]   # 3.9.7 T4: rubric side score, grader cost added

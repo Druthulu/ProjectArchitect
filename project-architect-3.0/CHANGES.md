@@ -2,6 +2,12 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, the router reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.14.2 — The hotfix
+
+- A usage ledger created by an early build now gets the column a later build added, the next time a hook, the installer or the ledger CLI opens it. Before, such a ledger could be marked up to date without that column; every summary rebuild then failed, and the statusline lost its Project and Account lines and part of its Pace and Session lines (seen on a WSL machine for three days).
+- `hooks.log` now says why a summary rebuild failed (`summary_rebuild_failed {"error": "..."}`). Before, it logged only the event name, which is how the failure above went unnoticed.
+- Experts no longer try to continue a coder that has finished. Claude Code's own text offers SendMessage for that, but agents started by other agents don't have it, so the call failed and the expert started a new coder anyway. The expert now starts the new coder straight away, with a brief naming the previous coder's commit and log.
+
 ## 3.14.1 — The discussion stays open, the toasts say something
 
 - Desktop toasts from a project in WSL now show their title and message. Before, PA3 handed the text to Windows with a setting that only works in the other direction (Windows to WSL), so every toast from WSL read just "Project Architect".
