@@ -291,9 +291,25 @@ def _status_doc(root):
         return {}
 
 
-def _curate_seed_line(root, conf):
-    """Return a curate: seed line when a GenerationEnd or legacy entries exist."""
+def _curate_seed_line(root, conf, mode):
+    """Return a curate: seed line: the migration line in any mode while LEGACY_INDEX.md has
+    entries, pa.json lacks `memory_routed` (3.14 T2) and `.claude-state/memory` holds a
+    memory file (any *.md but MEMORY.md and gen*.md archives; 3.14 T4); else, planner-gen
+    only, the closing-gen line when a GenerationEnd exists."""
     pe_dir = PE.phase_dir(root, conf)
+    # check LEGACY_INDEX.md for entries (non-comment, non-blank lines); the migration wins
+    legacy = os.path.join(pe_dir, "LEGACY_INDEX.md")
+    if os.path.isfile(legacy) and not conf.get("memory_routed"):
+        text = PE.read_text(legacy)
+        entries = [l for l in text.split("\n")
+                   if l.strip() and not l.strip().startswith("#")]
+        memdir = os.path.join(root, ".claude-state", "memory")
+        memories = [n for n in (os.listdir(memdir) if os.path.isdir(memdir) else [])
+                    if n.endswith(".md") and n != "MEMORY.md" and not n.startswith("gen")]
+        if entries and memories:
+            return "curate: migration -> gen legacy"
+    if mode != "planner-gen":
+        return None
     # find the highest GenerationEnd
     highest_g = None
     if os.path.isdir(pe_dir):
@@ -305,14 +321,6 @@ def _curate_seed_line(root, conf):
                     highest_g = g
     if highest_g is not None:
         return "curate: closing gen %d -> opening gen %d" % (highest_g, highest_g + 1)
-    # check LEGACY_INDEX.md for entries (non-comment, non-blank lines)
-    legacy = os.path.join(pe_dir, "LEGACY_INDEX.md")
-    if os.path.isfile(legacy):
-        text = PE.read_text(legacy)
-        entries = [l for l in text.split("\n")
-                   if l.strip() and not l.strip().startswith("#")]
-        if entries:
-            return "curate: migration -> gen legacy"
     return None
 
 
@@ -520,10 +528,10 @@ def write_seed(root, conf, mode, phase, gen, args):
         body.append("## Generation phases")
         for pid, name, st, _raw in (gen_phases(root) or []):
             body.append("- %s %s | status: %s" % (pid, name, st))
-        # curate line: a generation is being opened (planner-gen only -- while a generation
-        # is open, its predecessor's GenerationEnd still exists; the 3.3 trial ran the curator
-        # at a phase-planning launch because of that)
-        curate_line = _curate_seed_line(root, conf) if mode == "planner-gen" else None
+        # curate line: the closing-gen line is planner-gen only (while a generation is open,
+        # its predecessor's GenerationEnd still exists; the 3.3 trial ran the curator at a
+        # phase-planning launch because of that); the migration line is any mode (3.14 T2)
+        curate_line = _curate_seed_line(root, conf, mode)
         if curate_line:
             body.append(curate_line)
         if os.path.isfile(os.path.join(cur, "REPLAN.md")):
@@ -549,6 +557,10 @@ def write_seed(root, conf, mode, phase, gen, args):
     upg = _upgrade_line(root)                    # staged install conflicts (3.9.7 T8)
     if upg:
         body.append(upg)
+    if not mode.startswith("planner"):          # planner modes carry it above (3.14 T2)
+        curate_line = _curate_seed_line(root, conf, mode)
+        if curate_line:
+            body.append(curate_line)
     if mode == "router":
         audit_flag = _audit_flag_line(root)
         if audit_flag:

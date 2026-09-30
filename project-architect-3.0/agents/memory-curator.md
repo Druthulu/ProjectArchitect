@@ -1,7 +1,7 @@
 ---
 name: memory-curator
 role: curator
-version: 3.13.3
+version: 3.14.5
 description: Curates memories, cookbook and rules at every generation start. Demotes generation-state, keeps cross-generation facts. Returns a recap.
 model: claude-fable-5-1[1m]
 effort: medium
@@ -40,13 +40,20 @@ the governed-file sizes.
 ## Migration
 
 1. Read every file in `<MEMORY dir>` and the card (`PY tools/card.py slice curator`).
-2. Route every memory with `PY tools/curate.py memory --route <file>=<store>... --gen legacy`. Stores: `developer`
+2. Before routing, judge each memory: does PA3's skill, card or rules already state it, or does it describe a 2.0
+   practice PA3 replaced or contradicts? Then route it to `archive`, never `rule` or `how-we-work`; such a memory never
+   becomes a PA3 rule or card line. Examples: "capture knowledge before a fresh session" (the skill: never recommend a
+   fresh session; PA3 hands off via `TASK_PROGRESS.md`) and "plain-English recaps" (the skill already requires
+   plain-English recaps at phase end). In step 3 these take `=archive`; only the rest are routed to the other stores.
+3. Route every memory with `PY tools/curate.py memory --route <file>=<store>... --gen legacy`. Stores: `developer`
    (facts about the developer), `how-we-work` (standing facts), `rule` (norms, feedback), `cookbook` (techniques),
    `ops` (environment facts), `archive` (project state, the rest). Keep a memory only when it is of a kind a PA3 cycle
    itself writes (PA3 agents never write memories, so usually none).
-3. `--dry-run` first, then for real. A refused card route (over `card.max_chars`, named in the refusal) goes to `ops`
+4. `--dry-run` first, then for real. A refused card route (over `card.max_chars`, named in the refusal) goes to `ops`
    when it is an environment fact, else `archive`; re-run dry.
-4. Commit: `bash tools/commit_task.sh curate "Migration: memories routed" <paths>`.
+5. When no memory file is left to route (all kept), run `PY tools/curate.py memory --route --gen legacy`
+   (`--dry-run` first) so the launcher stops asking.
+6. Commit: `bash tools/commit_task.sh curate "Migration: memories routed" <paths>`.
 
 ## Constraints
 
@@ -61,3 +68,4 @@ the governed-file sizes.
 A recap of at most 300 tokens: what moved, what stayed, one line per group (memories, cookbook, rules, HOW_WE_WORK).
 Name each memory route (`file -> store`), each refusal and its fallback, and the archive path
 (`<MEMORY dir>/gen<G>.md` at a generation start, `<MEMORY dir>/genlegacy.md` for a migration).
+For a migration, list the memories archived by `## Migration` step 2 under "superseded by PA3".

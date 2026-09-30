@@ -425,5 +425,74 @@ class SeedUpgradeTest(SeedDeferredTest):
         self.assertNotIn("Upgrade:", self._dry())
 
 
+class SeedCurateTest(SeedDeferredTest):
+    """3.14 T2: the migration curate line in any mode until pa.json carries memory_routed."""
+
+    test_planner_seed_has_deferred_line = None
+    test_planner_seed_has_discussions_deferred = None
+    MIGRATION = "curate: migration -> gen legacy\n"
+
+    def _legacy(self):
+        write(os.path.join(self.root, "phase-ends", "LEGACY_INDEX.md"),
+              "# Legacy index\nold/PhaseEnd_1.md | phase 1\n")
+        mem = os.path.join(self.root, ".claude-state", "memory")
+        write(os.path.join(mem, "MEMORY.md"), "- [Keep](keep.md) — a kept memory\n")
+        write(os.path.join(mem, "keep.md"), "a kept memory\n")
+
+    def _mark(self):
+        p = os.path.join(self.root, ".claude", "pa.json")
+        conf = json.loads(read(p))
+        conf["memory_routed"] = "3.14"
+        write(p, json.dumps(conf, indent=2) + "\n")
+
+    def test_migration_line_without_marker(self):
+        self._legacy()
+        self.assertIn(self.MIGRATION, self._dry())
+
+    def test_no_migration_line_with_marker(self):
+        self._legacy()
+        self._mark()
+        self.assertNotIn("curate:", self._dry())
+
+    def test_migration_line_in_router_mode(self):
+        self._legacy()
+        shutil.copyfile(PLAN_FIXTURE, os.path.join(self.cur, "PHASE_PLAN.md"))
+        seed = self._dry(["--mode", "router"])
+        self.assertIn("Loop from here", seed)
+        self.assertIn(self.MIGRATION, seed)
+
+    def test_native_project_no_line(self):
+        shutil.copyfile(PLAN_FIXTURE, os.path.join(self.cur, "PHASE_PLAN.md"))
+        self.assertNotIn("curate:", self._dry(["--mode", "router"]))
+        self.assertNotIn("curate:", self._dry(["--mode", "planner-gen"]))
+
+    def test_planner_gen_closing_line_with_marker(self):
+        self._legacy()
+        self._mark()
+        write(os.path.join(self.root, "phase-ends", "GenerationEnd_3.md"), "# Gen 3 end\n")
+        self.assertIn("curate: closing gen 3 -> opening gen 4\n", self._dry(["--mode", "planner-gen"]))
+        self.assertNotIn("curate:", self._dry(["--mode", "planner-phase"]))
+
+    def test_empty_memory_set_no_line(self):
+        """3.14 T4: only MEMORY.md and the genlegacy.md archive left -> no migration line."""
+        self._legacy()
+        mem = os.path.join(self.root, ".claude-state", "memory")
+        os.remove(os.path.join(mem, "keep.md"))
+        write(os.path.join(mem, "genlegacy.md"), "## old\n\nold\n")
+        self.assertNotIn("curate:", self._dry())
+
+    def test_kept_memories_zero_route_ends_line(self):
+        """3.14 T4: all memories kept; the zero-spec legacy route marks pa.json; the line stops."""
+        self._legacy()
+        self.assertIn(self.MIGRATION, self._dry())
+        env = dict(os.environ, PA_PROJECT_ROOT=self.root)
+        r = subprocess.run([sys.executable, os.path.join(TOOLS, "curate.py"), "memory",
+                            "--route", "--gen", "legacy"], cwd=self.root, env=env,
+                           capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("memory_routed", read(os.path.join(self.root, ".claude", "pa.json")))
+        self.assertNotIn("curate:", self._dry())
+
+
 if __name__ == "__main__":
     unittest.main()

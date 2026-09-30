@@ -6,7 +6,8 @@ memory --route FILE=STORE: write each memory's fact to its store (developer and
 how-we-work: a bullet in that HOW_WE_WORK.md section, within card.max_chars; rule:
 rules_add.py; cookbook: cookbook_add.sh; ops: docs/ops/<stem>.md + its index row;
 archive: nothing), then demote it to gen<G>.md. Every route is validated first;
-any refusal writes nothing and exits 1.
+any refusal writes nothing and exits 1. `memory --route --gen legacy` with no specs:
+nothing left to route (all kept); only sets the pa.json `memory_routed` marker.
 ops --sunset --gen G: retire unreferenced ops topics; ops --reindex: refresh the
 docs/ops/INDEX.md line counts and append rows for unindexed docs/ops/*.md.
 Every subcommand takes --dry-run and prints a table of what it would do.
@@ -312,8 +313,18 @@ def _apply_routes(routes, card, root):
 
 
 def cmd_memory(args, root):
-    if not args.demote and not args.route:
+    if not args.demote and args.route is None:
         die("--demote or --route is required")
+    if args.route == [] and not args.demote:
+        if str(args.gen) != "legacy":
+            die("--route with no FILE=STORE needs --gen legacy")
+        # every memory kept: nothing left to route; only the marker is written
+        sys.stdout.write("memory --route --gen legacy\n  route: nothing left to route\n")
+        if args.dry_run:
+            sys.stdout.write("dry-run: no changes\n")
+            return 0
+        _mark_memory_routed(root)
+        return 0
     memdir = args.dir or os.path.join(root, ".claude-state", "memory")
     gen = args.gen
     index_path = _memory_index_path(memdir)
@@ -405,7 +416,37 @@ def cmd_memory(args, root):
     write_text(index_path, "\n".join(index_lines) + "\n")
     _cnote(index_path, script="curate.py", sub="memory",
            removed=_removed_chars, added=len(link_line), root=root)
+    if args.route and str(gen) == "legacy":
+        _mark_memory_routed(root)
     return 0
+
+
+def _pa_version(conf):
+    """The package version as installed tools get it (pa.__version__ from <script>/.. or
+    ~/.claude/pa3); falls back to pa.json `pa_version`."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for home in (os.path.dirname(here), os.path.join(os.path.expanduser("~"), ".claude", "pa3")):
+        if os.path.isdir(os.path.join(home, "pa")):
+            if home not in sys.path:
+                sys.path.insert(0, home)
+            try:
+                import pa
+                return pa.__version__
+            except Exception:
+                break
+    return conf.get("pa_version") or ""
+
+
+def _mark_memory_routed(root):
+    """Set `memory_routed: <version>` in .claude/pa.json after a legacy migration route
+    (3.14 T2: the launcher stops seeding `curate: migration`); silent when pa.json is absent."""
+    path = os.path.join(root, ".claude", "pa.json")
+    if not os.path.isfile(path):
+        return
+    with open(path, encoding="utf-8") as fh:
+        conf = json.load(fh)
+    conf["memory_routed"] = _pa_version(conf)
+    write_text(path, json.dumps(conf, indent=2) + "\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -1004,13 +1045,14 @@ def main(argv=None):
     _add_dry_run(s)
     s.add_argument("--demote", nargs="+", metavar="FILE",
                    help="memory filenames to demote (this or --route is required)")
-    s.add_argument("--route", nargs="+", metavar="FILE=STORE",
+    s.add_argument("--route", nargs="*", metavar="FILE=STORE",
                    help="write the memory's fact to STORE, then demote it; STORE: "
                         "developer | how-we-work (a bullet in that HOW_WE_WORK.md section, "
                         "refused past card.max_chars) | rule (rules_add.py, next free L<n>) | "
                         "cookbook (cookbook_add.sh) | ops (docs/ops/<stem>.md + index row) | "
                         "archive (demote only). All routes are checked first; any refusal "
-                        "writes nothing and exits 1")
+                        "writes nothing and exits 1. No specs with --gen legacy: nothing "
+                        "left to route; sets only the pa.json memory_routed marker")
     s.add_argument("--gen", required=True, help="generation id (e.g. 3 or legacy)")
     s.add_argument("--dir", help="memory directory (default: <root>/.claude-state/memory)")
 

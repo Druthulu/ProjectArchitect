@@ -3,6 +3,7 @@ memory --route writes each fact to its store, then demotes it."""
 
 import contextlib
 import io
+import json
 import os
 import shutil
 import sys
@@ -130,10 +131,10 @@ class MemoryRouteTest(unittest.TestCase):
         _write(os.path.join(self.tmp, ".claude", "pa.json"),
                '{"card": {"max_chars": %d}}\n' % cap)
 
-    def _run(self, routes, *extra):
+    def _run(self, routes, *extra, gen="2"):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            rc = CU.main(["memory", "--gen", "2", "--route"] + routes + list(extra))
+            rc = CU.main(["memory", "--gen", gen, "--route"] + routes + list(extra))
         return rc, buf.getvalue()
 
     def text(self, *parts):
@@ -201,6 +202,71 @@ class MemoryRouteTest(unittest.TestCase):
         self.assertIn("  route: reference-deploy.md -> ops (docs/ops/reference-deploy.md)\n", out)
         self.assertIn("  archive: .claude-state/memory/gen2.md (5 entries after)\n", out)
         self.assertTrue(out.endswith("dry-run: no changes\n"))
+
+    def test_superseded_by_pa3_archived(self):
+        files = ["feedback-fresh-session.md", "feedback-plain-recaps.md"]
+        originals = {f: _read(os.path.join(FIXTURE, f)).decode("utf-8") for f in files}
+        rules_before = self.text("rules", "INDEX.md")
+        card_before = self.text("HOW_WE_WORK.md")
+        rc, out = self._run([f + "=archive" for f in files])
+        self.assertEqual(rc, 0, out)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, "rules", "L2.md")))
+        self.assertEqual(self.text("rules", "INDEX.md"), rules_before)
+        self.assertEqual(self.text("HOW_WE_WORK.md"), card_before)
+        self.assert_demoted(files, originals)
+
+    def conf(self):
+        return json.loads(self.text(".claude", "pa.json"))
+
+    def test_legacy_route_marks_pa_json(self):
+        """3.14 T2: a legacy migration route sets memory_routed to the package version."""
+        import pa
+        rc, out = self._run(["project-phase12.md=archive"], gen="legacy")
+        self.assertEqual(rc, 0, out)
+        conf = self.conf()
+        self.assertEqual(conf["memory_routed"], pa.__version__)
+        self.assertEqual(conf["card"], {"max_chars": 7000})       # other keys kept
+
+    def test_legacy_dry_run_no_marker(self):
+        self._run(["project-phase12.md=archive"], "--dry-run", gen="legacy")
+        self.assertNotIn("memory_routed", self.conf())
+
+    def test_other_gen_no_marker(self):
+        rc, out = self._run(["project-phase12.md=archive"])
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("memory_routed", self.conf())
+
+    def test_zero_route_legacy_marks_only(self):
+        """3.14 T4: `--route` with no specs + `--gen legacy`: nothing left to route; marker only."""
+        index_before = self.text(".claude-state", "memory", "MEMORY.md")
+        rc, out = self._run([], gen="legacy")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("route: nothing left to route", out)
+        self.assertIn("memory_routed", self.conf())
+        self.assertEqual(self.text(".claude-state", "memory", "MEMORY.md"), index_before)
+        self.assertFalse(os.path.exists(os.path.join(self.mem, "genlegacy.md")))
+
+    def test_zero_route_dry_run_no_marker(self):
+        index_before = self.text(".claude-state", "memory", "MEMORY.md")
+        rc, out = self._run([], "--dry-run", gen="legacy")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("dry-run: no changes", out)
+        self.assertNotIn("memory_routed", self.conf())
+        self.assertEqual(self.text(".claude-state", "memory", "MEMORY.md"), index_before)
+
+    def test_zero_route_other_gen_dies(self):
+        with self.assertRaises(SystemExit):
+            self._run([])
+
+
+class CuratorAgentTest(unittest.TestCase):
+    def test_migration_names_superseded_memories(self):
+        with open(os.path.join(PKG, "agents", "memory-curator.md"), encoding="utf-8") as fh:
+            body = fh.read()
+        migration = body.split("\n## Migration\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("fresh session", migration)
+        self.assertIn("plain-English recap", migration)
+        self.assertIn("superseded by PA3", body)
 
 
 if __name__ == "__main__":

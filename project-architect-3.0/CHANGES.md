@@ -2,6 +2,13 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, the router reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.14 — The migrated memories, finished
+
+- A project upgraded from 2.0 no longer turns old 2.0 habits into rules. Memories such as "capture knowledge before a fresh session" or "plain-English recaps" describe practices PA3 already covers, or replaced, so the memory curator now archives them instead, and its recap lists them under "superseded by PA3". Nothing is deleted: their full text stays in the archive.
+- A project migrated on an earlier 3.x release is curated once more at its next session, so its kept memories get the same check. The router asks for it once; when the curator is done, the project records that its memories were sorted (`memory_routed` in `.claude/pa.json`) and is never asked again. This now works in the middle of a phase too, at the next task boundary, not only at a generation start.
+- A project with no memories to sort is never asked.
+- The version check at a phase close now expects one version bump per agent per task: several commits of the same task that change an agent count as one change. Before, each commit had to bump the version again. (This landed just after 3.13 was published.)
+
 ## 3.13 — The router's reach and the migrated memories
 
 - The auditor now runs at every generation start. The router's instructions called for it there, but the router was not allowed to start it, so every attempt failed with "Agent type 'auditor' not found". A test now fails whenever the router's instructions name an agent it cannot start.

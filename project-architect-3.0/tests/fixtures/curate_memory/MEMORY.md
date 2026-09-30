@@ -5,3 +5,5 @@
 - [Deploy steps](reference-deploy.md) — how the site is deployed
 - [Phase 12 state](project-phase12.md) — phase 12 closed at abc1234
 - [Keep me](keep.md) — stays in the index
+- [Fresh session capture](feedback-fresh-session.md) — capture knowledge before a fresh session
+- [Plain-English recaps](feedback-plain-recaps.md) — recap each phase in plain English

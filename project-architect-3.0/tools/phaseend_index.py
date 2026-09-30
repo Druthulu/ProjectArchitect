@@ -1003,6 +1003,25 @@ def changes_problems(root, phase):
     return ["package changed in phase %s; %s has no '## %s' section" % (phase, changes_rel, phase)]
 
 
+_TASK_SUBJECT = re.compile(r"^(T\d+(?:\.\d+)?)(?:\.c\d+)?:")
+
+
+def task_runs(entries):
+    """``[(first_sha, last_sha)]`` from ``[(sha, subject)]`` oldest first: consecutive commits of one
+    task (subject ``T2:``, ``T2.c1:``, ``T4.1.c2:``) form one run, judged as one change, so an agent
+    needs one version bump per task (developer 2026-09-29); any other commit is a run of its own."""
+    runs, key = [], None
+    for sha, subject in entries:
+        m = _TASK_SUBJECT.match(subject)
+        k = m.group(1) if m else None
+        if k is not None and k == key:
+            runs[-1] = (runs[-1][0], sha)
+        else:
+            runs.append((sha, sha))
+        key = k
+    return runs
+
+
 def agent_version_problems(root, phase):
     """Version-rule problems for every agent file change since plan approval: each first-parent
     commit (``<c>^`` vs ``<c>``), then the working tree vs HEAD. [] without agents dir, git or approval."""
@@ -1011,9 +1030,10 @@ def agent_version_problems(root, phase):
     approval = _approval_commit(root)
     if not approval:
         return []
-    log = _git_utf8(root, "log", "--first-parent", "--reverse", "--format=%H",
+    log = _git_utf8(root, "log", "--first-parent", "--reverse", "--format=%H %s",
                     "%s..HEAD" % approval, "--", AGENTS_REL) or ""
-    pairs = [(c, c + "^", c) for c in log.split()]
+    entries = [tuple((ln.split(" ", 1) + [""])[:2]) for ln in log.splitlines() if ln.strip()]
+    pairs = [(last, first + "^", last) for first, last in task_runs(entries)]
     pairs.append(("worktree", "HEAD", None))
     problems = []
     for where, old_ref, new_ref in pairs:

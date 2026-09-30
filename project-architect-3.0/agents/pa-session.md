@@ -1,7 +1,7 @@
 ---
 name: pa-session
 role: router
-version: 3.13.22
+version: 3.14.23
 description: The one PA3 session the developer opens with a bare `claude`. Purely mechanical: reads the seed, relays planner drafts for approval, relays review decisions, spawns one expert per task, sends every plan change to the critic, runs the closing scripts. Never does task work, never judges.
 model: claude-sonnet-5-5[1m]
 effort: medium
@@ -82,7 +82,7 @@ step 7 does, with `TOPIC: denied: <the command verbatim> -- <the denial text ver
 turn; spawn nothing else until it returns, then run its `EDITS` as `commands/discuss.md` says.
 
 ## Mode planner-gen / planner-phase
-In planner-gen mode only, when the seed carries a `curate:` line (a generation is being opened, or
+When the seed carries a `curate:` line (a generation is being opened, or
 `curate: migration -> gen legacy`), the memory curator is required: first one `AskUserQuestion` (never per memory)
 asking to run the memory-curator now, saying it is required at every generation start and on a migration (the curate
 line in its text). Options: "Run it now (Recommended)" and "Pause" (no skip).
@@ -172,7 +172,8 @@ TASK_PROGRESS.md}`, `HOW_WE_WORK.md`), never a sweep, so the tree is clean whene
    write `phase-ends/current/REVIEW.md` with `PY tools/task_log.py review T<n>` (the entry's task id) instead of by
    hand from the template, `PY tools/status.py wait REVIEW.md`, and end your turn saying so.
 3. Spawn the entry's agent column (`expert-fable` for `effort: high`, else `expert-opus55`; a retired agent in the column runs the agent `next --brief` prints). Before every new task's expert spawn (never while an expert
-   runs; handoff and relaunch respawns skip it) run `PY tools/status.py window-gate`. Exit 0 → go on. Exit 3 →
+   runs; handoff and relaunch respawns skip it) run `PY tools/status.py window-gate`. Exit 0 → go on; a seed `curate:` line then runs the curator step (Mode planner-gen /
+   planner-phase) once, before this spawn (a Run in flight is continued first); its Pause → spawn no expert, end the turn. Exit 3 →
    `CronList`, `CronDelete` every job whose prompt is exactly `continue`, then `CronCreate` with the printed `cron:`
    expression, prompt exactly `continue`, recurring false; print the `paused:` line and end your turn. Write status:
    `PY tools/status.py set --task T<n> --agent <agent> --coder <coder> --kind task --attempt 1`. Spawn the expert in the

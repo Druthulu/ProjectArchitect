@@ -899,6 +899,12 @@ class TestAgentVersionRule(unittest.TestCase):
         self.assertIsNone(PI.agent_version_problem(
             "x", _agent("3.10.5").replace("\n", "\r\n"), _agent("3.10.5"), "4.2"))
 
+    def test_task_runs_group_one_tasks_commits(self):
+        """3.13: consecutive commits of one task are one change (one bump per task)."""
+        runs = PI.task_runs([("a", "T2.c2: x"), ("b", "T2: y"), ("c", "T2: z"), ("d", "router: r"),
+                             ("e", "T3.c1: q"), ("f", "T4.1.c1: w"), ("g", "T4.1: v"), ("h", "T4: u")])
+        self.assertEqual(runs, [("a", "c"), ("d", "d"), ("e", "e"), ("f", "g"), ("h", "h")])
+
 
 class TestLintAgentVersions(TestLedgerSliceStaged):
     """3.10 T14: lint reports a bad bump in a commit since approval, and in the working tree."""
