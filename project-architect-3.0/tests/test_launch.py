@@ -203,6 +203,20 @@ class SeedCardSliceTest(unittest.TestCase):
         self.assertIn("Arm now: Monitor on `tail -n0 -F .run/warmer/<sid>.wake`", seed)
         self.assertIn("(sid: .run/status.json router_session or the newest .run/warmer/*.pid)", seed)
 
+    def test_arm_line_is_router_seed_line_two_only(self):
+        """3.15 T6: router seed line 2 is the Arm now: line (head -3 shows it); other modes lack it."""
+        lines = self._dry(["--mode", "router"]).splitlines()
+        self.assertTrue(lines[0].startswith("# PA3 session seed -- router"))
+        self.assertTrue(lines[1].startswith("Arm now: Monitor on `tail -n0 -F .run/warmer/"))
+        self.assertEqual(sum(1 for ln in lines if ln.startswith("Arm now:")), 1)
+        self.assertNotIn("Arm now:", self._dry(["--mode", "planner-phase"]))
+
+    def test_seed_only_prints_the_arm_line_first(self):
+        out = self._seed_only("sid-one")
+        self.assertEqual(out.splitlines()[0],
+                         "Arm now: Monitor on `tail -n0 -F .run/warmer/sid-one.wake` "
+                         "(timeout 30 min), then continue.")
+
     def _seed_only(self, sid=None):
         """Run --seed-only with a HOME whose registry names ``sid`` (none when None)."""
         home = os.path.join(self.root, ".run", "home-%s" % (sid or "none"))

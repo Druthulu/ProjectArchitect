@@ -59,7 +59,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell",
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|SubagentHandback",
         "hooks": [
           { "type": "command", "command": "\"{{PY_EXE}}\" -I -X utf8 {{PA3}}/pa_hook.py pre_tool_use", "timeout": 5 }
         ]

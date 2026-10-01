@@ -36,11 +36,20 @@ def user(t, text=None, tool_result=False):
     return {"type": "user", "timestamp": iso(t), "message": {"role": "user", "content": content}}
 
 
-def assistant(t, tool_use=False):
+def assistant(t, tool_use=False, model=None, ctx=None):
     block = ({"type": "tool_use", "id": "tu", "name": "Bash", "input": {}} if tool_use
              else {"type": "text", "text": "done"})
-    return {"type": "assistant", "timestamp": iso(t),
-            "message": {"role": "assistant", "content": [block]}}
+    rec = {"type": "assistant", "timestamp": iso(t),
+           "message": {"role": "assistant", "content": [block]}}
+    if model:                                    # 3.15 T3: usage for cap()
+        rec["message"]["model"] = model
+        rec["message"]["usage"] = {"input_tokens": 6, "cache_read_input_tokens": ctx - 1006,
+                                   "cache_creation_input_tokens": 1000, "output_tokens": 50}
+    return rec
+
+
+OPUS, FABLE, SONNET = "claude-opus-5-5", "claude-fable-5-1", "claude-sonnet-5-5"
+ROUTER = {"ctx": 170000, "model": SONNET}
 
 
 HB = "toolu_01SYNTH00000000000000001"
@@ -71,6 +80,15 @@ def run_with(records, **fields):
 
 class TimerTest(unittest.TestCase):
     """The binding timer rule over fixture records."""
+
+    def test_a_denied_handback_does_not_finish_the_run(self):
+        # 3.15 T18: the PreToolUse guard denies a discuss reply handed back; is_error result
+        recs = handback(T0)
+        self.assertIs(run_with(recs)["finished"], True)
+        recs[1]["message"]["content"][0]["is_error"] = True
+        run = run_with(recs)
+        self.assertIs(run["finished"], False)
+        self.assertEqual(run["handback"], HB)
 
     def test_base_is_the_user_record_never_the_assistant_record(self):
         run = run_with([user(T0, "go"), assistant(T0 + 200)])       # a 200 s request lag
@@ -112,19 +130,20 @@ class TimerTest(unittest.TestCase):
         self.assertIsNone(warmer.due(run, T0 + 270, S))
 
     def test_the_cap_per_ttl_12_on_5m_3_on_1h(self):
-        """3.9.5 T8: a 5m run gets pings 1..12 then cold; a 1h run 1..3 then cold."""
+        """3.9.5 T8: a 5m run gets pings 1..12 then cold; a 1h run 1..3 then cold.
+        3.15 T3: 12 is the 5m ceiling, reached by a 150k Fable 5.1 run."""
         for ttl, fire, cap in (("5m", 260, 12), ("1h", 3275, 3)):
             with self.subTest(ttl=ttl):
-                run = run_with([user(T0, "go"), assistant(T0 + 30)], ttl=ttl)
+                run = run_with([user(T0, "go"), assistant(T0 + 30, model=FABLE, ctx=150000)], ttl=ttl)
                 base = T0
                 for n in range(1, cap + 1):
                     now = base + fire
-                    self.assertEqual(warmer.due(run, now, S), fire, n)
+                    self.assertEqual(warmer.due(run, now, S, ROUTER), fire, n)
                     run["pings"], run["last_ping"] = run["pings"] + 1, now      # what _fire does
                     base = now + 10                                              # the ping lands
                     warmer.apply_records(run, [user(base, "."), assistant(base + 1)])
                     self.assertEqual(run["pings"], n)
-                self.assertIsNone(warmer.due(run, base + fire, S))              # cold
+                self.assertIsNone(warmer.due(run, base + fire, S, ROUTER))      # cold
 
     def test_once_per_base_until_the_ping_lands(self):
         run = run_with([user(T0, "go"), assistant(T0 + 1)], pings=1, last_ping=T0 + 260)
@@ -136,6 +155,64 @@ class TimerTest(unittest.TestCase):
         run["ttl"] = "1h"
         self.assertIsNone(warmer.due(run, T0 + 3274, S))
         self.assertEqual(warmer.due(run, T0 + 3275, S), 3275)         # 3300 - 25
+
+
+class RunTtlTest(unittest.TestCase):
+    """3.15 T4: the run's TTL from its usage's cache writes; the role default until one shows."""
+
+    def test_ttl_from_usage(self):
+        from pa import config
+        default = config.ttl_for_role("expert", config.DEFAULTS)
+        for cc, want in (({"ephemeral_1h_input_tokens": 900, "ephemeral_5m_input_tokens": 0}, "1h"),
+                         ({"ephemeral_1h_input_tokens": 0, "ephemeral_5m_input_tokens": 900}, "5m"),
+                         (None, default)):
+            with self.subTest(want=want):
+                rec = assistant(T0 + 1, model=OPUS, ctx=80000)
+                if cc is not None:
+                    rec["message"]["usage"]["cache_creation"] = cc
+                run = warmer.new_run(AID, "expert-opus55", "expert", default)
+                warmer.apply_records(run, [user(T0, "go"), rec])
+                self.assertEqual(run["ttl"], want)
+
+    def test_a_5m_write_overrides_a_1h_default(self):
+        rec = assistant(T0 + 1, model=OPUS, ctx=80000)
+        rec["message"]["usage"]["cache_creation"] = {"ephemeral_5m_input_tokens": 500}
+        self.assertEqual(run_with([user(T0, "go"), rec], ttl="1h")["ttl"], "5m")
+
+
+class CapTest(unittest.TestCase):
+    """3.15 T3: the 5m cap from the run's and the router's last usage."""
+
+    def test_opus_run_with_a_sonnet_router(self):
+        run = run_with([user(T0, "go"), assistant(T0 + 1, model=OPUS, ctx=80000)])
+        self.assertEqual((run["ctx"], run["model"]), (80000, OPUS))
+        self.assertIn(warmer.cap(run, S, ROUTER), (4, 5))
+
+    def test_fable_run_reaches_the_ceiling(self):
+        run = run_with([user(T0, "go"), assistant(T0 + 1, model=FABLE, ctx=150000)])
+        self.assertEqual(warmer.cap(run, S, ROUTER), 12)
+
+    def test_missing_inputs_fall_back(self):
+        no_usage = run_with([user(T0, "go"), assistant(T0 + 1)])
+        self.assertEqual(warmer.cap(no_usage, S, ROUTER), 3)
+        opus = run_with([user(T0, "go"), assistant(T0 + 1, model=OPUS, ctx=80000)])
+        self.assertEqual(warmer.cap(opus, S), 3)
+        self.assertEqual(warmer.cap(opus, S, {"ctx": 170000, "model": "gpt-9"}), 3)   # unpriced
+        self.assertIsNone(warmer.cap_inputs(opus)["ping_usd"])
+
+    def test_a_ping_dearer_than_the_rewrite_caps_at_0(self):
+        """3.15 T3.1: an 80k Opus run beside a 637k Opus router (long-context reads): cap 0, no wake."""
+        router = {"ctx": 637000, "model": OPUS}
+        run = run_with([user(T0, "go"), assistant(T0 + 1, model=OPUS, ctx=80000)])
+        ci = warmer.cap_inputs(run, router)
+        self.assertGreater(ci["ping_usd"], ci["rewrite_usd"])
+        self.assertEqual(warmer.cap(run, S, router), 0)
+        self.assertIsNone(warmer.due(run, T0 + 262, S, router))
+        self.assertEqual(warmer.due(run, T0 + 262, S, ROUTER), 262)      # same run, cheap router
+
+    def test_one_hour_keeps_max_pings_1h(self):
+        run = run_with([user(T0, "go"), assistant(T0 + 1, model=OPUS, ctx=80000)], ttl="1h")
+        self.assertEqual(warmer.cap(run, S, ROUTER), S["max_pings_1h"])
 
 
 class DaemonCase(unittest.TestCase):
@@ -207,7 +284,10 @@ class DaemonTest(DaemonCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual((rows[0]["t"], rows[0]["kind"], rows[0]["run_id"]), ("event", "warm_ping", AID))
         self.assertEqual(rows[0]["detail"], {"run_id": AID, "session_id": SID, "ttl": "5m",
-                                             "idle_s": 262, "n": 1, "via": "monitor", "cap": 12})
+                                             "idle_s": 262, "n": 1, "via": "monitor", "cap": 3,
+                                             "cap_inputs": {"ctx": None, "model": None,
+                                                            "router_ctx": None, "router_model": None,
+                                                            "rewrite_usd": None, "ping_usd": None}})
         # the ping lands, the run answers '.', the next line comes 260 s after the landing
         self.write(self.transcript(), [user(T0 + 280, "The coordinator sent a message while you "
                                                       "were working: ."), assistant(T0 + 281)], "a")
@@ -217,6 +297,54 @@ class DaemonTest(DaemonCase):
             log = fh.read()
         self.assertIn("adopted 1", log)
         self.assertIn("warm %s 262" % AID, log)
+
+    def _kinds(self):
+        with open(paths.spool_path(SID), encoding="utf-8") as fh:
+            return [json.loads(line)["kind"] for line in fh if line.strip()]
+
+    def test_unrelayed_line_is_flagged_once(self):
+        """3.15 T6: no ping 121 s after the line -> one warm_undelivered + one undelivered line."""
+        self.write(self.transcript(), [user(T0, "go"), assistant(T0 + 30)])
+        w = self.daemon({AID: {"agent_type": "coder-opus55", "role": "coder"}})
+        w.poll(T0 + 262)
+        w.poll(T0 + 262 + 120)
+        self.assertFalse(os.path.exists(self.wfile("undelivered")))
+        w.poll(T0 + 262 + 121)
+        w.poll(T0 + 262 + 200)                                        # not repeated
+        self.assertEqual(self._kinds(), ["warm_ping", "warm_undelivered"])
+        with open(paths.spool_path(SID), encoding="utf-8") as fh:
+            row = [json.loads(line) for line in fh if line.strip()][1]
+        self.assertEqual(row["detail"], {"run_id": AID, "session_id": SID, "idle_s": 262,
+                                         "n": 1, "age_s": 121})
+        with open(self.wfile("undelivered"), encoding="utf-8") as fh:
+            lines = [json.loads(line) for line in fh if line.strip()]
+        self.assertEqual(lines, [{"run_id": AID, "line": "warm %s 262" % AID, "at": T0 + 262}])
+
+    def test_landed_ping_is_not_flagged(self):
+        self.write(self.transcript(), [user(T0, "go"), assistant(T0 + 30)])
+        w = self.daemon({AID: {"agent_type": "coder-opus55", "role": "coder"}})
+        w.poll(T0 + 262)
+        self.write(self.transcript(), [user(T0 + 280, "."), assistant(T0 + 281)], "a")
+        w.poll(T0 + 262 + 121)
+        w.poll(T0 + 262 + 200)
+        self.assertEqual(self._kinds(), ["warm_ping"])
+        self.assertFalse(os.path.exists(self.wfile("undelivered")))
+
+    def test_warm_ping_carries_cap_inputs_from_the_main_transcript(self):
+        """3.15 T3: the router's usage comes from the main transcript; the event carries the inputs."""
+        self.write(self.transcript(), [user(T0, "go"), assistant(T0 + 30, model=OPUS, ctx=80000)])
+        w = self.daemon({AID: {"agent_type": "coder-opus55", "role": "coder"}})
+        self.write(w.session_dir + ".jsonl", [user(T0, "spawn"),
+                                              assistant(T0 + 2, model=SONNET, ctx=170000)])
+        w.poll(T0 + 262)
+        self.assertEqual(w.router, ROUTER)
+        with open(paths.spool_path(SID), encoding="utf-8") as fh:
+            detail = [json.loads(line) for line in fh if line.strip()][0]["detail"]
+        ci = detail["cap_inputs"]
+        self.assertEqual((ci["ctx"], ci["model"], ci["router_ctx"], ci["router_model"]),
+                         (80000, OPUS, 170000, SONNET))
+        self.assertEqual(detail["cap"], int(ci["rewrite_usd"] // ci["ping_usd"]))
+        self.assertIn(detail["cap"], (4, 5))
 
     def test_the_relay_wrapper_counts_as_a_ping_a_different_body_resets(self):
         """C0025: the harness's real relay wrapper (2026-09-24), not just the inline ': .' shape."""
@@ -303,7 +431,8 @@ class DaemonTest(DaemonCase):
     def test_the_end_line_is_advisory_and_add_clears_it(self):
         self.write(self.transcript(), [user(T0, "go"), assistant(T0 + 30)])
         w = self.daemon()
-        self.write(self.wfile("runs"), [{"add": AID, "agent_type": "expert-opus55", "role": "expert"},
+        # a 5m role: experts default to 1h since 3.15 T4 (was expert-opus55/expert)
+        self.write(self.wfile("runs"), [{"add": AID, "agent_type": "coder-opus55", "role": "coder"},
                                         {"end": AID}])
         w.poll(T0 + 40)
         self.assertEqual(w.runs[AID]["ended"], T0 + 40)
@@ -312,7 +441,7 @@ class DaemonTest(DaemonCase):
             self.assertEqual(fh.read(), "warm %s 300\n" % AID)
         with open(warmer.state_path(self.root), encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["runs"][AID]["ended"], T0 + 40)
-        self.write(self.wfile("runs"), [{"add": AID, "agent_type": "expert-opus55", "role": "expert"}],
+        self.write(self.wfile("runs"), [{"add": AID, "agent_type": "coder-opus55", "role": "coder"}],
                    "a")
         w.poll(T0 + 305)
         self.assertIsNone(w.runs[AID]["ended"])

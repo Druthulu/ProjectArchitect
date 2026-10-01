@@ -1276,6 +1276,7 @@ class TestWarmPingsToasts(unittest.TestCase):
         c.executescript(db.SCHEMA_SQL)                  # the real ledger schema
         sid, rid = "sess-warm-1", "a8cfdc7600000000f"
         cls._sid, cls._sid2, cls._sid3, cls._sid4 = sid, "sess-warm-2", "sess-warm-3", "sess-warm-4"
+        cls._sid5 = "sess-warm-5"
 
         def ping(ts, s, r, n=1, cap=None):
             d = {"run_id": r, "session_id": s, "ttl": "5m", "idle_s": 263, "n": n, "via": "monitor"}
@@ -1304,6 +1305,10 @@ class TestWarmPingsToasts(unittest.TestCase):
         turn("2026-09-20T02:00:00Z", 10.0, 0, 0.05, cls._sid2, "run-2")
         turn("2026-09-20T02:04:25Z", 200.0, 0, 0.01, cls._sid2, "run-2")
         turn("2026-09-20T02:05:00Z", 35.0, 0, 0.05, cls._sid2, "run-2")
+        for ts in ("2026-09-20T02:06:30Z", "2026-09-20T02:20:00Z"):   # 3.15 T6: two unrelayed lines
+            c.execute("INSERT INTO events(ts, session_id, run_id, kind, detail_json)"
+                      " VALUES(?, ?, 'run-2', 'warm_undelivered', ?)",
+                      (ts, cls._sid2, json.dumps({"run_id": "run-2", "age_s": 125})))
         # session 3 (T8): the 12th ping of 12, then a 635 s gap -> past the cap (m = 1, k = 0)
         turn("2026-09-20T03:00:00Z", 10.0, 0, 0.05, cls._sid3, "run-3")
         ping("2026-09-20T03:04:20Z", cls._sid3, "run-3", n=12, cap=12)
@@ -1314,6 +1319,27 @@ class TestWarmPingsToasts(unittest.TestCase):
         ping("2026-09-20T04:04:20Z", cls._sid4, "run-4", n=5, cap=12)
         turn("2026-09-20T04:04:25Z", 265.0, 0, 0.01, cls._sid4, "run-4")
         turn("2026-09-20T04:11:05Z", 400.0, 1, 0.40, cls._sid4, "run-4")
+        # session 5 (3.15 T3): session 4's shape plus a main transcript whose relay turn costs
+        # $1.00 and re-arm turn $0.50: the total passes the rewrite replaced ($1.25) -> "no"
+        turn("2026-09-20T05:00:00Z", 10.0, 0, 0.05, cls._sid5, "run-5")
+        ping("2026-09-20T05:04:20Z", cls._sid5, "run-5", n=5, cap=12)
+        turn("2026-09-20T05:04:25Z", 265.0, 0, 0.01, cls._sid5, "run-5")
+        turn("2026-09-20T05:11:05Z", 400.0, 1, 0.40, cls._sid5, "run-5")
+        mp = os.path.join(cls._tmpdir, "main5.jsonl")
+        with open(mp, "w", encoding="utf-8") as f:
+            for text, mid in (("<task-notification>\n<event>warm run-5 262</event>", "w5-r"),
+                              ("<task-notification>\n<event>[Monitor expired after 30m with no"
+                               " events delivered]</event>", "w5-e")):
+                f.write(json.dumps({"type": "user", "timestamp": "2026-09-20T05:04:21Z",
+                                    "message": {"role": "user", "content": text}}) + "\n")
+                f.write(json.dumps({"type": "assistant", "timestamp": "2026-09-20T05:04:22Z",
+                                    "message": {"role": "assistant", "id": mid,
+                                                "content": [{"type": "text", "text": "."}]}}) + "\n")
+        c.execute("INSERT INTO sessions(session_id, project, transcript_path) VALUES(?,?,?)",
+                  (cls._sid5, cls._project_dir, mp))
+        for mid, cost in (("w5-r", 1.00), ("w5-e", 0.50)):
+            c.execute("INSERT INTO turns(msg_id, run_id, session_id, ts, cost_usd)"
+                      " VALUES(?,?,?,'2026-09-20T05:04:22Z',?)", (mid, cls._sid5, cls._sid5, cost))
         for cause, level, sent in (("question", "waiting", 1), ("question", "waiting", 1),
                                    ("question", "waiting", 0), ("review", "all", 1),
                                    ("weird", "waiting", 1), ("subagent-stop", "waiting", 1)):
@@ -1337,30 +1363,40 @@ class TestWarmPingsToasts(unittest.TestCase):
         from pa import prices
         b = 2 * 100000 * prices.price_for(self.MODEL)["write_5m"] / 1e6
         self.assertIn("- warm pings: 3 pings over 1 runs, 2 warmed waits over the TTL,"
-                      " rewrites across warmed waits 1, waits past the cap 0, pings cost $0.0200"
-                      " vs rewrites replaced $%.4f, cheaper than one rewrite: yes\n" % b,
+                      " rewrites across warmed waits 1, waits past the cap 0, cost: pings $0.0200"
+                      " + relay $0.0000 + re-arm $0.0000 = $0.0200 vs rewrites replaced $%.4f, cheaper than one rewrite: yes, undelivered 0\n" % b,
                       self._md(self._sid))
 
     def test_warm_row_no_warmed_wait(self):
         self.assertIn("- warm pings: 1 pings over 1 runs, 0 warmed waits over the TTL,"
-                      " rewrites across warmed waits 0, waits past the cap 0, pings cost $0.0100"
-                      " vs rewrites replaced $0.0000, cheaper than one rewrite: n/a\n",
+                      " rewrites across warmed waits 0, waits past the cap 0, cost: pings $0.0100"
+                      " + relay $0.0000 + re-arm $0.0000 = $0.0100 vs rewrites replaced $0.0000, cheaper than one rewrite: n/a, undelivered 2\n",
                       self._md(self._sid2))
 
     def test_warm_row_past_the_cap(self):
         """3.9.5 T8: a wait that outlasts the cap is counted in w and m, never in k or b."""
         self.assertIn("- warm pings: 1 pings over 1 runs, 1 warmed waits over the TTL,"
-                      " rewrites across warmed waits 0, waits past the cap 1, pings cost $0.0100"
-                      " vs rewrites replaced $0.0000, cheaper than one rewrite: no\n",
+                      " rewrites across warmed waits 0, waits past the cap 1, cost: pings $0.0100"
+                      " + relay $0.0000 + re-arm $0.0000 = $0.0100 vs rewrites replaced $0.0000, cheaper than one rewrite: no, undelivered 0\n",
                       self._md(self._sid3))
 
     def test_warm_row_rewrite_inside_the_cap_window(self):
         from pa import prices
         b = 100000 * prices.price_for(self.MODEL)["write_5m"] / 1e6
         self.assertIn("- warm pings: 1 pings over 1 runs, 1 warmed waits over the TTL,"
-                      " rewrites across warmed waits 1, waits past the cap 0, pings cost $0.0100"
-                      " vs rewrites replaced $%.4f, cheaper than one rewrite: yes\n" % b,
+                      " rewrites across warmed waits 1, waits past the cap 0, cost: pings $0.0100"
+                      " + relay $0.0000 + re-arm $0.0000 = $0.0100 vs rewrites replaced $%.4f, cheaper than one rewrite: yes, undelivered 0\n" % b,
                       self._md(self._sid4))
+
+    def test_warm_row_relay_cost_flips_verdict(self):
+        """3.15 T3: relay + re-arm turns count against the rewrites replaced."""
+        from pa import prices
+        b = 100000 * prices.price_for(self.MODEL)["write_5m"] / 1e6
+        self.assertIn("- warm pings: 1 pings over 1 runs, 1 warmed waits over the TTL,"
+                      " rewrites across warmed waits 1, waits past the cap 0, cost: pings $0.0100"
+                      " + relay $1.0000 + re-arm $0.5000 = $1.5100"
+                      " vs rewrites replaced $%.4f, cheaper than one rewrite: no, undelivered 0\n" % b,
+                      self._md(self._sid5))
 
     def test_toast_row(self):
         self.assertIn("- toasts by cause (waiting): question 2, review 0, replan 0, permission 0,"

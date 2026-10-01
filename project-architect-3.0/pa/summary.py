@@ -529,6 +529,7 @@ def accounts_block(conn, cfg=None, readers=None):
                 "pct_ts": last["ts"],
                 "cost_in_window": cost_in_window,
                 "ledger_cost_in_window": ledger_cost_in_window,
+                "ledger_cost_by_family": dict(c_now) if started is not None else None,   # T17
                 "cost_saved_measured": csm,
                 "cost_saved_measured_by_family": csm_by_family,
                 "cost_saved_modeled": None,
@@ -989,9 +990,16 @@ def projects_block(conn, cfg=None, readers=None, accounts=None):
                 email, {"cost_in_window": {}, "pct_used": {}, "pct_est": {},
                         "cost_saved_measured": {}})
             active = False
+            now_ep = time.time()
             for win in ("five_hour", "seven_day"):
                 winfo = windows.get(win)
                 if not isinstance(winfo, dict):
+                    continue
+                ra = winfo.get("resets_at")
+                if ra is not None and float(ra) <= now_ep:
+                    # T20: an expired window is not live: no window cost or savings for it
+                    for fld in ("cost_in_window", "pct_est", "pct_used", "cost_saved_measured"):
+                        acct_slice[fld][win] = None
                     continue
                 started = winfo.get("started_at")
                 cost_by_fam = _project_cost_by_family(conn, email, pinfo["sids"], started,
@@ -1053,6 +1061,13 @@ def projects_block(conn, cfg=None, readers=None, accounts=None):
                 ns = acct_slice["cost_saved_measured"].get(win)
                 pw[win] = {"cost_used": cu, "net_saved": round(float(ns), 6) if ns is not None else None}
             acct_slice["windows"] = pw
+            lt, per = acct_slice["lifetime"], acct_slice["period"]
+            if not (active or lt.get("cost_used") or lt.get("cost_saved_measured")
+                    or per.get("cost_used") or per.get("cost_saved_measured")):
+                # T20: an account with no window, lifetime or period figure here gets no slice
+                del entry["by_account"][email]
+                acct_keys.pop()
+                continue
             if acct_slice["lifetime"].get("cost_saved_measured"):
                 active = True
             if acct_slice["period"].get("cost_used") or acct_slice["period"].get("cost_saved_measured"):
@@ -1062,7 +1077,24 @@ def projects_block(conn, cfg=None, readers=None, accounts=None):
         # the meter's own reading apportioned across this account's projects by their weighted
         # spend: the shares add up to line 1's percentage, so a project can never read above it
         # (2026-09-20: one project showed 28 % of 5h beside a 24 % meter); only the weights'
-        # ratios matter here, not the young fit's absolute slope
+        # ratios matter here, not the young fit's absolute slope.  T17 (3.15): the denominator is
+        # the account's whole weighted spend over all roots in the weights' own unit, floored at
+        # the projects' sum: spend outside these projects (other machine, no project key) keeps
+        # its share of the meter instead of inflating theirs.  T17.c2: a family with spend but no
+        # weight in fit_detail is valued at the window's pct_per_dollar on both sides, so every
+        # dollar counts (7d fit had fable/opus only; a project's sonnet spend counted 0)
+        def _valued(by_fam, fd, ppd):
+            tot = 0.0
+            for fam, usd in by_fam.items():
+                info = fd.get(fam) if fd else None
+                w = info.get("weight") if isinstance(info, dict) else info
+                if w is None:
+                    w = ppd
+                if w is None:
+                    return None                   # unvalued spend: the caller falls back
+                tot += float(usd) * float(w) * 100.0
+            return tot
+
         for win in ("five_hour", "seven_day"):
             winfo = windows.get(win)
             meter = None
@@ -1071,15 +1103,42 @@ def projects_block(conn, cfg=None, readers=None, accounts=None):
                     meter = float(winfo.get("pct_last"))
                 except (TypeError, ValueError):
                     meter = None
+            fd = winfo.get("fit_detail") if isinstance(winfo, dict) else None
+            wppd = winfo.get("pct_per_dollar") if isinstance(winfo, dict) else None
             weights = {}
             for pk in acct_keys:
                 acct_s = out[pk].get("by_account", {}).get(email, {})
-                est = acct_s.get("pct_est", {}).get(win)
+                fam = acct_s.get("cost_in_window", {}).get(win) or {}
+                est = None
+                if fam and (fd or wppd):
+                    try:
+                        est = _valued(fam, fd, wppd)
+                    except (TypeError, ValueError):
+                        est = None
                 if est is None:
-                    fam = acct_s.get("cost_in_window", {}).get(win) or {}
+                    est = acct_s.get("pct_est", {}).get(win)
+                if est is None:
                     est = sum(fam.values()) if fam else None
                 weights[pk] = est
             total = sum(v for v in weights.values() if v)
+            acct_total = None
+            if isinstance(winfo, dict):
+                by_fam, lcost = winfo.get("ledger_cost_by_family"), winfo.get("ledger_cost_in_window")
+                try:
+                    if by_fam and (fd or wppd):
+                        acct_total = _valued(by_fam, fd, wppd)
+                    if acct_total is not None:
+                        pass                      # every family valued (T17.c2)
+                    elif fd and by_fam:
+                        acct_total = _fit.pct_saved(by_fam, fd)
+                    elif wppd and lcost is not None:
+                        acct_total = _fit.pct_saved(lcost, wppd)
+                    elif lcost is not None:
+                        acct_total = float(lcost)
+                except Exception:
+                    acct_total = None
+            if acct_total:
+                total = max(total, float(acct_total))
             if meter is None or not total:
                 continue                          # no sample or no spend: the estimate stays
             for pk in acct_keys:
@@ -1477,41 +1536,152 @@ def _modeled_block(conn, cfg, doc):
                 sessions[str(sid)]["saved_modeled"] = round(modeled, 6)
 
 
+def _windows_with_extra_roots(conn, cfg, new):
+    """Compute the windows group into ``new`` over the local ledger plus the config's
+    ``extra_roots`` (T17).  Returns True on success, False when the read rule gave up
+    (a root still yields no reader, or the compute still raises DatabaseError after one
+    invalidate-and-retry); ``summary_extra_root_failed`` is logged then.
+    """
+    from . import config as _config
+    from . import db, log
+
+    extra = _config.extra_root_entries(cfg or {})
+    if not extra:
+        new["accounts"] = accounts_block(conn, cfg, readers=None)
+        new["projects"] = projects_block(conn, cfg, readers=None, accounts=new["accounts"])
+        return True
+    failed = []
+    for attempt in (0, 1):
+        rds = db.union_readers(extra, include_local=False)
+        got = set(r.get("path") for r in rds)
+        failed = [(e["path"], "no reader") for e in extra if e["path"] not in got]
+        try:
+            if not failed:
+                accounts = accounts_block(conn, cfg, readers=rds)
+                projects = projects_block(conn, cfg, readers=rds, accounts=accounts)
+                new["accounts"], new["projects"] = accounts, projects
+                return True
+        except db.sqlite3.DatabaseError as exc:
+            err = ("%s: %s" % (type(exc).__name__, exc))[:200]
+            failed = [(e["path"], err) for e in extra]
+        finally:
+            for r in rds:
+                db.close(r.get("conn"))
+        if attempt == 0:
+            for root, _err in failed:
+                db.union_invalidate(root)
+    for root, err in failed:
+        log.log("summary_extra_root_failed", root=str(root), error=err)
+    return False
+
+
 def rebuild(conn, cfg=None, windows_only=False, sessions_only=False, readers=None):
     """Rewrite ``summary.json`` (or one block of it) under the file lock.
 
     ``readers``: optional ``db.union_readers`` list forwarded to
     :func:`accounts_block` so window fields aggregate across machines.
-    Hooks call without ``readers`` (local only); the sampler's change path and
-    ``recalc``/``report`` pass them.
+    The sampler's change path and ``recalc``/``report`` pass them; hooks call
+    without, and a windows recompute then opens the config's ``extra_roots`` itself
+    (T17, 3.15: the hook path and the CLI path give the same fit), closing them after.
+    Read rule: a configured root with no reader, or a windows compute raising
+    ``sqlite3.DatabaseError``, invalidates that root's union copy and retries once;
+    still failing, the windows group is not written (the one on disk and its stamp
+    stay; never a local-only one), the sessions group still is, and
+    ``summary_extra_root_failed`` is logged.
+
+    T11 (3.15): every block is computed outside the ``summary.json`` lock; the lock is
+    held only to merge.  Two groups, each stamped with its compute start in
+    ``meta.computed_at``: ``windows`` (accounts, projects, seed alerts) and ``sessions``
+    (sessions, alerts).  A group whose stamp on disk is newer than this rebuild's start
+    is left alone (the later result wins), so overlapping rebuilds coalesce.  Returns
+    the doc on disk afterwards; None (nothing written) on a compute or lock failure.
     """
     from . import fsutil, paths, prices
 
+    started = time.time()
+    path = paths.summary_path()
+    win, ses = not sessions_only, not windows_only      # the groups this mode recomputes
+
+    def _stamps(doc):
+        meta = doc.get("meta") if isinstance(doc, dict) else None
+        st = meta.get("computed_at") if isinstance(meta, dict) else None
+        return st if isinstance(st, dict) else {}
+
+    def _seed(a):
+        return isinstance(a, dict) and a.get("kind") == "seed_growth"
+
     def _patch(doc):
         doc = doc if isinstance(doc, dict) else {}
+        stamps = _stamps(doc)
+
+        def _fresh(group):
+            s = stamps.get(group)
+            return not isinstance(s, (int, float)) or s <= started
+
+        apply_win, apply_ses = win and _fresh("windows"), ses and _fresh("sessions")
+        if not (apply_win or apply_ses):
+            return None                 # a newer rebuild already wrote everything we computed
         doc["schema"] = SCHEMA
         doc["updated"] = _now_iso()
         doc["prices_version"] = prices.PRICES_VERSION
-        doc.setdefault("meta", {})["era_start"] = era_start(conn, cfg)
-        if not sessions_only:
-            doc["accounts"] = accounts_block(conn, cfg, readers=readers)
-            doc["projects"] = projects_block(conn, cfg, readers=readers, accounts=doc["accounts"])
-        if not windows_only:
-            doc["sessions"] = sessions_block(conn, cfg, accounts=doc.get("accounts"))
-            doc["alerts"] = alerts_block(conn, cfg)
+        meta = doc.get("meta") if isinstance(doc.get("meta"), dict) else {}
+        doc["meta"] = meta
+        meta["era_start"] = era
+        stamps = meta["computed_at"] = dict(stamps)
+        old_alerts = doc.get("alerts") if isinstance(doc.get("alerts"), list) else []
+        if apply_win:
+            doc["accounts"] = new["accounts"]
+            doc["projects"] = new["projects"]
+            stamps["windows"] = started
+        elif apply_ses and sessions_only and stamps.get("windows") == _stamps(snap).get("windows"):
+            # sessions_only's modeled fields ride on the snapshot's accounts; write them
+            # back only while no windows result landed since the snapshot was read
+            doc["accounts"] = new["accounts"]
+        if apply_ses:
+            sessions = dict(new["sessions"])
+            try:
+                written_after = os.path.getmtime(path) > started
+            except OSError:
+                written_after = False
+            if written_after:           # a patch_session landed mid-compute: keep its entries
+                for sid, entry in (doc.get("sessions") or {}).items():
+                    sessions.setdefault(sid, entry)
+            doc["sessions"] = sessions
+            stamps["sessions"] = started
+        base = new["alerts"] if apply_ses else [a for a in old_alerts if not _seed(a)]
+        seeds = new["seed_alerts"] if apply_win else [a for a in old_alerts if _seed(a)]
+        doc["alerts"] = list(base) + list(seeds)
         doc.setdefault("accounts", {})
         doc.setdefault("projects", {})
         doc.setdefault("sessions", {})
-        doc.setdefault("alerts", [])
-        if not sessions_only:
-            seed_alerts = _seed_for_projects(conn, doc["projects"], cfg)
-            doc["alerts"].extend(seed_alerts)
-        if not windows_only:
-            _modeled_block(conn, cfg, doc)
         return doc
 
     try:
-        return fsutil.locked_update(paths.summary_path(), _patch, timeout_ms=2000, default={})
+        era = era_start(conn, cfg)
+        # only sessions_only needs existing blocks (the accounts its sessions and replay read)
+        snap = fsutil.read_json(path, {}) if sessions_only else {}
+        snap = snap if isinstance(snap, dict) else {}
+        new = {}
+        if win:
+            if readers is None:
+                win = _windows_with_extra_roots(conn, cfg, new)
+                if not win:                     # read rule failed: sessions ride on the disk's accounts
+                    snap = fsutil.read_json(path, {})
+                    snap = snap if isinstance(snap, dict) else {}
+            else:
+                new["accounts"] = accounts_block(conn, cfg, readers=readers)
+                new["projects"] = projects_block(conn, cfg, readers=readers,
+                                                 accounts=new["accounts"])
+        if not win:
+            new["accounts"] = snap.get("accounts") if isinstance(snap.get("accounts"), dict) else {}
+        if ses:
+            new["sessions"] = sessions_block(conn, cfg, accounts=new.get("accounts"))
+            new["alerts"] = alerts_block(conn, cfg)
+        if win:
+            new["seed_alerts"] = _seed_for_projects(conn, new["projects"], cfg)
+        if ses:
+            _modeled_block(conn, cfg, new)
+        return fsutil.locked_update(path, _patch, timeout_ms=2000, default={})
     except Exception as exc:
         from . import log
 

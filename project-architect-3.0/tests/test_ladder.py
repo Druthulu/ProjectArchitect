@@ -47,7 +47,7 @@ class TestRender(unittest.TestCase):
             for agent in ladder.MANAGED:
                 text = pkg_text(agent)
                 out = ladder.render(agent, text, preset)
-                if agent == "expert-fable":
+                if agent in ("expert-fable", "expert-fable-5m"):   # was == "expert-fable" (3.15 T4 twin)
                     self.assertIsNone(out)
                     continue
                 diffs, same_len = diff_lines(text, out)
@@ -92,11 +92,11 @@ class TestMismatches(unittest.TestCase):
     def test_mismatches(self):
         self.place("max5")
         self.assertEqual(ladder.mismatches(self.dir, "max5"), [])
-        self.assertEqual(ladder.mismatches(self.dir, "max20"), ["expert-fable", "plain"])
+        self.assertEqual(ladder.mismatches(self.dir, "max20"), ["expert-fable", "expert-fable-5m", "plain"])
         self.assertEqual(ladder.mismatches(self.dir, "pro"),
                          ["critic", "review", "auditor", "memory-curator", "plain"])
         self.place("max20")
-        self.assertEqual(ladder.mismatches(self.dir, "max5"), ["expert-fable", "plain"])
+        self.assertEqual(ladder.mismatches(self.dir, "max5"), ["expert-fable", "expert-fable-5m", "plain"])
 
 
 class TestOnlyRenderWritesAgents(unittest.TestCase):

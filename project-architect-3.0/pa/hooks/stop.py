@@ -20,6 +20,11 @@ Toast policy (design A section C.2):
   * 3.9.5 T2: each toast names a cause (question|review|replan|stop; ``empty`` for a
     blank or ``.`` message -- the warmer's pings -- which never sends) and the
     pa.json ``toast`` level decides (see :func:`pa.hooks.toast`).
+
+Undelivered wake lines (3.15 T6): main session only, each new line of
+``<root>/.run/warmer/<sid>.undelivered`` (offset in ``<sid>.undelivered.off``) is
+consumed one per Stop call and returns ``{"decision": "block", "reason": …}`` telling
+the router to arm its Monitor, even under ``stop_hook_active`` (bounded: one per line).
 """
 
 import json
@@ -27,7 +32,7 @@ import os
 import time
 
 from .. import log, notify, running
-from . import (close_db, drain_spool, governed, now_iso, open_db, pinned_for,
+from . import (agent_of, close_db, drain_spool, governed, now_iso, open_db, pinned_for,
                project_config, project_name, read_offset, role_of, session_pre_install,
                sid_of, status_patch, toast, waiting_clear, waiting_write, write_offset)
 
@@ -91,10 +96,56 @@ def run(inp, cfg):
         liveness.sweep_if_due(sid, cfg)
     except Exception:
         pass
+    if root and sid and not agent_of(inp):       # 3.15 T6: an unrelayed wake line blocks once
+        return _undelivered_block(root, sid)
     return None
 
 
+_ARM_REASON = ("Arm `Monitor` on `tail -n0 -F .run/warmer/%s.wake` (timeout 30 min), "
+               "then end the turn with `.`")
+
+
+def _undelivered_block(root, sid):
+    """Consume one new line of ``.run/warmer/<sid>.undelivered`` -> a block dict, else None."""
+    p = os.path.join(root, ".run", "warmer", "%s.undelivered" % sid)
+    off_p = p + ".off"
+    try:
+        if not os.path.exists(p):
+            return None
+        try:
+            with open(off_p, encoding="utf-8") as fh:
+                off = int(fh.read().strip() or 0)
+        except (OSError, ValueError):
+            off = 0
+        if off > os.path.getsize(p):                 # file replaced: start over
+            off = 0
+        with open(p, "rb") as fh:
+            fh.seek(off)
+            raw = fh.readline()
+        if not raw.endswith(b"\n"):                 # nothing new, or a partial line
+            return None
+        with open(off_p, "w", encoding="utf-8") as fh:
+            fh.write(str(off + len(raw)))
+        return {"decision": "block", "reason": _ARM_REASON % sid}
+    except Exception:
+        log.log("stop_undelivered_failed", session=sid)
+        return None
+
+
 # --------------------------------------------------------------------------- ledger
+
+def ledger_seed(conn, sid):
+    """``(prev_ts, start_index)`` of the run's turns already in the ledger.
+
+    The last turn's ts and the turn count, so a new batch's first request gets its
+    real gap / cold / rewrite (T7). Any failure -> ``(None, 0)``; never breaks a hook.
+    """
+    try:
+        row = conn.execute("SELECT MAX(ts), COUNT(*) FROM turns WHERE run_id=?", (sid,)).fetchone()
+        return (row[0] or None), int(row[1] or 0)
+    except Exception:
+        return None, 0
+
 
 def _ingest(conn, cfg, inp, sid):
     """Append the main run's new requests to ``turns`` from the byte offset."""
@@ -104,8 +155,10 @@ def _ingest(conn, cfg, inp, sid):
     if not path or not os.path.exists(path):
         return 0
     start = read_offset(sid)
+    prev_ts, start_index = ledger_seed(conn, sid)
     try:
-        reqs, end = transcript.read_new_requests(path, start_offset=start)
+        reqs, end = transcript.read_new_requests(path, start_offset=start, prev_ts=prev_ts,
+                                                 start_index=start_index)
     except Exception:
         log.log("stop_tail_failed", session=sid)
         return 0

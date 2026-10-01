@@ -43,7 +43,7 @@ Approved: <date>   Planner: <model/effort>   Plan-hash: <sha>
        - <id> | <status> | <agent> | <key>: <value> | <key>: <value> | …
      Positional : id | status | agent
      Statuses  : done · next · queued · blocked · superseded
-     Agent     : expert-opus55 (default, medium) · expert-fable (effort: high: only for a judgment no test can arbitrate, at most one task in five, named in ## Rationale; a line naming the retired expert-fable-high runs expert-fable)
+     Agent     : expert-opus55 (default, medium) · expert-fable (effort: high: only for a judgment no test can arbitrate, at most one task in five, named in ## Rationale; a line naming the retired expert-fable-high runs expert-fable) · each has a 5m-TTL twin, expert-opus55-5m / expert-fable-5m: the 1h agent is the default, the -5m twin when `tools/expert_ttl.py` prints 5m
      Keys      : title: <a few words naming the task; the statusline and the expert's label show it>
                  coder: opus55|none (sonnet accepted in old plans) · effort: medium|high · files: <paths, comma-separated>
                  done-when: <observable> · verify: <command the expert runs before done>

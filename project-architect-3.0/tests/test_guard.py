@@ -647,5 +647,81 @@ class RereadDenyTest(unittest.TestCase):
         self.assertIs(config.defaults()["guard"]["reread_deny"], True)
 
 
+class HandbackDenyTest(unittest.TestCase):
+    """3.15 T18: a discuss agent's SubagentHandback needs a RECORD line naming an existing file."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pa3-handback-")
+        self.ledger = os.path.join(self.dir, "ledger")
+        self.root = os.path.join(self.dir, "proj")
+        os.makedirs(os.path.join(self.root, ".claude"))
+        os.makedirs(os.path.join(self.root, "phase-ends", "current", "discussions"))
+        with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
+            fh.write('{"pa_version": "3.0.0", "project": "handback-test"}')
+        self.rec = "phase-ends/current/discussions/D1.md"
+        os.environ["PA_LEDGER_DIR"] = self.ledger
+        hooks._PROJECT_ROOTS.clear()
+        self.cfg = config.defaults()
+
+    def tearDown(self):
+        os.environ.pop("PA_LEDGER_DIR", None)
+        hooks._PROJECT_ROOTS.clear()
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _write_record(self):
+        with open(os.path.join(self.root, self.rec), "w", encoding="utf-8") as fh:
+            fh.write("# D1\n")
+
+    def _deny(self, msg, agent="discuss", tool="SubagentHandback"):
+        return guard.handback_deny(tool, {"message": msg}, agent, self.root)
+
+    def test_discuss_agents_denied_without_record_line(self):
+        for agent in ("discuss", "discuss-high", "discuss-max", " Discuss-High ", "pa:discuss-max"):
+            self.assertEqual(self._deny("Here is my answer.", agent), guard.HANDBACK_REASON, agent)
+
+    def test_denied_when_record_file_missing(self):
+        msg = "DECISIONS: a\nEDITS: \u2014\nRECORD: %s\n" % self.rec
+        for agent in ("discuss", "discuss-high", "discuss-max"):
+            self.assertEqual(self._deny(msg, agent), guard.HANDBACK_REASON, agent)
+
+    def test_allowed_when_record_exists(self):
+        self._write_record()
+        for agent in ("discuss", "discuss-high", "discuss-max"):
+            self.assertIsNone(self._deny("DECISIONS: a\nEDITS: \u2014\n  RECORD: %s\n" % self.rec, agent))
+        absolute = os.path.join(self.root, self.rec)
+        self.assertIsNone(self._deny("RECORD: %s" % absolute))
+
+    def test_other_agents_and_tools_untouched(self):
+        for agent in ("coder-opus55", "expert-opus55", "pa-session", "", None):
+            self.assertIsNone(self._deny("STATUS: done", agent))
+        for tool in ("Bash", "Write", "Read", "SendMessage"):
+            self.assertIsNone(self._deny("hi", "discuss", tool))
+
+    def test_hook_denies_and_spools(self):
+        inp = {"session_id": "s1", "cwd": self.root, "tool_name": "SubagentHandback",
+               "agent_type": "discuss", "agent_id": "a1", "tool_input": {"message": "my reply"}}
+        out = pre_tool_use.run(inp, self.cfg)
+        hso = out["hookSpecificOutput"]
+        self.assertEqual(hso["permissionDecision"], "deny")
+        self.assertEqual(hso["permissionDecisionReason"], guard.HANDBACK_REASON)
+        self._write_record()
+        inp["tool_input"] = {"message": "DECISIONS: a\nEDITS: \u2014\nRECORD: %s" % self.rec}
+        self.assertIsNone(pre_tool_use.run(inp, self.cfg))
+        inp["agent_type"], inp["tool_input"] = "coder-opus55", {"message": "STATUS: done"}
+        self.assertIsNone(pre_tool_use.run(inp, self.cfg))
+
+    def test_agent_texts_carry_the_rules(self):
+        pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        for name in ("discuss", "discuss-high", "discuss-max"):
+            with open(os.path.join(pkg, "agents", name + ".md"), encoding="utf-8") as fh:
+                body = " ".join(fh.read().split())
+            self.assertIn("Never call SubagentHandback for a reply", body, name)
+            self.assertIn("call SubagentHandback with exactly this block as its message", body, name)
+        with open(os.path.join(pkg, "agents", "pa-session.md"), encoding="utf-8") as fh:
+            body = " ".join(fh.read().split())
+        self.assertIn("A discuss hand-back with no `RECORD:` line is a reply the developer has not seen", body)
+        self.assertIn("relay its text to the developer verbatim", body)
+
+
 if __name__ == "__main__":
     unittest.main()

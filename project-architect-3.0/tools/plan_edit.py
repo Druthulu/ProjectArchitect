@@ -614,7 +614,7 @@ def cmd_append_change(a, root, path, text, explicit):
     return 0
 
 
-# presets without a hard rung: mirrors pa/install/ladder.PRESETS where expert-fable is None
+# presets without a hard rung: mirrors pa/install/ladder.PRESETS where expert-fable (and its -5m twin) is None
 # (tools ship alone, no import from pa/)
 _NO_HARD_RUNG = ("max5", "pro")
 
@@ -635,15 +635,16 @@ def _preset_refusal(preset, tid, effort, agent):
         return None
     if (effort or "").strip() == "high":
         what = "effort: high"
-    elif agent in ("expert-fable", "expert-fable-high"):
+    elif agent in ("expert-fable", "expert-fable-5m", "expert-fable-high"):
         what = "agent %s" % agent
     else:
         return None
     return "preset %s has no hard rung: %s carries %s; mark it medium or split it" % (preset, tid, what)
 
 
-# effort -> the agents that may carry it; expert-fable-high was the opt-in a task line named (retired 3.9.5 T15)
-_AGENTS_FOR_EFFORT = {"high": ("expert-fable", "expert-fable-high")}
+# effort -> the agents that may carry it; expert-fable-high was the opt-in a task line named (retired 3.9.5 T15);
+# the -5m twins (3.15 T4) carry the same effort as their 1h parent
+_AGENTS_FOR_EFFORT = {"high": ("expert-fable", "expert-fable-5m", "expert-fable-high")}
 # retired agent -> the agent that runs a line naming it (lint accepts it with a note)
 _RETIRED_AGENTS = {"expert-fable-high": "expert-fable"}
 
@@ -944,10 +945,12 @@ def cmd_lint(a, root, path, text, explicit):
             problems.append("line %d: %s coder '%s' not in %s"
                             % (n, t.id, coder, "|".join(CODERS)))
         eff = t.get("effort")
-        # agent/effort consistency: high -> expert-fable (or the retired expert-fable-high), else expert-opus55
+        # agent/effort consistency: high -> expert-fable (or the retired expert-fable-high), else expert-opus55;
+        # either one's -5m twin is valid where its parent is (3.15 T4)
+        default = _agent_for(eff, preset)
         if eff and (
                 t.agent.startswith("expert-fable") or t.agent.startswith("expert-opus")
-        ) and t.agent not in _AGENTS_FOR_EFFORT.get(eff, (_agent_for(eff, preset),)):
+        ) and t.agent not in _AGENTS_FOR_EFFORT.get(eff, (default, default + "-5m")):
             warns.append("line %d: %s effort '%s' but agent '%s'" % (n, t.id, eff, t.agent))
         if t.agent in _RETIRED_AGENTS:
             notes.append("note: %s names the retired %s; it runs %s"

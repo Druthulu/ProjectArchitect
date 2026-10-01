@@ -109,6 +109,28 @@ class KeepLastTest(unittest.TestCase):
         self.assertEqual([r["msg_id"] for r in more], ["m3"])
         self.assertEqual(offset2, os.path.getsize(self.path))
 
+    def test_read_new_requests_seeded_from_previous_batch(self):
+        """T7 -- a batch after a 2 h pause sees its gap and prefix rewrite via prev_ts/start_index."""
+        _write(self.path, [_assistant("m1", 5, ts="2026-09-12T10:00:00.000Z", cw=60000, cr=0),
+                           _assistant("m2", 5, ts="2026-09-12T10:01:00.000Z", cw=100, cr=60000)])
+        batch1, offset = T.read_new_requests(self.path)
+        with open(self.path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps(_assistant("m3", 5, ts="2026-09-12T12:01:00.000Z",
+                                           cw=61000, cr=0)) + "\n")
+        self.assertGreater(61000 + 2, T.MISS_MIN_CTX)
+        seeded, _ = T.read_new_requests(self.path, offset, prev_ts=batch1[-1]["ts"],
+                                        start_index=len(batch1))
+        r = seeded[0]
+        self.assertAlmostEqual(r["gap_s"], 7200.0)
+        self.assertTrue(r["rewrite"])
+        self.assertTrue(r["cold"])
+        seeded_iso, _ = T.read_new_requests(self.path, offset, prev_ts="2026-09-12T10:01:00.000Z",
+                                            start_index=2)
+        self.assertAlmostEqual(seeded_iso[0]["gap_s"], 7200.0)
+        bare, _ = T.read_new_requests(self.path, offset)   # old behaviour: batch starts fresh
+        self.assertIsNone(bare[0]["gap_s"])
+        self.assertFalse(bare[0]["rewrite"])
+
     def test_tail_last_usage_synthetic(self):
         _write(self.path, [_assistant("m1", 1, cr=0, cw=100),
                            _assistant("m2", 2, cr=5000, cw=200),

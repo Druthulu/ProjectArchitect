@@ -984,6 +984,47 @@ class ModelMismatchTest(LedgerCase):
         self.assertFalse(post_tool_use.mismatch(None, "claude-opus-5"))
 
 
+class StopUndeliveredTest(LedgerCase):
+    """3.15 T6: each new line of .run/warmer/<sid>.undelivered blocks one main-session Stop."""
+
+    SID = "stop-und-1"
+    REASON = ("Arm `Monitor` on `tail -n0 -F .run/warmer/stop-und-1.wake` (timeout 30 min), "
+              "then end the turn with `.`")
+
+    def _stop(self, **extra):
+        from pa.hooks import stop
+
+        inp = {"session_id": self.SID, "cwd": self.root, "last_assistant_message": ".",
+               "background_tasks": [], "stop_hook_active": False}
+        inp.update(extra)
+        return stop.run(inp, self.cfg)
+
+    def _line(self, n=1):
+        p = os.path.join(self.root, ".run", "warmer", "%s.undelivered" % self.SID)
+        os.makedirs(os.path.dirname(p), exist_ok=True)
+        with open(p, "a", encoding="utf-8", newline="\n") as fh:
+            for _ in range(n):
+                fh.write(json.dumps({"run_id": "a1", "line": "warm a1 262", "at": 1.0}) + "\n")
+
+    def test_no_file_no_block(self):
+        self.assertIsNone(self._stop())
+
+    def test_one_block_per_line(self):
+        self._line(2)
+        block = {"decision": "block", "reason": self.REASON}
+        self.assertEqual(self._stop(), block)
+        self.assertEqual(self._stop(stop_hook_active=True), block)   # bounded: one per line
+        self.assertIsNone(self._stop(stop_hook_active=True))
+        self._line()
+        self.assertEqual(self._stop(), block)
+        self.assertIsNone(self._stop())
+
+    def test_subagent_never_blocks(self):
+        self._line()
+        self.assertIsNone(self._stop(agent_id="a1", agent_type="coder-opus55"))
+        self.assertEqual(self._stop()["decision"], "block")              # the line stays for main
+
+
 class StopToastTest(LedgerCase):
     """Design A C.2: when the Stop hook is allowed to interrupt the developer."""
 
@@ -1402,6 +1443,34 @@ class StopAccountRefreshTest(LedgerCase):
         self.assertEqual(turns[0][0], email)
 
 
+class StopBatchGapTest(LedgerCase):
+    """T7: a Stop batch after a 2 h pause books its first turn's gap and prefix rewrite."""
+
+    def test_second_batch_first_turn_has_gap_and_rewrite(self):
+        from pa.hooks import stop
+
+        sid = "gap-1"
+        running.ensure_session(sid, account=ACCOUNT)
+        path = self.write_transcript(os.path.join(self.projects, "slug", "%s.jsonl" % sid), [
+            usage_line("msg_g1", model="claude-sonnet-5", inp=10, write=60000, read=0,
+                       ts="2026-09-12T20:00:00.000Z"),
+            usage_line("msg_g2", model="claude-sonnet-5", inp=10, write=100, read=60000,
+                       ts="2026-09-12T20:01:00.000Z")])
+        inp = {"session_id": sid, "cwd": self.root, "agent_type": "router",
+               "last_assistant_message": "done", "background_tasks": [],
+               "stop_hook_active": False, "transcript_path": path}
+        stop.run(inp, self.cfg)
+        with open(path, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(usage_line("msg_g3", model="claude-sonnet-5", inp=10, write=61000, read=0,
+                                ts="2026-09-12T22:01:00.000Z") + "\n")
+        stop.run(inp, self.cfg)
+        row = self.rows("SELECT gap_s, rewrite, cold FROM turns WHERE msg_id='msg_g3'")
+        self.assertEqual(len(row), 1)
+        self.assertAlmostEqual(row[0][0], 7200.0)
+        self.assertEqual(row[0][1], 1)
+        self.assertEqual(row[0][2], 1)
+
+
 class SessionEndTest(LedgerCase):
     """SessionEnd: the turns sum is the cost, cost-state the harness cross-check (T30); the gap
     becomes one residual turn (recon V2)."""
@@ -1499,6 +1568,32 @@ class SessionStartResumeTest(LedgerCase):
                            (self.SID,))
         self.assertEqual(len(events), 1)
         self.assertEqual(json.loads(events[0][0])["end_reason"], "prompt_input_exit")
+
+
+class SessionStartRepairsTest(LedgerCase):
+    """3.15 T12: an old repairs_version spawns the detached repair once; its notice reaches the user."""
+
+    def test_old_version_spawns_once_and_notice_is_user_only(self):
+        from pa import repairs
+        from pa.hooks import session_start
+
+        conn = hooks.open_db()
+        try:
+            db.set_meta(conn, "repairs_version", "0.0")
+        finally:
+            db.close(conn)
+        with open(paths.state_path("repairs_notice.json"), "w", encoding="utf-8") as fh:
+            json.dump(["PA3 repaired the usage ledger (x): turns 3"], fh)
+        inp = {"session_id": "rep-1", "cwd": self.root, "source": "startup",
+               "transcript_path": os.path.join(self.projects, "slug", "rep-1.jsonl")}
+        out = session_start.run(inp, self.cfg) or {}
+        session_start.run(dict(inp, session_id="rep-2"), self.cfg)
+        spawned = [c for c, _e in self.toasts if "pa.repairs" in c]
+        self.assertEqual(len(spawned), 1)
+        self.assertIn("turns 3", out.get("systemMessage", ""))
+        self.assertNotIn("turns 3", json.dumps(out.get("hookSpecificOutput") or {}))
+        self.assertFalse(os.path.exists(paths.state_path("repairs_notice.json")))
+        self.assertEqual(repairs.pop_notice(), [])
 
 
 class WarmerHooksTest(LedgerCase):
@@ -1694,6 +1789,52 @@ class DetachedRebuildTest(LedgerCase):
         self.assertFalse(os.path.exists(self.dirty))
         self.assertFalse(os.path.exists(self.lock))
 
+    def test_hook_rebuild_reads_extra_roots_like_the_cli(self):
+        """T17 (3.15): ``run_rebuild`` (hooks, no readers) opens config.extra_roots itself, so
+        its account fit equals ``rebuild(..., readers=union_readers(...))`` (the CLI path)."""
+        self._clear()
+        now = int(time.time())
+        iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(t))   # noqa: E731
+        other = os.path.join(self.dir, "other", "ledger.sqlite")
+        os.makedirs(os.path.dirname(other))
+        rc = db.connect(other)
+        db.init_schema(rc)
+        lc = hooks.open_db()
+        try:
+            for c, tag, cost in ((lc, "l", 4.0), (rc, "o", 36.0)):
+                c.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd,"
+                          " kind) VALUES(?, ?, ?, ?, 'claude-opus-4-6', ?, 'api')",
+                          ("t17-" + tag, "t17-s" + tag, ACCOUNT, iso(now - 1800), cost))
+                c.commit()
+            for win, pct, resets in (("seven_day", 20.0, now + 3 * 86400),
+                                     ("five_hour", 40.0, now + 3600)):
+                lc.execute("INSERT INTO utilization(ts, account, session_id, window, pct,"
+                           " resets_at) VALUES(?, ?, 't17-sl', ?, ?, ?)",
+                           (iso(now - 60), ACCOUNT, win, pct, resets))
+            lc.commit()
+        finally:
+            db.close(rc)
+        cfg = dict(self.cfg)
+        cfg["extra_roots"] = [{"path": os.path.dirname(other), "account": ACCOUNT}]
+        config.save(cfg)
+        with mock.patch.object(db, "union_dir", return_value=os.path.join(self.dir, "union")):
+            summary.run_rebuild()
+            hook = summary.read()["accounts"][ACCOUNT]["windows"]
+            readers = db.union_readers(config.extra_root_entries(config.load()))
+            try:
+                summary.rebuild(lc, config.load(), readers=readers)
+            finally:
+                for r in readers:
+                    db.close(r["conn"])
+                db.close(lc)
+            cli = summary.read()["accounts"][ACCOUNT]["windows"]
+        for win, pct in (("seven_day", 20.0), ("five_hour", 40.0)):
+            with self.subTest(window=win):
+                self.assertAlmostEqual(hook[win]["ledger_cost_in_window"], 40.0, places=6)
+                self.assertAlmostEqual(hook[win]["pct_per_dollar"], cli[win]["pct_per_dollar"],
+                                       places=9)
+                self.assertAlmostEqual(hook[win]["pct_per_dollar"], pct / 100 / 40.0, places=9)
+
     def test_rebuild_entry_matches_inline_rebuild(self):
         self._clear()
         cfg = config.load()
@@ -1707,7 +1848,10 @@ class DetachedRebuildTest(LedgerCase):
         summary.main(["--rebuild"])
         entry = summary.read()
         for doc in (inline, entry):
-            doc.pop("updated", None)                         # the one volatile field (_now_iso)
+            doc.pop("updated", None)                         # volatile (_now_iso)
+            stamps = doc.get("meta", {}).get("computed_at", {})
+            for group in ("windows", "sessions"):            # 3.15 T11: each group's compute start
+                self.assertIsInstance(stamps.pop(group, None), float)
         self.assertTrue(entry.get("sessions"))
         self.assertEqual(entry, inline)
         self.assertFalse(os.path.exists(self.lock))

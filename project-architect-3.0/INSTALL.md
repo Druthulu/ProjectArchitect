@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.14.2 (the version is the phase that published it).
+Project Architect 3.0, version 3.15.2 (the version is the phase that published it).
 
 Two commands: the first runs **once per machine** (once per Claude config dir), the second
 **once per repository** you want PA3 to drive. Both are idempotent — a second run writes
@@ -45,8 +45,9 @@ config dir, and PA3 only ever reads them in place. The user settings snippet set
 from Project Architect 2.0 removes its `SessionEnd` backup hook — PA3 keeps no parallel copy.
 
 It asks nothing. A label for your account (`--label EMAIL=LABEL`) and other machines'
-ledgers to include in reports (`--extra-root DIR`; under WSL the Windows ledger is found and
-added on its own) are flags. It ends with two reminders (turn the **Remote Control** push
+ledgers to include in reports (`--extra-root DIR`) are flags. The other machine's ledger is
+linked on its own: under WSL the current Windows user's, on Windows each WSL distro's that has
+one; a re-run links any that appeared since and leaves existing links as they are. It ends with two reminders (turn the **Remote Control** push
 toggles on in `/config` if you want questions on your phone, and turn **recaps OFF**: they
 are billed and never show up in a transcript) and the next step: open a repository in Claude
 Code, or double-click `setup-project.cmd`.

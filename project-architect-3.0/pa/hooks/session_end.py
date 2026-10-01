@@ -63,11 +63,14 @@ def run(inp, cfg):
 
 def _ingest(conn, cfg, inp, sid, path):
     from .. import accounts, config, db, transcript
+    from .stop import ledger_seed
 
     if not path or not os.path.exists(path):
         return 0
+    prev_ts, start_index = ledger_seed(conn, sid)
     try:
-        reqs, end = transcript.read_new_requests(path, start_offset=read_offset(sid))
+        reqs, end = transcript.read_new_requests(path, start_offset=read_offset(sid),
+                                                 prev_ts=prev_ts, start_index=start_index)
     except Exception:
         log.log("session_end_tail_failed", session=sid)
         return 0

@@ -269,7 +269,7 @@ class TestOutlineEdgeCases(unittest.TestCase):
         found = [l for l in p.stdout.splitlines() if "def decide" in l]
         self.assertTrue(found, "def decide must appear")
         line_no = int(found[0].split(":")[0])
-        self.assertEqual(line_no, 536, "def decide should be at line 536")  # was 533 (fix-17 added two imports); was 525 (3.9.7 T9)
+        self.assertEqual(line_no, 563, "def decide should be at line 563")  # was 536 (3.15 T18 handback_deny); was 533 (fix-17 added two imports); was 525 (3.9.7 T9)
 
     def test_ledger_cli_speed(self):
         ledger_cli = os.path.join(PKG, "pa", "ledger_cli.py")

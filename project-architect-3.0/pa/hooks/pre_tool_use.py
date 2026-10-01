@@ -1,6 +1,6 @@
 """PreToolUse: PHASE_PLAN protection and the discussion-mode read-only guard.
 
-Matcher (settings.json): ``Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell``.
+Matcher (settings.json): ``Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|SubagentHandback``.
 Budget 50 ms -- the developer waits on this one, so it does one ``os.path.exists``
 and pure string work; nothing is imported beyond ``pa.guard`` and no database is
 opened (a denial is *spooled* and folded into ``events`` by the next cold hook).
@@ -21,6 +21,10 @@ Both rules are governance, so both need ``<cwd>/.claude/pa.json``:
 * a second whole Read of a file unchanged since this agent read it is denied,
   the fourth in a row allowed (``guard.reread_deny``, fix-17); an allowed edit
   drops the path from the agent's read set (``.run/guard/reads-<key>.json``).
+* a discuss agent's (discuss, discuss-high, discuss-max) SubagentHandback is denied
+  unless its message carries a ``RECORD: <path>`` line naming an existing file: a
+  reply handed back ends its run and reaches the router, never the developer
+  (``guard.handback_deny``, 3.15 T18).
 
 The only hook besides PostToolUse that ever prints.
 """
@@ -48,6 +52,8 @@ def run(inp, cfg):
 
     reason = guard.decide(tool, inp.get("tool_input"), discussion=discussion, cfg=cfg,
                           agent_type=inp.get("agent_type"))
+    if not reason:
+        reason = guard.handback_deny(tool, inp.get("tool_input"), inp.get("agent_type"), root)
 
     # role-based guards (spilled read, whole-plan role, tool-source role)
     if not reason:

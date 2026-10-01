@@ -166,7 +166,7 @@ class TestFreshInstall(ProjectCase):
         for sid in ("P2", "P3", "P6", "P7"):
             self.assertEqual(got.get(sid), "DONE", out)
         self.assertEqual(got.get("P10"), "SKIP", out)        # --no-commit
-        self.assertIn("120 created", out)   # was 131: -11 tools/analysis/ (3.11 T27); 131 was 130: +tools/pa3_update.py (3.10 T20); 130 was 129: +tools/managed.py (3.9.7 T7); 129 was 128: +.claude/pa3-managed.json (3.9.7 T6); 128 was 127: +commands/bench.md (3.9.6 T7); 127 was 125: +tools/bench.py, +tools/_bench_grade.py (3.9.6 T4); 125 was 122: +commands/discuss.md, +discuss-high.md, +discuss-max.md (3.9.5 T13); 122 was 123: -expert-fable-high.md (3.9.5 T15); 123 was 124: -coder-sonnet.md (3.9.5 T9); 123: +.claude/agents/expert-fable.md (3.9 T1.c2); 120 before T3.c2
+        self.assertIn("123 created", out)   # was 122: +tools/expert_ttl.py (3.15 T5); 122 was 120: +expert-opus55-5m.md, +expert-fable-5m.md (3.15 T4); 120 was 131: -11 tools/analysis/ (3.11 T27); 131 was 130: +tools/pa3_update.py (3.10 T20); 130 was 129: +tools/managed.py (3.9.7 T7); 129 was 128: +.claude/pa3-managed.json (3.9.7 T6); 128 was 127: +commands/bench.md (3.9.6 T7); 127 was 125: +tools/bench.py, +tools/_bench_grade.py (3.9.6 T4); 125 was 122: +commands/discuss.md, +discuss-high.md, +discuss-max.md (3.9.5 T13); 122 was 123: -expert-fable-high.md (3.9.5 T15); 123 was 124: -coder-sonnet.md (3.9.5 T9); 123: +.claude/agents/expert-fable.md (3.9 T1.c2); 120 before T3.c2
 
         for rel in (".claude/pa.json", ".claude/agents/pa-session.md",
                     ".claude/skills/project-architect/SKILL.md", ".claude/commands/thoughts.md",
@@ -190,7 +190,7 @@ class TestFreshInstall(ProjectCase):
         for sub in ("tasks", "logs", "research", "discussions"):
             self.assertTrue(os.path.isdir(self.path("phase-ends", "current", sub)), sub)
         self.assertTrue(os.path.isdir(self.path(".run")))
-        self.assertEqual(len(os.listdir(self.path(".claude", "agents"))), 17)  # was 15: +discuss-high.md, +discuss-max.md (3.9.5 T13); 15 was 16: -expert-fable-high.md (3.9.5 T15); 16 was 17: -coder-sonnet.md (3.9.5 T9); 16: +expert-fable.md (3.9 T1)
+        self.assertEqual(len(os.listdir(self.path(".claude", "agents"))), 19)  # was 17: +expert-opus55-5m.md, +expert-fable-5m.md (3.15 T4); 17 was 15: +discuss-high.md, +discuss-max.md (3.9.5 T13); 15 was 16: -expert-fable-high.md (3.9.5 T15); 16 was 17: -coder-sonnet.md (3.9.5 T9); 16: +expert-fable.md (3.9 T1)
 
     def test_placeholders_are_filled(self):
         self.install()

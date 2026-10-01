@@ -63,6 +63,8 @@ DEFAULTS = {
         "review": "claude-fable-5-1",
         "expert-fable": "claude-fable-5-1",
         "expert-opus55": "claude-opus-5-5",
+        "expert-fable-5m": "claude-fable-5-1",
+        "expert-opus55-5m": "claude-opus-5-5",
         "coder-opus46": "claude-opus-4-6",
         "coder-opus55": "claude-opus-5-5",
         "coder-sonnet": "claude-sonnet-5",
@@ -72,7 +74,7 @@ DEFAULTS = {
         "critic": "claude-fable-5-1",
     },
     "ttl_default": {
-        "main": "1h", "expert": "5m", "coder": "5m",  # was "1h"  # was "1h"
+        "main": "1h", "expert": "1h", "coder": "5m",  # expert was "5m" (was "1h" before); coder was "1h"
         "critic": "5m", "retriever": "5m", "other": "5m",
     },
     "handoff": {"threshold_tokens": 350000, "roles": ["expert", "coder"], "text": None},  # was ["expert"]
@@ -132,8 +134,10 @@ DEFAULTS = {
     "usage_api": {"enabled": True, "poll_min": 15},  # was 5
     "liveness": {"dead_min": 20, "scan_bytes": 4194304},
     "warmer": {"fire_5m_s": 285, "fire_1h_s": 3300, "relay_lead_s": 25,
-               "max_pings_5m": 12,  # was 3 (max_pings), developer 2026-09-24
+               "max_pings_5m": 12,  # the ceiling (3.15 T3); was 3 (max_pings), developer 2026-09-24
+               "max_pings_5m_fallback": 3,  # 3.15 T3: cap when its inputs are missing
                "max_pings_1h": 3, "poll_s": 5},  # 3.9.5 T4
+    "ttl_choice": {"min_runs": 5, "idle_min": 15},  # 3.15 T5: tools/expert_ttl.py, expert 1h vs -5m twin
     "resume": {"liveness_min": 5, "unstop": True},
     "discussion_allow_scripts": ["tools/analysis/*.py", "tools/plan_show.py", "tools/discussion.py",
                                  "tools/card.py slice|check", "tools/plan_edit.py show|grammar"],  # 3.9.7 T9
@@ -161,7 +165,7 @@ SUPERSEDED = {
     "statusline.seven_day": ["pace,used"],
     "statusline.pace_yellow": [1.0],
     "statusline.pace_red": [1.2],
-    "ttl_default.expert": ["1h"],
+    "ttl_default.expert": ["5m"],  # was ["1h"]
     "ttl_default.coder": ["1h"],
     "usage_api.poll_min": [5],
     "pinned_models.planner-gen": ["claude-fable-5-1"],

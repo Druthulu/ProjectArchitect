@@ -21,7 +21,8 @@ import os
 import sys      # noqa: F401
 import time     # noqa: F401
 
-MANAGED = ("expert-fable", "critic", "review", "auditor", "memory-curator", "plain")
+MANAGED = ("expert-fable", "expert-fable-5m", "critic",  # expert-fable-5m: 3.15 T4 twin, rows as expert-fable
+           "review", "auditor", "memory-curator", "plain")
 _JUDGES = ("critic", "review", "auditor", "memory-curator")
 _FABLE = "claude-fable-5-1[1m]"
 _OPUS = "claude-opus-5-5[1m]"
@@ -32,13 +33,13 @@ def _r(model, effort):
 
 
 PRESETS = {
-    "max20": dict([("expert-fable", _r(_FABLE, "medium"))]
+    "max20": dict([("expert-fable", _r(_FABLE, "medium")), ("expert-fable-5m", _r(_FABLE, "medium"))]
                   + [(a, _r(_FABLE, "medium")) for a in _JUDGES]
                   + [("plain", _r(_FABLE, "high"))]),
-    "max5": dict([("expert-fable", None)]
+    "max5": dict([("expert-fable", None), ("expert-fable-5m", None)]
                  + [(a, _r(_FABLE, "medium")) for a in _JUDGES]
                  + [("plain", _r(_FABLE, "medium"))]),
-    "pro": dict([("expert-fable", None)]
+    "pro": dict([("expert-fable", None), ("expert-fable-5m", None)]
                 + [(a, _r(_OPUS, "medium")) for a in _JUDGES]
                 + [("plain", _r(_OPUS, "medium"))]),
 }

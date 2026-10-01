@@ -3,7 +3,9 @@
 Public:
     credentials_path()                          config dir + .credentials.json
     credentials_key()                           "<mtime>:<size>" (content never read)
+    claude_json_path()                          $CLAUDE_CONFIG_DIR or <home>, + .claude.json
     auth_status(cfg=None, timeout=3.0, refresh=False) -> dict
+                                                .claude.json oauthAccount first, CLI fallback
     parse_auth_output(text) -> dict
     stamp_session(session_id, account, source="auth", extra=None) -> dict
     account_for(session_id) -> (account, source)
@@ -122,6 +124,73 @@ def _cache_write(entry):
     return entry
 
 
+def claude_json_path():
+    """``$CLAUDE_CONFIG_DIR/.claude.json`` when set, else ``<home>/.claude.json``."""
+    from . import paths
+
+    env = os.environ.get("CLAUDE_CONFIG_DIR")
+    base = os.path.abspath(env) if env else paths.home()
+    return os.path.join(base, ".claude.json")
+
+
+def _claude_json_email():
+    """``{email, org_id, org_name}`` from ``oauthAccount`` in ``.claude.json``, or None.
+
+    Reads only ``oauthAccount.emailAddress`` (and the org uuid/name); never raises.
+    """
+    try:
+        with open(claude_json_path(), "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        acct = data.get("oauthAccount") if isinstance(data, dict) else None
+        email = acct.get("emailAddress") if isinstance(acct, dict) else None
+        if not isinstance(email, str) or not email:
+            return None
+        org_id = acct.get("organizationUuid")
+        org_name = acct.get("organizationName")
+        return {"email": email,
+                "org_id": org_id if isinstance(org_id, str) else None,
+                "org_name": org_name if isinstance(org_name, str) else None}
+    except Exception:
+        return None
+
+
+def _running_claude_linux():
+    """Executable of the nearest ``claude*`` ancestor (<= 6 up via /proc), or None."""
+    pid = os.getppid()
+    for _ in range(6):
+        if pid <= 1:
+            return None
+        try:
+            with open("/proc/%d/cmdline" % pid, "rb") as fh:
+                argv0 = fh.read().split(b"\0", 1)[0].decode("utf-8", "replace")
+            if os.path.basename(argv0).startswith("claude"):
+                return os.readlink("/proc/%d/exe" % pid)
+            with open("/proc/%d/stat" % pid, "r", encoding="utf-8") as fh:
+                stat = fh.read()
+            pid = int(stat.rsplit(")", 1)[1].split()[1])
+        except Exception:
+            return None
+    return None
+
+
+def _claude_binary():
+    """Absolute path of the ``claude`` CLI, or None."""
+    import shutil
+
+    found = shutil.which("claude")
+    if found:
+        return os.path.abspath(found)
+    from . import paths
+
+    local = os.path.join(paths.home(), ".local", "bin",
+                         "claude.exe" if os.name == "nt" else "claude")
+    if os.path.isfile(local):
+        return local
+    if os.path.isdir("/proc"):
+        return _running_claude_linux()
+    return None
+
+
 def auth_status(cfg=None, timeout=3.0, refresh=False):
     """Account of the current config dir: ``{email, org_id, org_name,
     subscription, source, key, ts}``.
@@ -129,8 +198,21 @@ def auth_status(cfg=None, timeout=3.0, refresh=False):
     ``source`` is ``auth`` (fresh subprocess), ``cache`` (credentials unchanged),
     ``config`` (``recalc_default_account`` when the CLI is unavailable) or
     ``unknown``.  Never raises and never blocks longer than ``timeout``.
+    Only a ``source: auth`` result is written to the auth cache; the config
+    fallback is returned but never cached (3.15 T1).
+    ``oauthAccount.emailAddress`` in :func:`claude_json_path` wins (``via:
+    claude_json``, no subprocess); the cache and the CLI (absolute path, ``via:
+    cli``) serve only when it has none.  A CLI failure logs ``auth_status_fail``.
     """
     key = credentials_key()
+    stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    found = _claude_json_email()
+    if found:
+        entry = {"key": key, "ts": stamp, "source": "auth", "via": "claude_json",
+                 "email": found["email"], "org_id": found.get("org_id"),
+                 "org_name": found.get("org_name"), "subscription": None}
+        return _cache_write(entry)
+
     cached = _cache_read()
     if not refresh and cached.get("key") == key and cached.get("email"):
         out = dict(cached)
@@ -141,19 +223,33 @@ def auth_status(cfg=None, timeout=3.0, refresh=False):
 
     text = ""
     rc = -1
+    fail = None
+    exe = _claude_binary()
+    t0 = time.monotonic()
     try:
-        proc = subprocess.run(["claude", "auth", "status"],           # noqa: S603,S607
+        if exe is None:
+            raise FileNotFoundError("claude")
+        proc = subprocess.run([exe, "auth", "status"],                 # noqa: S603
                               capture_output=True, timeout=float(timeout))
         rc = proc.returncode
         text = (proc.stdout or b"").decode("utf-8", "replace")
         if not text.strip():
             text = (proc.stderr or b"").decode("utf-8", "replace")
-    except Exception:
+    except Exception as exc:
         text = ""
+        fail = type(exc).__name__
 
     parsed = parse_auth_output(text)
-    entry = {"key": key, "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-             "rc": rc, "source": "auth" if parsed.get("email") else "unknown"}
+    if fail is None and (rc != 0 or not parsed.get("email")):
+        fail = "rc=%d" % rc
+    if fail is not None:
+        from . import log
+        log.log("auth_status_fail", exc=fail,
+                elapsed_s=round(time.monotonic() - t0, 2), path=exe)
+    entry = {"key": key, "ts": stamp, "rc": rc,
+             "source": "auth" if parsed.get("email") else "unknown"}
+    if parsed.get("email"):
+        entry["via"] = "cli"
     entry.update(parsed)
     if not entry.get("email"):
         fallback = (cfg or {}).get("recalc_default_account") if isinstance(cfg, dict) else None
@@ -164,9 +260,17 @@ def auth_status(cfg=None, timeout=3.0, refresh=False):
             entry = dict(cached)
             entry["source"] = "cache"
             entry["key"] = key
-    if entry.get("email"):
+    if entry.get("email") and entry.get("source") == "auth":
         _cache_write(entry)
     return entry
+
+
+def account_source_of(status):
+    """``file`` (auth via .claude.json), ``cli`` (auth otherwise) or ``fallback`` (3.15 T12)."""
+    status = status if isinstance(status, dict) else {}
+    if status.get("source") != "auth":
+        return "fallback"
+    return "file" if status.get("via") == "claude_json" else "cli"
 
 
 def account_row(status, now=None):
@@ -313,6 +417,11 @@ def refresh_account(session_id, cfg=None, conn=None):
     ``sessions.account`` in the ledger, patches the running entry's ``account``
     field, and inserts an ``events:account_change`` event.
 
+    With a stamp, only an auth-sourced email (``source: auth``) is acted on: any
+    other source (config/cache/unknown) or no email keeps the stamp, its
+    ``cred_key`` and the ledger unchanged, so the next key check retries (3.15 T1).
+    Without a stamp, any email (config included) stamps the session.
+
     Never raises; on any failure returns ``(stamped_account, False, None)``.
     """
     from . import fsutil
@@ -339,6 +448,8 @@ def refresh_account(session_id, cfg=None, conn=None):
     new_email = status.get("email")
     if not new_email:
         return (stamped, False, None)
+    if stamped and status.get("source") != "auth":
+        return (stamped, False, None)   # no auth-sourced email: keep the stamp, retry next key check
 
     # a re-login may change the plan: restamp the tier of the current account
     _restamp_soft(conn, new_email)
@@ -366,7 +477,8 @@ def refresh_account(session_id, cfg=None, conn=None):
         db.upsert_session(conn, {"session_id": session_id, "account": new_email})
         db.insert_event(conn, "account_change",
                         {"from": stamped, "to": new_email,
-                         "source": "switch", "cred_key": current_key},
+                         "source": "switch", "cred_key": current_key,
+                         "account_source": account_source_of(status)},
                         session_id=session_id, account=new_email)
     except Exception:
         pass

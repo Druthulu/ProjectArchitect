@@ -11,6 +11,7 @@ Public:
     discussion_deny(tool_name, tool_input, cfg)  -> reason | None
     decide(tool_name, tool_input, discussion=False, cfg=None) -> reason | None
     bash_read_deny(cmd, role, cfg, root=None)    -> reason | None  (whole shell reads)
+    handback_deny(tool_name, tool_input, agent_type, root) -> reason | None  (discuss hand-back w/o record)
     reread_deny(inp, sid, run_id, cfg, root)     -> reason | None  (unchanged whole re-Read)
     reread_forget(inp, sid, run_id, root)        drop an edited path from the read set
     deny(reason)                                 -> PreToolUse hook payload
@@ -439,6 +440,10 @@ PHASE_PLAN_REASON = ("PHASE_PLAN.md is frozen at approval; use "
                      "`python tools/plan_edit.py` (set-status / add-task / note).")
 DISCUSSION_REASON = ("discussion mode (/discuss): read-only tools only until /proceed. "
                      "Record decisions in the discussion note, then run /proceed.")
+HANDBACK_REASON = ("SubagentHandback ends your run and goes to the router, never to the developer. "
+                   "Your reply is plain text in your own view: write it as your answer and end the turn; "
+                   "the developer's next message resumes you. Call SubagentHandback only after /proceed, "
+                   "once the record exists, with the DECISIONS/EDITS/RECORD block.")
 
 
 def _paths_of(tool_input):
@@ -502,6 +507,28 @@ def agent_bash_deny(agent_type, tool_name, tool_input):
         if script not in allow:
             return reason
     return None
+
+
+_DISCUSS_AGENTS = ("discuss", "discuss-high", "discuss-max")
+_RECORD_LINE_RE = re.compile(r"^[ \t]*RECORD:[ \t]*(\S.*?)[ \t]*$", re.M)
+
+
+def handback_deny(tool_name, tool_input, agent_type, root):
+    """Deny reason when a discuss agent calls SubagentHandback without a written record (3.15 T18):
+    a reply handed back ends its run and reaches the router, never the developer."""
+    if str(tool_name or "").strip() != "SubagentHandback":
+        return None
+    agent = str(agent_type or "").strip().lower().rsplit(":", 1)[-1]
+    if agent not in _DISCUSS_AGENTS:
+        return None
+    ti = tool_input if isinstance(tool_input, dict) else {}
+    m = _RECORD_LINE_RE.search(str(ti.get("message") or ""))
+    if m:
+        path = m.group(1)
+        full = path if os.path.isabs(path) else os.path.join(str(root or ""), path)
+        if os.path.isfile(full):
+            return None
+    return HANDBACK_REASON
 
 
 def phase_plan_deny(tool_name, tool_input):

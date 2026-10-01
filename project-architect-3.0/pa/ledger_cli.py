@@ -4555,9 +4555,22 @@ def cmd_doctor(args):
     conn = open_db()
     try:
         sd_ok, sd_row = _savings_display_row(conn)
+        # 3.15 T12: fallback-shaped account switches the repair step does not rewrite (read-only)
+        try:
+            from . import repairs
+            fb = repairs.account_fallback_findings(conn, cfg)
+        except Exception as exc:
+            fb = None
+            doc.warn("account fallback: check failed (%s)" % type(exc).__name__)
     finally:
         db.close(conn)
     doc.add("OK" if sd_ok else "FAIL", sd_row[5:])
+    for item in fb or []:
+        doc.warn("account fallback: session %s switched %s -> %s at %s with no switch back; "
+                 "if it stayed on %s, run: %s" % (item["session_id"], item["from"], item["to"],
+                                                  item["ts"], item["account"], item["command"]))
+    if fb == []:
+        doc.ok("account fallback: no unrepaired fallback switches")
 
     _doctor_hooks_latency(doc, args.fixture or default_fixture(), cfg, args.skip_hooks)
 
@@ -4686,7 +4699,8 @@ def cmd_account_switch(args):
         elif not dry:
             db.insert_event(conn, "account_change",
                             {"from": from_acct, "to": to_acct,
-                             "source": "account-switch", "since": since},
+                             "source": "account-switch", "since": since,
+                             "account_source": "manual"},
                             session_id=sid, account=to_acct, ts=since)
             out("event: added")
         else:

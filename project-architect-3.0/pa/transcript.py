@@ -5,7 +5,7 @@ Public:
     parse_ts(s), iso(dt), fmt_gap(seconds), est(obj), blocks(message)
     iter_records(path, start_offset=0, with_offset=False)
     iter_requests(path, start_offset=0, cold_gap_s=3600)
-    read_new_requests(path, start_offset=0, cold_gap_s=3600) -> (requests, offset)
+    read_new_requests(path, start_offset=0, cold_gap_s=3600, prev_ts=None, start_index=0) -> (requests, offset)
     rewrite_rule(index, ctx, cache_write)
     request_cost(req, ttl_default="5m", at=None) -> (cost_usd, parts)
     tail_last_usage(path, tail_bytes=131072)
@@ -262,18 +262,22 @@ def iter_requests(path, start_offset=0, cold_gap_s=3600):
         yield _finish(pending, index, prev_ts, cold_gap_s)
 
 
-def read_new_requests(path, start_offset=0, cold_gap_s=3600):
+def read_new_requests(path, start_offset=0, cold_gap_s=3600, prev_ts=None, start_index=0):
     """``(requests, end_offset)`` for incremental tails (Stop / SessionEnd).
 
     ``end_offset`` is the byte offset after the last *complete* line, so a
     transcript being appended to while we read never loses or duplicates a row.
+    ``prev_ts`` (datetime or ISO str) and ``start_index`` carry the previous
+    batch's last request time and request count, so the first request of this
+    batch gets a real ``gap_s`` / ``cold`` / ``rewrite`` instead of a fresh start.
     """
     end = int(start_offset or 0)
     reqs = []
     pending = None
     seen = set()
-    index = 0
-    prev_ts = None
+    index = int(start_index or 0)
+    if isinstance(prev_ts, str):
+        prev_ts = parse_ts(prev_ts)
     for offset, rec in iter_records(path, start_offset, with_offset=True):
         end = offset
         msg, usage = _usage_of(rec)

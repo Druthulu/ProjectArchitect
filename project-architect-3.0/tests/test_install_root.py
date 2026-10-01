@@ -45,6 +45,26 @@ PA_EVENTS = {
 
 _STEP_RE = re.compile(r"^(R\d)\s+\S.*?\s+(SKIP|DONE|FAIL)\s\s")
 
+# 3.15 T8 / I40: the real probes, kept for CrossLedgerLinkTest; the module fakes them
+_REAL_WSL_DISTROS = install._wsl_distros
+_REAL_WINDOWS_USER = install._windows_user
+_REAL_WSL_LEDGER_GLOB = install._wsl_ledger_glob
+_PATCHES = []
+
+
+def setUpModule():
+    """Hermetic: no test sees this machine's real WSL distros or Windows ledgers."""
+    for name, value in (("_wsl_distros", lambda: []), ("_windows_user", lambda: None),
+                        ("_wsl_ledger_glob", lambda: [])):
+        patcher = mock.patch.object(install, name, value)
+        patcher.start()
+        _PATCHES.append(patcher)
+
+
+def tearDownModule():
+    while _PATCHES:
+        _PATCHES.pop().stop()
+
 
 def steps(out):
     """``{"R1": "DONE", ...}`` parsed from the step lines of a run."""
@@ -186,7 +206,7 @@ class RootWindowsTest(unittest.TestCase):
 
     def test_pre_tool_use_and_notification_matchers(self):
         self.assertEqual(hook_entries(self.merged, "PreToolUse")[0][0],
-                         "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell")
+                         "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|SubagentHandback")
         self.assertEqual(hook_entries(self.merged, "Notification")[0][0],
                          "idle_prompt|permission_prompt|agent_needs_input|elicitation_dialog")
 
@@ -256,11 +276,11 @@ class RootWindowsTest(unittest.TestCase):
             text = fh.read()
         from pa import __version__
         self.assertIn("version: %s" % __version__, text)
-        self.assertEqual(text.splitlines()[0], "version: 3.14.2")  # I11
+        self.assertEqual(text.splitlines()[0], "version: 3.15.2")  # I11
         self.assertRegex(text, r"git: [0-9a-f]{6,40}")
 
     def test_version_parse_forms_and_fallback(self):
-        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.14.2``."""
+        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.15.2``."""
         import pa
         self.assertEqual(pa.parse_version("3.11\n"), "3.11")
         self.assertEqual(pa.parse_version("version: 3.12\ngit: abc\n"), "3.12")
@@ -282,9 +302,9 @@ class RootWindowsTest(unittest.TestCase):
             return subprocess.run([sys.executable, "-c", code], cwd=d, capture_output=True,
                                   text=True, check=True).stdout.strip()
         self.assertEqual(ver("3.12\n"), "3.12")
-        self.assertEqual(ver("version: 3.14.2\ngit: abc\n"), "3.14.2")
-        self.assertEqual(ver(None), "3.14.2")
-        self.assertEqual(ver("garbage: x\n"), "3.14.2")
+        self.assertEqual(ver("version: 3.15.2\ngit: abc\n"), "3.15.2")
+        self.assertEqual(ver(None), "3.15.2")
+        self.assertEqual(ver("garbage: x\n"), "3.15.2")
 
     def test_ledger_has_every_table(self):
         conn = db.connect(os.path.join(self.ledger, "ledger.sqlite"), create=False)
@@ -571,6 +591,100 @@ class RootWslTest(unittest.TestCase):
         self.assertEqual(sorted(self.merged["env"]), sorted(self.merged["env"]))
         self.assertIn("permissions", self.merged)
         self.assertFalse(self.merged["includeCoAuthoredBy"])
+
+
+# --------------------------------------------------------------------------- cross-machine link
+
+def _make_ledger(*parts):
+    path = os.path.join(*parts)
+    os.makedirs(path, exist_ok=True)
+    open(os.path.join(path, "ledger.sqlite"), "wb").close()
+    return path.replace("\\", "/")
+
+
+class CrossLedgerLinkTest(unittest.TestCase):
+    """3.15 T8 / I40: win links each WSL distro's ledger; re-runs add new ones; WSL prefers
+    the current Windows user's folder.  Faked distros and temp WSL_UNC/WIN_USERS only."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pa3-xlink-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.unc = os.path.join(self.tmp, "unc").replace("\\", "/")
+        self.users = os.path.join(self.tmp, "users").replace("\\", "/")
+        for name, value in (("WSL_UNC", self.unc), ("WIN_USERS", self.users),
+                            ("_wsl_ledger_glob", _REAL_WSL_LEDGER_GLOB)):
+            patcher = mock.patch.object(install, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def fake_distros(self, names):
+        patcher = mock.patch.object(install, "_wsl_distros", lambda: list(names))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_distros_decode_utf16le_and_drop_docker(self):
+        raw = "﻿Ubuntu\r\ndocker-desktop\r\n\r\ndocker-desktop-data\r\nDebian \r\n".encode("utf-16-le")
+        done = subprocess.CompletedProcess(["wsl.exe"], 0, stdout=raw)
+        with mock.patch.object(install.subprocess, "run", return_value=done) as run:
+            self.assertEqual(_REAL_WSL_DISTROS(), ["Ubuntu", "Debian"])
+        self.assertEqual(run.call_args[0][0], ["wsl.exe", "-l", "-q"])
+        done = subprocess.CompletedProcess(["wsl.exe"], 0, stdout=b"Ubuntu\nArch\n")
+        with mock.patch.object(install.subprocess, "run", return_value=done):
+            self.assertEqual(_REAL_WSL_DISTROS(), ["Ubuntu", "Arch"])
+        with mock.patch.object(install.subprocess, "run", side_effect=OSError("no wsl")):
+            self.assertEqual(_REAL_WSL_DISTROS(), [])
+
+    def test_windows_user_unexpanded_is_none(self):
+        with mock.patch.object(install, "_run", return_value="drew\r\n"):
+            self.assertEqual(_REAL_WINDOWS_USER(), "drew")
+        for out in ("%USERNAME%\r\n", "", None):
+            with mock.patch.object(install, "_run", return_value=out):
+                self.assertIsNone(_REAL_WINDOWS_USER(), out)
+
+    def test_win_links_each_distro_with_a_ledger(self):
+        self.fake_distros(["Ubuntu", "Debian", "Empty"])
+        a = _make_ledger(self.unc, "Ubuntu", "home", "alice", ".claude", "usage-ledger")
+        b = _make_ledger(self.unc, "Debian", "root", ".claude", "usage-ledger")
+        os.makedirs(os.path.join(self.unc, "Empty", "home", "bob", ".claude", "usage-ledger"))
+        got = install._suggest_extra_roots(install.Env(machine="win"))
+        self.assertEqual(got, sorted([a, b]))
+
+    def test_rerun_adds_new_link_and_keeps_existing_entry(self):
+        self.fake_distros(["Ubuntu", "Debian"])
+        a = _make_ledger(self.unc, "Ubuntu", "home", "alice", ".claude", "usage-ledger")
+        tmp, cfg, pa3, ledger = make_root(WIN_FIXTURE)
+        self.addCleanup(shutil.rmtree, tmp, True)
+        argv = ["--root", "--config-dir", cfg, "--pa3-dir", pa3, "--yes"]
+        with mock.patch.object(install.paths, "machine_tag", return_value="win"):
+            rc, out = run_install(argv, ledger)
+            self.assertEqual(rc, 0, out)
+            cfg_path = os.path.join(ledger, "config.json")
+            self.assertEqual(read_json(cfg_path)["extra_roots"], [a])
+            kept = {"path": a.upper().replace("/", "\\"), "account": "wsl@example.com"}
+            data = read_json(cfg_path)
+            data["extra_roots"] = [kept]
+            with open(cfg_path, "w", encoding="utf-8") as fh:
+                json.dump(data, fh)
+            b = _make_ledger(self.unc, "Debian", "home", "carol", ".claude", "usage-ledger")
+            rc, out = run_install(argv + ["--dry-run"], ledger)
+            self.assertIn("would link: %s" % b, out)
+            self.assertNotIn("would link: %s" % a, out)
+            rc, out = run_install(argv + ["--extra-root", "/x"], ledger)
+        self.assertEqual(rc, 0, out)
+        roots = read_json(cfg_path)["extra_roots"]
+        self.assertEqual(json.dumps(roots[0]), json.dumps(kept))
+        self.assertEqual(roots[1:], [b])
+        self.assertIn("note: linked %s" % b, out)
+        self.assertIn("--extra-root ignored", out)
+
+    def test_wsl_prefers_the_current_windows_user(self):
+        _make_ledger(self.users, "Admin", ".claude", "usage-ledger")
+        mine = _make_ledger(self.users, "drew", ".claude", "usage-ledger")
+        os.makedirs(os.path.join(self.users, "Aaron", ".claude", "usage-ledger"))
+        with mock.patch.object(install, "_windows_user", lambda: "drew"):
+            self.assertEqual(install._suggest_extra_roots(install.Env(machine="wsl")), [mine])
+        self.assertEqual(install._suggest_extra_roots(install.Env(machine="wsl"))[0],
+                         mine.replace("drew", "Admin"))
 
 
 # --------------------------------------------------------------------------- safety

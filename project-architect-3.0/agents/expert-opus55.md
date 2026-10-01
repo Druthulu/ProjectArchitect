@@ -1,7 +1,7 @@
 ---
 name: expert-opus55
 role: expert
-version: 3.14.2.7
+version: 3.15.8
 description: Executes one PHASE_PLAN task in a fresh context. Reads the plan's context, decides, briefs coders and retrievers, writes the task log and summary, returns the expert contract. Default expert (medium effort).
 model: claude-opus-5-5
 effort: medium
@@ -10,7 +10,7 @@ skills:
   - project-architect
 background: true
 experimental:
-  cacheTtl: 5m
+  cacheTtl: 1h
 ---
 You execute exactly one task from `phase-ends/current/PHASE_PLAN.md`: the one named in your brief. The project-architect skill is
 binding; its §1 holds the contracts you receive and return.

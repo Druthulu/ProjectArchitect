@@ -481,14 +481,17 @@ def write_seed(root, conf, mode, phase, gen, args):
     pe = rel(root, PE.phase_dir(root, conf))
     plan = PE.plan_path(root, conf)
     py = conf.get("python") or "python"
-    body = [SEED_HEAD.format(mode=mode, phase=phase, gen=gen, pe=pe,
-                             plan=rel(root, plan), py=py)]
+    head = SEED_HEAD.format(mode=mode, phase=phase, gen=gen, pe=pe,
+                            plan=rel(root, plan), py=py)
+    if mode == "router":                         # seed line 2, under the title (3.15 T6: head -3 shows it)
+        title, rest = head.split("\n", 1)
+        head = title + "\n" + _arm_line(root) + rest
+    body = [head]
     preset = conf.get("preset") or "max20"         # max5/pro have no hard rung (pa/install/ladder.PRESETS)
     body.append("Preset: %s (hard rung: %s)\n"
                 % (preset, "none" if preset in ("max5", "pro") else "expert-fable"))
     cur = os.path.join(PE.phase_dir(root, conf), "current")
     if mode == "router":
-        body.append(_arm_line(root))             # first, before Run in flight / Running (3.9.5 T6)
         st = _status_doc(root)
         if st.get("task") and st.get("run_id") and st.get("killed_at"):
             progress = os.path.join(cur, "TASK_PROGRESS.md")
@@ -686,6 +689,8 @@ def main(argv=None):
                               "resume": a.resume, "ts": now(),
                               "cmd": display(cmd)}, indent=1) + "\n")
     if a.seed_only:
+        if mode == "router":                     # the arm line first on stdout (3.15 T6)
+            sys.stdout.write(_arm_line(root))
         sys.stdout.write("seed=%s\nmode=%s\n" % (rel(root, seed), mode))
         # Phase ownership (3.10 T28): follows whichever session ran `go` last; a relaunched
         # router takes over by restamping .run/status.json router_session (other keys kept).

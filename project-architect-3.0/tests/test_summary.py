@@ -282,6 +282,27 @@ class ProjectsBlockSingleAccountTest(unittest.TestCase):
                                ba["lifetime"]["cost_saved_measured"], places=4)
 
 
+class ExpiredWindowSliceTest(unittest.TestCase):
+    """T20: an account whose only window has reset (and with no cost) gets no project slice."""
+
+    def test_expired_only_account_dropped(self):
+        conn = _make_db()
+        _seed_two_accounts(conn)
+        conn.execute("UPDATE turns SET cost_usd=0.0 WHERE account=?", (ACCT_B,))
+        conn.execute("DELETE FROM savings WHERE session_id='s-b'")
+        conn.commit()
+        accts = _accounts_block()
+        accts[ACCT_B]["windows"] = {"seven_day": {"pct_per_dollar": 0.02, "pct_last": 10.0,
+                                                  "started_at": NOW - 8 * 86400,
+                                                  "resets_at": NOW - 86400}}
+        try:
+            entry = list(summary.projects_block(conn, cfg=_CFG, accounts=accts).values())[0]
+        finally:
+            conn.close()
+        self.assertEqual(sorted(entry["by_account"]), [ACCT_A])
+        self.assertAlmostEqual(sum(entry["cost_in_window"]["five_hour"].values()), 6.0, places=2)
+
+
 class AccountSwitchSummaryTest(unittest.TestCase):
     """T9: accounts_block lifetime for two accounts adds up when one session switches."""
 
@@ -654,6 +675,294 @@ class RebuildFailureLogTest(unittest.TestCase):
             else:
                 os.environ["PA_LEDGER_DIR"] = old_env
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class RebuildOutsideLockTest(unittest.TestCase):
+    """T11 (3.15): blocks are computed outside the summary.json lock; overlapping rebuilds
+    coalesce, the later-started result wins, and nothing logs ``summary_rebuild_failed``."""
+
+    def setUp(self):
+        import tempfile
+
+        from pa import log
+
+        self.tmp = tempfile.mkdtemp(prefix="pa3-summary-")
+        self.old_env, self.old_log = os.environ.get("PA_LEDGER_DIR"), log._LOG_PATH
+        os.environ["PA_LEDGER_DIR"] = self.tmp
+        log.set_log_path(os.path.join(self.tmp, "hooks.log"))
+        self.path = os.path.join(self.tmp, "summary.json")
+
+    def tearDown(self):
+        import shutil
+
+        from pa import log
+
+        log.set_log_path(self.old_log)
+        if self.old_env is None:
+            os.environ.pop("PA_LEDGER_DIR", None)
+        else:
+            os.environ["PA_LEDGER_DIR"] = self.old_env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _mocks(self, hold=None, entered=None):
+        """Mock every block; ``accounts_block`` in thread ``A`` blocks on ``hold``."""
+        import threading
+        from unittest import mock
+
+        def _who():
+            return threading.current_thread().name
+
+        def _accounts(conn, cfg=None, readers=None):
+            if hold is not None and _who() == "A":
+                entered.set()
+                hold.wait(10)
+            return {"x@y": {"who": _who()}}
+
+        return [
+            mock.patch.object(summary, "era_start", return_value=""),
+            mock.patch.object(summary, "accounts_block", side_effect=_accounts),
+            mock.patch.object(summary, "projects_block",
+                              side_effect=lambda *a, **k: {"p": {"who": _who()}}),
+            mock.patch.object(summary, "sessions_block",
+                              side_effect=lambda *a, **k: {"s-" + _who(): {}}),
+            mock.patch.object(summary, "alerts_block", return_value=[]),
+            mock.patch.object(summary, "_seed_for_projects", return_value=[]),
+            mock.patch.object(summary, "_modeled_block", return_value=None),
+        ]
+
+    def _run(self, patches, fn):
+        import contextlib
+
+        with contextlib.ExitStack() as stack:
+            for p in patches:
+                stack.enter_context(p)
+            return fn()
+
+    def _rebuild_in(self, name, out, **kw):
+        import threading
+
+        def _go():
+            out[name] = summary.rebuild(sqlite3.connect(":memory:"), {}, **kw)
+
+        t = threading.Thread(target=_go, name=name)
+        t.start()
+        return t
+
+    def _hooks_log(self):
+        try:
+            with open(os.path.join(self.tmp, "hooks.log"), encoding="utf-8") as fh:
+                return fh.read()
+        except OSError:
+            return ""
+
+    def test_lock_is_free_during_compute(self):
+        import threading
+
+        from pa import fsutil
+
+        hold, entered, out = threading.Event(), threading.Event(), {}
+
+        def _body():
+            a = self._rebuild_in("A", out)
+            self.assertTrue(entered.wait(5))
+            try:
+                got = fsutil.locked_update(self.path, lambda d: d or {"probe": 1}, timeout_ms=100)
+            finally:
+                hold.set()
+                a.join(10)
+            return got
+
+        got = self._run(self._mocks(hold, entered), _body)
+        self.assertEqual(got, {"probe": 1})
+        self.assertIsInstance(out["A"], dict)
+        self.assertNotIn("summary_rebuild_failed", self._hooks_log())
+
+    def test_later_started_rebuild_wins(self):
+        import json
+        import threading
+
+        hold, entered, out = threading.Event(), threading.Event(), {}
+
+        def _body():
+            a = self._rebuild_in("A", out)
+            self.assertTrue(entered.wait(5))
+            time.sleep(0.02)                      # B starts strictly after A
+            b = self._rebuild_in("B", out)
+            b.join(10)
+            hold.set()
+            a.join(10)
+
+        self._run(self._mocks(hold, entered), _body)
+        self.assertIsInstance(out["A"], dict)
+        self.assertIsInstance(out["B"], dict)
+        self.assertNotIn("summary_rebuild_failed", self._hooks_log())
+        with open(self.path, encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual(doc["accounts"], {"x@y": {"who": "B"}})
+        self.assertEqual(doc["projects"], {"p": {"who": "B"}})
+        self.assertIn("s-B", doc["sessions"])
+        self.assertEqual(out["A"]["accounts"], {"x@y": {"who": "B"}})
+
+    def test_sessions_only_keeps_windows_group(self):
+        import json
+
+        def _body():
+            summary.rebuild(sqlite3.connect(":memory:"), {})
+            with open(self.path, encoding="utf-8") as fh:
+                first = json.load(fh)
+            time.sleep(0.02)
+            summary.rebuild(sqlite3.connect(":memory:"), {}, sessions_only=True)
+            with open(self.path, encoding="utf-8") as fh:
+                return first, json.load(fh)
+
+        first, doc = self._run(self._mocks(), _body)
+        self.assertEqual(doc["accounts"], first["accounts"])
+        self.assertEqual(doc["projects"], first["projects"])
+        self.assertEqual(doc["meta"]["computed_at"]["windows"],
+                         first["meta"]["computed_at"]["windows"])
+        self.assertGreater(doc["meta"]["computed_at"]["sessions"],
+                           first["meta"]["computed_at"]["sessions"])
+
+
+def _seed_ledger(path, sessions, turns, pct=None):
+    """A real-schema ledger at ``path``: ``sessions`` [(sid, project)], ``turns``
+    [(msg_id, sid, cost)] for ACCT_A an hour ago; ``pct``: one seven_day sample."""
+    from pa import db
+
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    conn = db.connect(path)
+    db.init_schema(conn)
+    conn.execute("INSERT OR IGNORE INTO accounts(email) VALUES(?)", (ACCT_A,))
+    for sid, proj in sessions:
+        conn.execute("INSERT INTO sessions(session_id, account, account_source, project, cwd)"
+                     " VALUES(?, ?, 'auth', ?, ?)", (sid, ACCT_A, proj, proj))
+    for mid, sid, cost in turns:
+        conn.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd, kind)"
+                     " VALUES(?, ?, ?, ?, 'claude-opus-4-6', ?, 'api')",
+                     (mid, sid, ACCT_A, _iso(NOW - 3600), cost))
+    if pct is not None:
+        conn.execute("INSERT INTO utilization(ts, account, session_id, window, pct, resets_at)"
+                     " VALUES(?, ?, 's-l', 'seven_day', ?, ?)",
+                     (_iso(NOW - 60), ACCT_A, pct, NOW + 3 * 86400))
+    conn.commit()
+    return conn
+
+
+class UnweightedFamilyShareTest(unittest.TestCase):
+    """T17.c2 (3.15): a family with spend but no fit weight counts at pct_per_dollar on
+    both sides of the apportioning, so the shares still add up to the meter."""
+
+    def test_unweighted_family_counts_at_pct_per_dollar(self):
+        conn = _make_db()
+        other = "/test/otherproject"
+        ts = _iso(NOW - 3600)
+        for sid, proj in (("s-a", PROJECT), ("s-b", other)):
+            conn.execute("INSERT INTO sessions(session_id, account, project, cwd, started, ended)"
+                         " VALUES(?, ?, ?, ?, ?, ?)", (sid, ACCT_A, proj, proj, ts, _iso(NOW)))
+        for mid, sid, model in (("m1", "s-a", "claude-opus-4-6"), ("m2", "s-a", "claude-sonnet-4-5"),
+                                ("m3", "s-b", "claude-opus-4-6")):
+            conn.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd, kind)"
+                         " VALUES(?, ?, ?, ?, ?, ?, 'api')", (mid, sid, ACCT_A, ts, model, 10.0))
+        conn.commit()
+        win = {"pct_per_dollar": 0.01, "pct_last": 50.0, "started_at": NOW - 7200,
+               "fit_detail": {"opus": {"weight": 0.02}},
+               "ledger_cost_by_family": {"opus": 20.0, "sonnet": 10.0},
+               "ledger_cost_in_window": 30.0}
+        res = summary.projects_block(conn, cfg=_CFG, accounts={ACCT_A: {"windows": {"seven_day": win}}})
+        conn.close()
+        a = res[summary._project_key(PROJECT)]["by_account"][ACCT_A]
+        b = res[summary._project_key(other)]["by_account"][ACCT_A]
+        # A: 10*2 + 10*1 = 30, B: 10*2 = 20, account: 20*2 + 10*1 = 50 -> 30 and 20 of the 50 meter
+        self.assertAlmostEqual(a["pct_used"]["seven_day"], 30.0, places=3)
+        self.assertAlmostEqual(b["pct_used"]["seven_day"], 20.0, places=3)
+        self.assertAlmostEqual(a["pct_est"]["seven_day"], 20.0, places=3)    # report figure unchanged
+
+
+class ExtraRootRebuildTest(unittest.TestCase):
+    """T17 (3.15): a rebuild without readers opens the config's extra_roots itself; the
+    projects' shares divide by the account's whole spend; the read rule keeps the windows
+    group on disk when a root cannot be read."""
+
+    def setUp(self):
+        import tempfile
+        from unittest import mock
+
+        from pa import db, log
+
+        self.tmp = tempfile.mkdtemp(prefix="pa3-summary-")
+        self.old_env, self.old_log = os.environ.get("PA_LEDGER_DIR"), log._LOG_PATH
+        os.environ["PA_LEDGER_DIR"] = os.path.join(self.tmp, "local")
+        log.set_log_path(os.path.join(self.tmp, "hooks.log"))
+        self.union = mock.patch.object(db, "union_dir",
+                                       return_value=os.path.join(self.tmp, "union"))
+        self.union.start()
+        self.conn = _seed_ledger(os.path.join(self.tmp, "local", "ledger.sqlite"),
+                                 [("s-l", PROJECT)], [("m-l", "s-l", 10.0)], pct=55.0)
+        self.path = os.path.join(self.tmp, "local", "summary.json")
+
+    def tearDown(self):
+        import shutil
+
+        from pa import log
+
+        self.conn.close()
+        self.union.stop()
+        log.set_log_path(self.old_log)
+        if self.old_env is None:
+            os.environ.pop("PA_LEDGER_DIR", None)
+        else:
+            os.environ["PA_LEDGER_DIR"] = self.old_env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _cfg(self, root):
+        return {"accounts": {ACCT_A: {"renewal_day": 21}},
+                "extra_roots": [{"path": root, "account": ACCT_A}]}
+
+    def test_local_project_share_of_the_whole_spend(self):
+        other = os.path.join(self.tmp, "other")
+        _seed_ledger(os.path.join(other, "ledger.sqlite"), [("s-o", None)],
+                     [("m-o", "s-o", 100.0)]).close()           # no project key
+        doc = summary.rebuild(self.conn, self._cfg(other))
+        w = doc["accounts"][ACCT_A]["windows"]["seven_day"]
+        self.assertAlmostEqual(w["ledger_cost_in_window"], 110.0, places=6)
+        pu = doc["projects"][summary._project_key(PROJECT)]["by_account"][ACCT_A]["pct_used"]
+        self.assertAlmostEqual(pu["seven_day"], 55.0 * 10 / 110, places=2)    # ~9 % of the meter
+
+    def test_unreadable_root_keeps_the_windows_group(self):
+        import json
+        from unittest import mock
+
+        from pa import db
+
+        bad = os.path.join(self.tmp, "bad")
+        os.makedirs(bad)
+        with open(os.path.join(bad, "ledger.sqlite"), "wb") as fh:
+            fh.write(b"not a database" * 100)
+        prev = {"accounts": {"old": 1}, "projects": {"p": 1}, "sessions": {},
+                "alerts": [{"kind": "seed_growth", "n": 1}],
+                "meta": {"computed_at": {"windows": 123.0, "sessions": 100.0}}}
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(prev, fh)
+        real = db.union_readers
+        with mock.patch.object(db, "union_readers", side_effect=real) as ur:
+            doc = summary.rebuild(self.conn, self._cfg(bad))
+        self.assertEqual(ur.call_count, 2)                      # one invalidate-and-retry
+        self.assertEqual(doc["accounts"], {"old": 1})
+        self.assertEqual(doc["projects"], {"p": 1})
+        self.assertIn({"kind": "seed_growth", "n": 1}, doc["alerts"])
+        self.assertEqual(doc["meta"]["computed_at"]["windows"], 123.0)
+        self.assertGreater(doc["meta"]["computed_at"]["sessions"], 100.0)   # sessions written
+        self.assertFalse(os.path.exists(os.path.join(
+            db._union_dest_dir(db._root_db(bad)), "ledger.sqlite")))         # torn copy dropped
+        with open(os.path.join(self.tmp, "hooks.log"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("summary_extra_root_failed", text)
+        self.assertIn("bad", text)
+        self.assertNotIn("summary_rebuild_failed", text)
+        os.remove(self.path)                                     # absent: no windows group at all
+        doc = summary.rebuild(self.conn, self._cfg(os.path.join(self.tmp, "missing")))
+        self.assertNotIn("windows", doc["meta"]["computed_at"])
+        self.assertEqual(doc["accounts"], {})
 
 
 if __name__ == "__main__":

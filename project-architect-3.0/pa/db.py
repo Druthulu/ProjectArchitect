@@ -12,7 +12,8 @@ Public:
     seed_prices(conn, force=False)
     turn_row_from_request(req, run_id=None, session_id=None, account=None,
                           ttl_default="5m", kind="api")
-    union_readers(extra_roots, include_local=False) -> [{conn, path, account, label}], union_copy(root)
+    union_readers(extra_roots, include_local=False) -> [{conn, path, account, label}], union_copy(root),
+    union_invalidate(root)
     wal_checkpoint(conn, mode="TRUNCATE"), disk_free_mb(path), close(conn)
 
 This is the only module that imports ``sqlite3``; hooks import it on cold paths
@@ -285,6 +286,11 @@ def init_schema(conn, machine=None):
     now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
     if get_meta(conn, "created") is None:
         set_meta(conn, "created", now)
+        # 3.15 T12: a new ledger needs no repair -- every step and the version pre-stamped
+        from . import __version__, repairs
+        for step_id in repairs.step_ids():
+            set_meta(conn, "repair.%s" % step_id, "fresh")
+        set_meta(conn, "repairs_version", __version__)
     set_meta(conn, "schema_version", str(SCHEMA_VERSION))
     set_meta(conn, "machine", machine or paths.machine_tag())
     set_meta(conn, "prices_version", prices.PRICES_VERSION)
@@ -617,14 +623,36 @@ def _root_db(root):
     return r if r.lower().endswith(".sqlite") else os.path.join(r, "ledger.sqlite")
 
 
+def _union_dest_dir(src):
+    """The temp directory holding the copy of ``src`` (a ledger.sqlite path)."""
+    import hashlib
+
+    tag = hashlib.sha1(src.encode("utf-8", "replace")).hexdigest()[:12]
+    return os.path.join(union_dir(), tag)
+
+
+def _union_drop(dest_dir):
+    """Remove a union copy (+ ``-wal``/``-shm``) and its ``source.json`` marker."""
+    for name in ("ledger.sqlite", "ledger.sqlite-wal", "ledger.sqlite-shm", "source.json"):
+        try:
+            os.remove(os.path.join(dest_dir, name))
+        except OSError:
+            pass
+
+
+def union_invalidate(root):
+    """Drop ``root``'s union copy so the next :func:`union_copy` copies it afresh (T17)."""
+    _union_drop(_union_dest_dir(_root_db(root)))
+
+
 def union_copy(root):
     """Copy a foreign ``ledger.sqlite`` (+ ``-wal``) to a temp dir if it changed.
 
     Returns the path of the local copy, or None when the source is unreadable.
     The copy is checkpointed and switched to a rollback journal so it can be
     opened ``mode=ro`` (a WAL copy would need write access to recover).
+    A copy failing ``PRAGMA quick_check`` is removed with its marker; None (T17).
     """
-    import hashlib
     import shutil
 
     src = _root_db(root)
@@ -637,8 +665,7 @@ def union_copy(root):
     sig = {"src": src, "mtime": st.st_mtime, "size": st.st_size,
            "wal_mtime": wal_sig[0], "wal_size": wal_sig[1]}
 
-    tag = hashlib.sha1(src.encode("utf-8", "replace")).hexdigest()[:12]
-    dest_dir = os.path.join(union_dir(), tag)
+    dest_dir = _union_dest_dir(src)
     dest = os.path.join(dest_dir, "ledger.sqlite")
     marker = os.path.join(dest_dir, "source.json")
     if os.path.exists(dest) and fsutil.read_json(marker, None) == sig:
@@ -656,9 +683,16 @@ def union_copy(root):
         try:
             tmp.execute("PRAGMA journal_mode=DELETE")     # replays + drops the WAL
             tmp.commit()
+            check = tmp.execute("PRAGMA quick_check").fetchone()
         finally:
             tmp.close()
-    except (OSError, sqlite3.DatabaseError):
+    except sqlite3.DatabaseError:
+        _union_drop(dest_dir)
+        return None
+    except OSError:
+        return None
+    if not check or check[0] != "ok":               # T17: a torn copy is never reused
+        _union_drop(dest_dir)
         return None
     fsutil.atomic_write_json(marker, sig)
     return dest

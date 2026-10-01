@@ -48,6 +48,14 @@ def run(inp, cfg):
             _reconcile_ladder(inp, conn, email)
         except Exception as exc:       # fail soft: a stale model line costs a fallback, never the session
             log.log("ladder_reconcile_failed", session_id=sid, error=str(exc)[:200])
+        try:
+            # 3.15 T12: versioned ledger repairs, once per package version (detached, single flight)
+            from .. import __version__, db
+            if db.get_meta(conn, "repairs_version") != __version__:
+                from .. import repairs
+                repairs.request(cfg)
+        except Exception as exc:       # fail soft: a repair waits for the next start
+            log.log("repairs_request_failed", session_id=sid, error=str(exc)[:200])
     finally:
         close_db(conn)
 
@@ -136,6 +144,14 @@ def run(inp, cfg):
         except Exception as exc:
             log.log("renewal_prompt_failed", session_id=sid, error=str(exc)[:200])
 
+    # 3.15 T12: a finished repair's notice, shown to the user once (main session only)
+    if not agent_of(inp):
+        try:
+            from .. import repairs
+            user_lines.extend(repairs.pop_notice())
+        except Exception as exc:
+            log.log("repairs_notice_failed", session_id=sid, error=str(exc)[:200])
+
     out = {}
     if lines:
         out["hookSpecificOutput"] = {"hookEventName": "SessionStart", "additionalContext": "\n".join(lines)}
@@ -171,7 +187,8 @@ def _record(conn, inp, cfg, sid, source, status, email):
 
     if prior and prior["account"] and email and prior["account"] != email:
         db.insert_event(conn, "account_change",
-                        {"from": prior["account"], "to": email, "source": source},
+                        {"from": prior["account"], "to": email, "source": source,
+                         "account_source": accounts.account_source_of(status)},
                         session_id=sid, account=email)
 
     if source == "resume":

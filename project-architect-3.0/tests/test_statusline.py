@@ -2368,6 +2368,31 @@ class WindowedPairsTest(LedgerCase):
         # 7d: x = 8 * 0.02 * 100 = 16%, y = 4 * 0.02 * 100 = 8%
         self.assertIn("16%/8% of 7d", session)
 
+    def _guard_summary(self, five_ledger):
+        write_json(paths.summary_path(), {
+            "schema": 1,
+            "accounts": {"dev@example.com": {"label": "win", "windows": {
+                "five_hour": {"fit_quality": "ok", "pct_per_dollar": 0.05,
+                              "ledger_cost_in_window": five_ledger},
+                "seven_day": {"fit_quality": "ok", "pct_per_dollar": 0.02,
+                              "ledger_cost_in_window": 50.0}}}},
+            "sessions": {self.sid: {"account": "dev@example.com", "saved_measured": 5.0,
+                                    "windows": {
+                                        "five_hour": {"cost_used": 3.0, "net_saved": 2.0},
+                                        "seven_day": {"cost_used": 8.0, "net_saved": 4.0}}}}})
+        return [l for l in self.lines() if "Session:" in l][0]
+
+    def test_session_cost_above_ledger_window_prints_question(self):
+        """3.15 T1: session cost_used > the account window's ledger cost prints ?/? (C0079)."""
+        session = self._guard_summary(2.0)
+        self.assertIn("?/? of 5h", session)
+        self.assertIn("16%/8% of 7d", session)
+
+    def test_session_cost_within_ledger_window_unchanged(self):
+        session = self._guard_summary(3.0)
+        self.assertIn("15%/10% of 5h", session)
+        self.assertIn("16%/8% of 7d", session)
+
 
 class DiscountMultiplierTest(unittest.TestCase):
     """T1.c7: discount = 100*net/(paid+net), multiplier = (paid+net)/paid."""

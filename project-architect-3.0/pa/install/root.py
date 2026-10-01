@@ -498,14 +498,74 @@ def _apply_renewal_flags(cfg, opts):
     return changed
 
 
+WSL_UNC = "//wsl.localhost"          # 3.15 T8 / I40: the WSL distros seen from Windows
+WIN_USERS = "/mnt/c/Users"          # 3.15 T8 / I40: the Windows user folders seen from WSL
+
+
+def _ledger_dirs(pattern):
+    """Sorted ``usage-ledger`` dirs matching ``pattern`` that hold ``ledger.sqlite``."""
+    import glob
+
+    return sorted(c.replace("\\", "/") for c in glob.glob(pattern)
+                  if os.path.isfile(os.path.join(c, "ledger.sqlite")))
+
+
+def _windows_user():
+    """3.15 T8 / I40: the current Windows user name from WSL, or ``None``."""
+    out = _run(["cmd.exe", "/c", "echo %USERNAME%"], timeout=10)
+    lines = (out or "").strip().splitlines()
+    name = lines[0].strip("\r ") if lines else ""
+    if not name or "%" in name:
+        return None
+    return name
+
+
+def _wsl_distros():
+    """3.15 T8 / I40: WSL distro names from ``wsl.exe -l -q`` (Windows); any error -> []."""
+    try:
+        proc = subprocess.run(["wsl.exe", "-l", "-q"], stdout=subprocess.PIPE,
+                              stderr=subprocess.DEVNULL, timeout=10)
+        if proc.returncode != 0:
+            return []
+        raw = proc.stdout or b""
+        text = raw.decode("utf-16-le", "replace") if b"\x00" in raw else raw.decode("utf-8", "replace")
+    except Exception:
+        return []
+    out = []
+    for line in text.splitlines():
+        name = line.strip("\x00\r ﻿")
+        if name and not name.lower().startswith("docker-desktop"):
+            out.append(name)
+    return out
+
+
+def _win_wsl_ledgers():
+    """3.15 T8 / I40: every WSL distro's ledger seen from Windows, sorted."""
+    import glob
+
+    found = []
+    for distro in _wsl_distros():
+        base = glob.escape("%s/%s" % (WSL_UNC, distro))
+        found += _ledger_dirs(base + "/home/*/.claude/usage-ledger")
+        found += _ledger_dirs(base + "/root/.claude/usage-ledger")
+    return sorted(set(found))
+
+
 def _wsl_ledger_glob():
     """Candidate Windows ledger dirs seen from WSL (T8: its own function so a
     test can monkeypatch it and pin the suggestion instead of depending on
     whatever ``/mnt/c/Users/*/.claude/usage-ledger`` happens to exist on the
-    machine running the suite)."""
+    machine running the suite).  3.15 T8 / I40: only dirs holding
+    ``ledger.sqlite``; the current Windows user's folder first, the rest sorted."""
     import glob
 
-    return sorted(glob.glob("/mnt/c/Users/*/.claude/usage-ledger"))
+    cands = _ledger_dirs(glob.escape(WIN_USERS) + "/*/.claude/usage-ledger")
+    user = _windows_user()
+    if user:
+        mine = [c for c in cands
+                if os.path.basename(os.path.dirname(os.path.dirname(c))).lower() == user.lower()]
+        cands = mine + [c for c in cands if c not in mine]
+    return cands
 
 
 def _suggest_extra_roots(env):
@@ -513,7 +573,24 @@ def _suggest_extra_roots(env):
     if env.machine == "wsl":
         for cand in _wsl_ledger_glob():
             return [cand.replace("\\", "/")]
+    if env.machine == "win":                                  # 3.15 T8 / I40: every distro's
+        return _win_wsl_ledgers()
     return []
+
+
+def _root_key(item):
+    """3.15 T8 / I40: compare key of an ``extra_roots`` entry (string or {path})."""
+    path = item.get("path") if isinstance(item, dict) else item
+    key = str(path or "").replace("\\", "/").rstrip("/").lower()
+    if key.startswith("//wsl$/"):
+        key = "//wsl.localhost/" + key[len("//wsl$/"):]
+    return key
+
+
+def _unlinked_suggestions(env, roots):
+    """3.15 T8 / I40: suggestions not already in ``roots``."""
+    have = set(_root_key(r) for r in (roots or []))
+    return [s for s in _suggest_extra_roots(env) if _root_key(s) not in have]
 
 
 def _labels_from_opts(opts):
@@ -574,6 +651,8 @@ def init_ledger(env, opts):
             existing = fsutil.read_json(cfg_path, {}) or {}
             for dotted in _dropped_keys(existing):
                 _note("would drop: %s (a current or past default)" % dotted)
+            for path in _unlinked_suggestions(env, existing.get("extra_roots")):   # 3.15 T8 / I40
+                _note("would link: %s" % path)
         _line("R3", "ledger", "SKIP", "dry-run: would %s %s and %s config.json"
               % ("keep" if have_db else "create", db_path,
                  "keep" if have_cfg else "write"))
@@ -599,6 +678,13 @@ def init_ledger(env, opts):
         _apply_renewal_flags(merged, opts)
         if merged.get("installed_at") is None:              # T10: set once, never moved
             merged["installed_at"] = _now_iso_utc()
+        # 3.15 T8 / I40: a re-run links any other-machine ledger that appeared since;
+        # existing entries are kept as they are
+        new_links = _unlinked_suggestions(env, merged.get("extra_roots"))
+        if new_links:
+            merged["extra_roots"] = list(merged.get("extra_roots") or []) + new_links
+            for path in new_links:
+                _note("note: linked %s" % path)
         # T12: config.json keeps only user-set keys and overrides; current and past
         # defaults (T5's superseded values) are dropped, the package supplies them
         dropped = _dropped_keys(existing)

@@ -1447,10 +1447,17 @@ def _line_session(payload, ctx, cfg, sl, now):
             y_pct = _cost_as_pct(ns, account_windows, wkey) if ns and ns > 0 and not no_block else None
             if y_pct == 0 and not ns_windowed:
                 y_pct = None                      # live-only y rounding to 0 prints DASH, never 0% (T11.1)
-            if x_pct is None and y_pct is None:
+            aw = account_windows.get(wkey)
+            ledger_cost = _num(aw.get("ledger_cost_in_window"), None) if isinstance(aw, dict) else None
+            if cu is not None and ledger_cost is not None and cu > ledger_cost:
+                # session cost above its account's window cost: mixed accounts or windows (C0079)
+                xy = ("?", "?")
+            elif x_pct is None and y_pct is None:
                 continue
-            x_str = "%d%%" % x_pct if x_pct is not None else DASH
-            y_str = "%d%%" % y_pct if y_pct is not None else DASH
+            else:
+                xy = ("%d%%" % x_pct if x_pct is not None else DASH,
+                               "%d%%" % y_pct if y_pct is not None else DASH)
+            x_str, y_str = xy
             seg = _xy_seg(x_str, y_str, " of %s" % wlabel, colors)
             if first:
                 label_seg = _seg("Session:", DIM, colors)

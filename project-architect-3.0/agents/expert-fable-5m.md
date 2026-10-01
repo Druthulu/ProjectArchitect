@@ -1,8 +1,8 @@
 ---
-name: expert-fable
+name: expert-fable-5m
 role: expert
-version: 3.15.8
-description: Executes one PHASE_PLAN task in a fresh context on Fable 5.1 at medium effort: the hard tier (developer 2026-09-23), used for tasks the plan marks `effort: high`. Same body as expert-opus55.
+version: 3.15.1
+description: Executes one PHASE_PLAN task in a fresh context on Fable 5.1 at medium effort: the hard tier (developer 2026-09-23), used for tasks the plan marks `effort: high`. Same body as expert-opus55. 5m cache TTL twin.
 model: claude-fable-5-1[1m]
 effort: medium
 tools: Read, Edit, Write, Grep, Glob, Bash, Agent(coder-opus55, retriever-code, retriever-digest, retriever-web)
@@ -10,7 +10,7 @@ skills:
   - project-architect
 background: true
 experimental:
-  cacheTtl: 1h
+  cacheTtl: 5m
 ---
 You execute exactly one task from `phase-ends/current/PHASE_PLAN.md`: the one named in your brief. The project-architect skill is
 binding; its §1 holds the contracts you receive and return.

@@ -7,7 +7,9 @@ SubagentStart hooks (:func:`start_if_needed`), stopped by SessionEnd (:func:`sto
 Files under ``<root>/.run/warmer/``: ``<sid>.pid`` (this daemon's pid), ``<sid>.runs`` (JSON lines
 the hooks append: ``{"add": id, "agent_type", "role"}`` / ``{"end": id}``), ``<sid>.wake`` (this
 daemon appends ``warm <agent id> <idle_s>``; the session's ``Monitor`` on ``tail -n0 -F`` relays
-``.`` by SendMessage), ``<sid>.stop`` (SessionEnd), ``<sid>.log``.  State ``<root>/.run/warmer.json``
+``.`` by SendMessage), ``<sid>.undelivered`` (3.15 T6: JSON lines ``{run_id, line, at}`` of wake
+lines no ping followed within ``UNDELIVERED_S``; the Stop hook reads them), ``<sid>.stop``
+(SessionEnd), ``<sid>.log``.  State ``<root>/.run/warmer.json``
 ``{session, updated, runs: {run_id: {last_request, ttl, pings, last_ping, via, agent_type, idle}}}``
 (plus ``finished: true`` / ``ended: <epoch>`` when set), epoch seconds.
 
@@ -24,7 +26,10 @@ Timer (binding): base = the run's last ``user`` record (prompt, tool_result, del
 never the assistant record; idle = the last user/assistant record is an assistant record with no
 ``tool_use``.  A ping landing (text ``.`` or ending ``: .``) rebases and keeps the count; any other
 non-nudge user record resets it.  The line is written at ``fire - relay_lead_s`` seconds of
-idleness, once per base, up to ``max_pings_5m`` (5m runs) or ``max_pings_1h`` (1h runs).
+idleness, once per base, up to :func:`cap` pings: ``max_pings_1h`` (1h runs); 5m runs
+``clamp(floor(rewrite_usd / ping_usd), 0, max_pings_5m)`` from the run's and the router's last
+assistant usage (3.15 T3; floor 0 since T3.1: a ping dearer than the rewrite never fires),
+``max_pings_5m_fallback`` while any input is missing or unpriced.
 
 Import budget: hooks import this module, so module level stays ``json, os, sys, time``.
 """
@@ -37,9 +42,19 @@ import time
 VIA = "monitor"
 TAIL_BYTES = 262144                      # first read of a transcript: its last 256 KB
 _WDEFAULTS = {"fire_5m_s": 285, "fire_1h_s": 3300, "relay_lead_s": 25,
-               "max_pings_5m": 12,       # was 3 (max_pings), developer 2026-09-24
+               "max_pings_5m": 12,       # the ceiling (3.15 T3); was 3 (max_pings), developer 2026-09-24
+               "max_pings_5m_fallback": 3,   # 3.15 T3: an input of cap() missing or unpriced
                "max_pings_1h": 3, "poll_s": 5}
 _TTL_S = {"5m": 300, "1h": 3600}
+# 3.15 T3: the `.` turn itself, per request (the run's ping turn, the router's two relay requests):
+# the few new tokens it writes to the cache (the relayed message, the `.` reply, the SendMessage
+# call) and its output.  Estimates; small next to the context reads they ride on.
+PING_WRITE_TOKENS = 150
+PING_OUTPUT_TOKENS = 30
+ROUTER_RELAY_REQUESTS = 2                # the relay turn: SendMessage, then the closing `.`
+# 3.15 T6: a wake line whose ping has not landed this long after it was written is flagged once
+# (event ``warm_undelivered`` + a JSON line in ``<sid>.undelivered``; the Stop hook blocks on it).
+UNDELIVERED_S = 120
 
 
 # --------------------------------------------------------------------------- paths
@@ -265,14 +280,16 @@ def _result_ids(rec):
     content = _content(rec)
     if not isinstance(content, list):
         return []
+    # an is_error result (a denied hand-back, 3.15 T18) did not deliver: the run is not finished
     return [b.get("tool_use_id") for b in content
-            if isinstance(b, dict) and b.get("type") == "tool_result"]
+            if isinstance(b, dict) and b.get("type") == "tool_result" and not b.get("is_error")]
 
 
 def new_run(run_id, agent_type=None, role=None, ttl="5m"):
     return {"run_id": run_id, "agent_type": agent_type, "role": role, "ttl": ttl, "path": None,
             "seen": False, "offset": None, "base": None, "idle": False, "pings": 0,
-            "last_ping": None, "handback": None, "finished": False, "ended": None}
+            "last_ping": None, "handback": None, "finished": False, "ended": None,
+            "pending": None}
 
 
 def apply_records(run, records):
@@ -286,6 +303,9 @@ def apply_records(run, records):
             if ts is None:
                 continue
             ping = is_ping(rec) or is_nudge(rec)     # a nudge counts as a ping here (3.9.5 T6)
+            pend = run.get("pending")
+            if pend and (is_ping(rec) or (not ping and ts >= pend["at"])):
+                run["pending"] = None            # the line was relayed, or a real request came (3.15 T6)
             if not ping:
                 run["pings"] = 0                 # a real request resets the count
             if run.get("handback") and run["handback"] in _result_ids(rec):
@@ -299,19 +319,104 @@ def apply_records(run, records):
             ids = _handback_ids(rec)
             if ids:
                 run["handback"] = ids[-1]
+            take_usage(run, rec)
+            take_ttl(run, rec)
     return run
 
 
-def cap(run, s):
-    """The run's ping cap by its TTL (``max_pings_1h`` / ``max_pings_5m``)."""
-    return s["max_pings_1h"] if run["ttl"] == "1h" else s["max_pings_5m"]
+def take_ttl(run, rec):
+    """Set ``run["ttl"]`` from an assistant record's cache writes (3.15 T4): any 1h write -> "1h",
+    else any 5m write -> "5m", else unchanged (the role default stays until a write shows)."""
+    msg = rec.get("message")
+    usage = msg.get("usage") if isinstance(msg, dict) else None
+    cc = usage.get("cache_creation") if isinstance(usage, dict) else None
+    if not isinstance(cc, dict):
+        return
+    for key, ttl in (("ephemeral_1h_input_tokens", "1h"), ("ephemeral_5m_input_tokens", "5m")):
+        try:
+            if int(cc.get(key) or 0) > 0:
+                run["ttl"] = ttl
+                return
+        except (TypeError, ValueError):
+            pass
 
 
-def due(run, now, s):
+def take_usage(holder, rec):
+    """Keep ``holder["ctx"]`` (input + cache_read + cache_creation) and ``holder["model"]`` from
+    an assistant record's usage (3.15 T3); synthetic or empty usage is skipped."""
+    msg = rec.get("message")
+    if not isinstance(msg, dict):
+        return
+    usage, model = msg.get("usage"), msg.get("model")
+    if not isinstance(usage, dict) or not model or str(model).startswith("<"):
+        return
+    ctx = 0
+    for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        try:
+            ctx += int(usage.get(key) or 0)
+        except (TypeError, ValueError):
+            pass
+    if ctx > 0:
+        holder["ctx"], holder["model"] = ctx, model
+
+
+def _rates(model, ctx):
+    """$/token rates of ``model`` at context ``ctx`` (the long-context tier as ``prices.cost_of``),
+    or None when unpriced."""
+    from . import prices
+
+    row = prices.price_for(model)
+    if not row:
+        return None
+    long_ctx = ctx > prices.LONG_CONTEXT_TOKENS and row.get("window") == "1m"
+    return {k: row[k] * (prices.LONG_CONTEXT_MULT.get(k, 1.0) if long_ctx else 1.0) / 1e6
+            for k in ("write_5m", "read", "output")}
+
+
+def cap_inputs(run, router=None):
+    """``{ctx, model, router_ctx, router_model, rewrite_usd, ping_usd}`` of :func:`cap`; a missing
+    or unpriced input leaves its field and the two costs None.
+
+    ``rewrite_usd = ctx * (write_5m - read)``: the rewrite a ping saves, net of the read it pays
+    anyway.  ``ping_usd = ctx * read + 2 * router_ctx * router_read`` plus the `.` turn's small write
+    and output per request (:data:`PING_WRITE_TOKENS`, :data:`PING_OUTPUT_TOKENS`).
+    """
+    router = router or {}
+    out = {"ctx": run.get("ctx"), "model": run.get("model"), "router_ctx": router.get("ctx"),
+           "router_model": router.get("model"), "rewrite_usd": None, "ping_usd": None}
+    if not (out["ctx"] and out["model"] and out["router_ctx"] and out["router_model"]):
+        return out
+    r, rr = _rates(out["model"], out["ctx"]), _rates(out["router_model"], out["router_ctx"])
+    if not r or not rr:
+        return out
+
+    def turn(rt):
+        return PING_WRITE_TOKENS * rt["write_5m"] + PING_OUTPUT_TOKENS * rt["output"]
+
+    out["rewrite_usd"] = out["ctx"] * (r["write_5m"] - r["read"])
+    out["ping_usd"] = (out["ctx"] * r["read"] + turn(r)
+                       + ROUTER_RELAY_REQUESTS * (out["router_ctx"] * rr["read"] + turn(rr)))
+    return out
+
+
+def cap(run, s, router=None, inputs=None):
+    """The run's ping cap (3.15 T3): 1h runs ``max_pings_1h``; 5m runs
+    ``clamp(floor(rewrite_usd / ping_usd), 0, max_pings_5m)`` over :func:`cap_inputs`, or
+    ``max_pings_5m_fallback`` while an input is missing or unpriced.  Cap 0 (T3.1): one ping costs
+    more than the rewrite it saves, so :func:`due` never fires and no wake line is written."""
+    if run["ttl"] == "1h":
+        return int(s["max_pings_1h"])
+    inputs = inputs if inputs is not None else cap_inputs(run, router)
+    if not inputs["rewrite_usd"] or not inputs["ping_usd"] or inputs["ping_usd"] <= 0:
+        return int(s["max_pings_5m_fallback"])
+    return int(max(0, min(int(inputs["rewrite_usd"] // inputs["ping_usd"]), s["max_pings_5m"])))   # floor was 1 (T3)
+
+
+def due(run, now, s, router=None):
     """Seconds idle when the wake line is due now, else None."""
     if not run.get("idle") or run.get("base") is None or run.get("finished"):
         return None
-    if run["pings"] >= cap(run, s):
+    if run["pings"] >= cap(run, s, router):
         return None                              # cold until a real request
     if run["last_ping"] is not None and run["base"] <= run["last_ping"]:
         return None                              # once per base: the last ping has not landed
@@ -383,6 +488,8 @@ class Warmer(object):
                          if self.claude_pid else None)
         self.runs = {}
         self.runs_offset = 0
+        self.router = {"ctx": None, "model": None}   # the main transcript's last usage (3.15 T3)
+        self.main_path, self.main_offset = None, None
         self.main_seen = False
         self.registry_seen = False
         self.started = time.time()
@@ -489,6 +596,7 @@ class Warmer(object):
     def poll(self, now=None):
         now = time.time() if now is None else now
         self._read_runs(now)
+        self._read_main()
         for run_id in sorted(self.runs):
             run = self.runs[run_id]
             p = run["path"] if run["path"] and os.path.exists(run["path"]) else self._transcript(run_id)
@@ -504,10 +612,28 @@ class Warmer(object):
             except OSError:
                 continue
             apply_records(run, records)
-            idle_s = due(run, now, self.s)
+            pend = run.get("pending")
+            if pend and not pend.get("flagged") and now - pend["at"] > UNDELIVERED_S:
+                self._undelivered(run, now)
+            idle_s = due(run, now, self.s, self.router)
             if idle_s is not None:
                 self._fire(run, now, idle_s)
         self._write_state(now)
+
+    def _read_main(self):
+        """Keep :attr:`router` from the main transcript's new assistant records (3.15 T3)."""
+        p = self._main_transcript()
+        if not p:
+            return
+        if p != self.main_path:
+            self.main_path, self.main_offset = p, None
+        try:
+            records, self.main_offset = read_new(p, self.main_offset)
+        except OSError:
+            return
+        for rec in records:
+            if isinstance(rec, dict) and rec.get("type") == "assistant" and not rec.get("isSidechain"):
+                take_usage(self.router, rec)
 
     def _read_runs(self, now):
         p = path(self.root, self.sid, "runs")
@@ -533,6 +659,7 @@ class Warmer(object):
         from .hooks import spool_event
 
         idle = int(idle_s)
+        inputs = cap_inputs(run, self.router)
         fsutil.append_line(path(self.root, self.sid, "wake"), "warm %s %d" % (run["run_id"], idle))
         run["pings"] += 1
         run["last_ping"] = now
@@ -540,7 +667,26 @@ class Warmer(object):
         spool_event(self.sid, "warm_ping",
                     {"run_id": run["run_id"], "session_id": self.sid, "ttl": run["ttl"],
                      "idle_s": idle, "n": run["pings"], "via": VIA,
-                     "cap": int(cap(run, self.s))}, run_id=run["run_id"])
+                     "cap": cap(run, self.s, inputs=inputs), "cap_inputs": inputs},
+                    run_id=run["run_id"])
+        run["pending"] = {"at": now, "idle": idle, "n": run["pings"]}     # 3.15 T6
+
+    def _undelivered(self, run, now):
+        """Flag the run's pending wake line once (3.15 T6): no ping landed ``UNDELIVERED_S`` after it."""
+        from . import fsutil
+        from .hooks import spool_event
+
+        pend = run["pending"]
+        pend["flagged"] = True
+        age = int(now - pend["at"])
+        line = "warm %s %d" % (run["run_id"], pend["idle"])
+        self.log("undelivered %s age %d" % (run["run_id"], age))
+        spool_event(self.sid, "warm_undelivered",
+                    {"run_id": run["run_id"], "session_id": self.sid, "idle_s": pend["idle"],
+                     "n": pend["n"], "age_s": age},
+                    run_id=run["run_id"])
+        fsutil.append_line(path(self.root, self.sid, "undelivered"),
+                           json.dumps({"run_id": run["run_id"], "line": line, "at": pend["at"]}))
 
     def state(self):
         out = {}

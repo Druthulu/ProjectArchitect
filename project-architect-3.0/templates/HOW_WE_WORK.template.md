@@ -37,6 +37,7 @@ PY = {{PY}}
 | genend_index | `PY tools/genend_index.py` | assemble and lint a GenerationEnd |
 | commit_task | `bash tools/commit_task.sh` | the only commit path; explicit paths, no trailers, never pushes |
 | run | `bash tools/run.sh` | any command that may print >40 lines; `--bg` / `--wait` for long compute |
+| expert_ttl | `PY tools/expert_ttl.py --coder <coder>` | prints `1h` or `5m`: a task's expert agent or its `-5m` twin |
 | {{PROJECT_TOOL}} | `{{PROJECT_TOOL_COMMAND}}` | {{PROJECT_TOOL_PURPOSE}} |
 
 ## Skills <!-- roles: expert planner -->

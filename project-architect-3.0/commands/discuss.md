@@ -23,8 +23,10 @@ If you are the pa-session (the router), you never discuss here yourself:
   PLAN: PY tools/plan_edit.py show --section Context (Interfaces, Cookbook, Research) · HOW: HOW_WE_WORK.md`, print one
   line — "Discussion open: click the discuss agent below and talk there; say proceed there when done" — and continue
   the loop (do not end the turn waiting on it; if an expert is running, end the turn as step 3 does). Its return is
-  the notification with a `RECORD:` line; any other notification from it is a turn end (the harness marks it done
-  after each reply; the developer's next message resumes it): no tool call, end the turn with `.`. On its return:
+  the hand-back (an `[Subagent hand-back]` agent-message) with a `RECORD:` line; a hand-back with no `RECORD:` line is
+  a reply the developer has not seen: relay its text verbatim as plain text ending your turn, then nothing else (the
+  discussion is over unless the developer reopens it); any other notification from it is a turn end (the harness marks
+  it done after each reply; the developer's next message resumes it): no tool call, end the turn with `.`. On its return:
   if no expert is running, run every `EDITS` line verbatim and commit them at once
   (`bash tools/commit_task.sh router "<what>" phase-ends/current/PHASE_PLAN.md`); else hold them and run and commit
   them at the next task boundary, before step 1. Print its `DECISIONS`.

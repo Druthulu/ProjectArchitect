@@ -12,9 +12,11 @@ whole reads (Read without offset/limit whose content chars exceed
 guard.whole_read_chars), seed floor (retriever seed_ctx medians by type),
 outline credit (outlines, the ranged Reads they earned, chars credited),
 router (per main session: end context, growth per expert/coder task,
-top result kinds), warm pings vs the rewrites they replaced, sent waiting
+top result kinds), warm pings vs the rewrites they replaced (cost = ping turns +
+relay turns + re-arm turns, 3.15 T3; undelivered = warm_undelivered events, wake lines
+no ping followed, 3.15 T6), sent waiting
 toasts by cause, router turns by cause (loop / relay / re-arm / other, from the
-opening user record of each main-transcript turn) with the relay turns' cost,
+opening user record of each main-transcript turn) with the relay and re-arm turns' cost,
 retriever re-asks (briefs sharing a file path or def/class name with an earlier
 brief of the same parent run), and flags.
 """
@@ -700,9 +702,10 @@ def _compute_warm_pings(conn, session_ids, filter_span):
     ``cap`` and the ending turn's ``gap_s`` exceeds the TTL: the designed cold, never
     in ``k`` or ``b`` (its rewrite was not replaced, C0009).  ``k`` = the other warmed
     waits whose ending turn has ``rewrite = 1``; ``b`` prices their ending turn's ctx
-    as a cache write at that TTL (3.9.5 T8).
+    as a cache write at that TTL (3.9.5 T8).  ``u`` = ``warm_undelivered`` events (3.15 T6).
     """
-    out = {"n": 0, "r": 0, "w": 0, "k": 0, "m": 0, "a": 0.0, "b": 0.0}
+    out = {"n": 0, "r": 0, "w": 0, "k": 0, "m": 0, "a": 0.0, "b": 0.0, "u": 0}
+    out["u"] = len(_events_in_scope(conn, "warm_undelivered", session_ids, filter_span))
     pings = _events_in_scope(conn, "warm_ping", session_ids, filter_span)
     if not pings:
         return out
@@ -793,7 +796,7 @@ def _turn_cause(text):
 
 
 def _compute_router_turns(conn, session_ids, filter_span):
-    """Router turns by cause over each phase session's main transcript, and the relay cost.
+    """Router turns by cause over each phase session's main transcript, and the relay and re-arm cost.
 
     A turn = a user record that is not a tool_result, meta or not (a subagent
     hand-back arrives as an ``isMeta`` user record and opens a real turn; its
@@ -804,14 +807,15 @@ def _compute_router_turns(conn, session_ids, filter_span):
     starting ``Another Claude session sent a message`` or containing
     ``<cross-session-message`` -> loop; else other.  ``cost`` = sum of
     ``turns.cost_usd`` (``run_id`` = the session) whose ``msg_id`` is one of the relay
-    turns' assistant ``message.id`` values (deduped).
+    turns' assistant ``message.id`` values (deduped); ``rearm_cost`` the same over the
+    re-arm turns (3.15 T3: the warm-ping verdict counts both).
     """
-    out = {"loop": 0, "relay": 0, "re-arm": 0, "other": 0, "cost": 0.0}
+    out = {"loop": 0, "relay": 0, "re-arm": 0, "other": 0, "cost": 0.0, "rearm_cost": 0.0}
     for sid in session_ids:
         tp = _transcript_path_for_session(conn, sid)
         if not tp or not os.path.isfile(tp):
             continue
-        relay_ids = set()
+        relay_ids, rearm_ids = set(), set()
         cause, ids = None, None
 
         def _close():
@@ -819,6 +823,8 @@ def _compute_router_turns(conn, session_ids, filter_span):
                 out[cause] += 1
                 if cause == "relay":
                     relay_ids.update(ids)
+                elif cause == "re-arm":
+                    rearm_ids.update(ids)
 
         for rec in transcript.iter_records(tp):
             msg = rec.get("message")
@@ -837,14 +843,16 @@ def _compute_router_turns(conn, session_ids, filter_span):
             elif role == "assistant" and ids is not None:
                 ids.add(msg.get("id") or rec.get("uuid") or "")
         _close()
-        relay_ids.discard("")
-        if relay_ids:
-            ph = ",".join("?" * len(relay_ids))
+        for key, mids in (("cost", relay_ids), ("rearm_cost", rearm_ids)):
+            mids.discard("")
+            if not mids:
+                continue
+            ph = ",".join("?" * len(mids))
             try:
                 row = conn.execute(
                     "SELECT COALESCE(SUM(cost_usd), 0) AS c FROM turns WHERE run_id = ?"
-                    " AND msg_id IN (%s)" % ph, [sid] + sorted(relay_ids)).fetchone()
-                out["cost"] += row["c"] or 0.0
+                    " AND msg_id IN (%s)" % ph, [sid] + sorted(mids)).fetchone()
+                out[key] += row["c"] or 0.0
             except sqlite3.Error:
                 pass
     return out
@@ -1428,14 +1436,20 @@ def render_md(result):
                  % (oc.get("n", 0), oc.get("m", 0), _fmt(oc.get("chars", 0))))
 
     # warmer pings vs rewrites replaced; toasts by cause
+    # 3.15 T3: cost = ping turns + relay turns + re-arm turns (the router's share of a ping)
     wp = result.get("warm_pings") or {}
+    rt = result.get("router_turns") or {}
     w = wp.get("w", 0)
-    cheaper = "n/a" if not w else ("yes" if wp.get("a", 0) < wp.get("b", 0) else "no")
+    relay_c, rearm_c = rt.get("cost", 0.0), rt.get("rearm_cost", 0.0)
+    total = wp.get("a", 0.0) + relay_c + rearm_c
+    cheaper = "n/a" if not w else ("yes" if total < wp.get("b", 0) else "no")
     lines.append("- warm pings: %d pings over %d runs, %d warmed waits over the TTL,"
                  " rewrites across warmed waits %d, waits past the cap %d,"
-                 " pings cost $%.4f vs rewrites replaced $%.4f, cheaper than one rewrite: %s"
+                 " cost: pings $%.4f + relay $%.4f + re-arm $%.4f = $%.4f"
+                 " vs rewrites replaced $%.4f, cheaper than one rewrite: %s, undelivered %d"
                  % (wp.get("n", 0), wp.get("r", 0), w, wp.get("k", 0), wp.get("m", 0),
-                    wp.get("a", 0.0), wp.get("b", 0.0), cheaper))
+                    wp.get("a", 0.0), relay_c, rearm_c, total, wp.get("b", 0.0), cheaper,
+                    wp.get("u", 0)))
     tc = result.get("toasts") or {}
     lines.append("- toasts by cause (waiting): %s"
                  % ", ".join("%s %d" % (c, tc.get(c, 0)) for c in TOAST_CAUSES))

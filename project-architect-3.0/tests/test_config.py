@@ -25,7 +25,7 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(c["extra_roots_mode"], "copy")
         self.assertEqual(c["handoff"]["threshold_tokens"], 350000)
         self.assertEqual(c["handoff"]["roles"], ["expert", "coder"])
-        self.assertEqual(c["ttl_default"]["expert"], "5m")   # was "1h"
+        self.assertEqual(c["ttl_default"]["expert"], "1h")   # was "5m" (3.15 T4); was "1h" before
         self.assertEqual(c["ttl_default"]["coder"], "5m")    # was "1h"
         self.assertEqual(c["ttl_default"]["main"], "1h")
         self.assertEqual(c["ttl_default"]["retriever"], "5m")
@@ -128,6 +128,11 @@ class DefaultsTest(unittest.TestCase):
         d = config.DEFAULTS
         self.assertEqual(d["guard"]["whole_read_chars"], 20000)
         self.assertEqual(d["audit"]["router_ctx_flag"], 300000)
+
+    def test_warmer_cap_fallback_in_defaults(self):
+        """3.15 T3: max_pings_5m is the ceiling; max_pings_5m_fallback 3 when cap inputs are missing."""
+        w = config.DEFAULTS["warmer"]
+        self.assertEqual((w["max_pings_5m"], w["max_pings_5m_fallback"]), (12, 3))
 
     def test_whole_read_chars_and_router_ctx_flag_in_template(self):
         """Both new keys exist in pa.json.template."""
@@ -293,7 +298,7 @@ class RoleMapTest(unittest.TestCase):
         self.assertIsNone(config.pinned_model_for(None, self.cfg))
 
     def test_ttl_for_role(self):
-        self.assertEqual(config.ttl_for_role("expert", self.cfg), "5m")   # was "1h"
+        self.assertEqual(config.ttl_for_role("expert", self.cfg), "1h")   # was "5m" (3.15 T4); was "1h" before
         self.assertEqual(config.ttl_for_role("coder", self.cfg), "5m")    # was "1h"
         self.assertEqual(config.ttl_for_role("main", self.cfg), "1h")
         self.assertEqual(config.ttl_for_role("retriever", self.cfg), "5m")
@@ -537,16 +542,16 @@ class SupersededTest(unittest.TestCase):
         self.assertIsInstance(config.SUPERSEDED, dict)
         self.assertIn("statusline.lines", config.SUPERSEDED)
 
-    def test_superseded_ttl_default_expert_1h(self):
-        """A config with ttl_default.expert = '1h' (superseded) is detected."""
+    def test_superseded_ttl_default_expert_5m(self):
+        """A config with ttl_default.expert = '5m' (superseded, 3.15 T4; was '1h') is detected."""
         cfg = config.defaults()
-        cfg["ttl_default"]["expert"] = "1h"
+        cfg["ttl_default"]["expert"] = "5m"
         result = config.superseded(cfg)
         dotted_keys = [r[0] for r in result]
         self.assertIn("ttl_default.expert", dotted_keys)
         entry = [r for r in result if r[0] == "ttl_default.expert"][0]
-        self.assertEqual(entry[1], "1h")
-        self.assertEqual(entry[2], "5m")
+        self.assertEqual(entry[1], "5m")
+        self.assertEqual(entry[2], "1h")
 
     def test_superseded_ttl_default_coder_1h(self):
         """A config with ttl_default.coder = '1h' (superseded) is detected."""

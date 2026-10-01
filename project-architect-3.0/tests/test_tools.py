@@ -527,6 +527,9 @@ class TestPlanEdit(ToolCase):
         p = self.tool("launch.py", "--seed-only")
         self.assertEqual(p.returncode, 0, p.out)
         lines = [l for l in p.stdout.strip().split("\n") if l.strip()]
+        if "mode=router" in lines:  # 3.15 T6: router mode prints the `Arm now:` line first
+            self.assertTrue(lines[0].startswith("Arm now:"), lines)
+            lines = lines[1:]
         self.assertEqual(len(lines), 2)
         self.assertTrue(any(l.startswith("seed=") for l in lines))
         self.assertTrue(any(l.startswith("mode=") for l in lines))
@@ -992,6 +995,9 @@ class TestLaunch(ToolCase):
         p = self.tool("launch.py", "--seed-only")
         self.assertEqual(p.returncode, 0, p.out)
         lines = [l for l in p.stdout.strip().split("\n") if l.strip()]
+        if "mode=router" in lines:  # 3.15 T6: router mode prints the `Arm now:` line first
+            self.assertTrue(lines[0].startswith("Arm now:"), lines)
+            lines = lines[1:]
         self.assertEqual(len(lines), 2)
         self.assertTrue(any(l.startswith("seed=") for l in lines))
         self.assertTrue(any(l.startswith("mode=") for l in lines))
@@ -1563,6 +1569,9 @@ class TestCurateSeed(ToolCase):
               "11.5.7 | a phase | done | 2025-01-01 | path\n")
         os.remove(self.plan)
         self._close_every_phase()
+        # launch.py _curate_seed_line also needs one memory file
+        write(os.path.join(self.root, ".claude-state", "memory", "user-profile.md"),
+              "profile\n")
         out, _cmd = TestLaunch.dry(self)
         seed = read(os.path.join(self.root, ".run", "seed.md"))
         self.assertIn("curate: migration -> gen legacy", seed)
