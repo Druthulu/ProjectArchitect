@@ -374,6 +374,30 @@ class SessionsSavedNetTest(unittest.TestCase):
         self.assertAlmostEqual(row["windows"]["seven_day"]["net_saved"], 1.0, places=6)
 
 
+class SessionsLastActiveTest(unittest.TestCase):
+    """3.15.3: sessions_block keeps a session by its last activity, not its start."""
+
+    def test_open_session_ages_by_its_last_turn(self):
+        day = 86400
+        conn = _make_db()
+        cases = (("busy", _iso(NOW - 3 * day), None, _iso(NOW - 3600)),     # open, a turn 1 h ago
+                 ("idle", _iso(NOW - 3 * day), None, _iso(NOW - 3 * day)),  # open, quiet 3 days
+                 ("ended", _iso(NOW - 3 * day), _iso(NOW - 3600), None),    # ended 1 h ago
+                 ("gone", _iso(NOW - 4 * day), _iso(NOW - 3 * day), None),  # ended 3 days ago
+                 ("fresh", _iso(NOW - 600), None, None))                    # open, no turn yet
+        for sid, started, ended, turn in cases:
+            conn.execute("INSERT INTO sessions(session_id, account, project, started, ended)"
+                         " VALUES(?, ?, ?, ?, ?)", (sid, ACCT_A, PROJECT, started, ended))
+            if turn:
+                conn.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd)"
+                             " VALUES(?, ?, ?, ?, ?, ?)",
+                             ("m-" + sid, sid, ACCT_A, turn, "claude-opus-4-6", 1.0))
+        conn.commit()
+        out = summary.sessions_block(conn, cfg=_CFG)
+        conn.close()
+        self.assertEqual(sorted(out), ["busy", "ended", "fresh"])
+
+
 class EraFilterTest(unittest.TestCase):
     """T11: accounts_block and projects_block exclude pre-era sessions."""
 

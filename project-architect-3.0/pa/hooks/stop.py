@@ -88,7 +88,7 @@ def run(inp, cfg):
         close_db(conn)
 
     running.touch(sid)
-    _repair_savings_flag(cfg, inp, sid, root, pcfg)
+    _repair_savings_flag(cfg, inp, sid, root)
 
     # sweep finished agents that missed their SubagentStop
     try:
@@ -326,11 +326,14 @@ def _book_main_savings(conn, cfg, sid, root, started=None):
     return usd
 
 
-def _repair_savings_flag(cfg, inp, sid, root, pcfg):
+def _repair_savings_flag(cfg, inp, sid, root):
     """T11.1: ``<project>/.run/health.json`` carries ``savings_missing`` (the statusline
-    showed ``-``): run ``doctor --repair savings`` in-process; when the row stays FAIL
-    stamp ``hook_repair``/``row`` into the flag for the router.  Toast the row either way.
-    One exists check when no flag; never raises."""
+    showed ``-``).  The flagged session's ``summary.json`` entry has its ``windows`` block
+    again -> drop the flag.  Otherwise start the repair detached (:func:`repair_savings_main`),
+    at most once per session per ``summary.savings_repair_cooldown_s``.  Never inline: there
+    a recalc of a long session outlived the 8 s watchdog on every Stop, so the flag never
+    cleared and the rest of the hook never ran (3.15.3: a 6,700-turn router, 19 of 19 Stops
+    killed).  One exists check when no flag; never raises."""
     project = root or (inp or {}).get("cwd")
     if not project:
         return None
@@ -338,29 +341,80 @@ def _repair_savings_flag(cfg, inp, sid, root, pcfg):
     if not os.path.exists(hpath):
         return None
     try:
-        from .. import fsutil
+        from .. import config, fsutil, paths
 
         health = fsutil.read_json(hpath, None)
         flag = health.get("savings_missing") if isinstance(health, dict) else None
         if not isinstance(flag, dict):
             return None
-        from ..ledger_cli import repair_savings
-
-        ok, row = repair_savings(flag.get("session") or sid, project)
-        if not ok:
-            health = fsutil.read_json(hpath, None) or {}
-            flag = health.get("savings_missing")
-            if isinstance(flag, dict):
-                flag["hook_repair"] = time.time()
-                flag["row"] = row
-                fsutil.atomic_write_json(hpath, health, indent=1)
-        toast(cfg, "PA3 · %s · savings display" % (project_name(inp) or "session"), row,
-              kind="waiting", session_id=sid, project_cfg=pcfg,
-              cause="savings" if ok else "crash")
-        return ok
+        target = flag.get("session") or sid
+        doc = fsutil.read_json(paths.summary_path(), None)
+        entry = ((doc.get("sessions") if isinstance(doc, dict) else None) or {}).get(target)
+        if isinstance(entry, dict) and "windows" in entry:   # a rebuild landed: the value shows
+            health.pop("savings_missing", None)
+            fsutil.atomic_write_json(hpath, health, indent=1)
+            return True
+        cooldown = float(config.get(cfg, "summary.savings_repair_cooldown_s", 900) or 0)
+        stamp = paths.state_path("savings_repair", "%s.stamp" % target)
+        now = time.time()
+        try:
+            with open(stamp, encoding="utf-8") as fh:
+                last = float(fh.read().strip())
+        except (OSError, ValueError):
+            last = None
+        if last is not None and 0 <= now - last < cooldown:
+            return None
+        fsutil.atomic_write_text(stamp, "%.3f\n" % now)
+        cmd, env = repair_savings_command(target, project)
+        return bool(notify.spawn_detached(cmd, env))
     except Exception:
         log.log("stop_repair_savings_failed", session=sid)
         return None
+
+
+def repair_savings_command(sid, project):
+    """``(cmd, env)`` of the detached repair (``python -m pa.hooks.stop --repair-savings``)."""
+    import sys
+
+    pkg = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    # -s -P, not -I: -I ignores PYTHONPATH, which is how the installed copy is found
+    return ([sys.executable, "-s", "-P", "-X", "utf8", "-m", "pa.hooks.stop",
+             "--repair-savings", str(sid), str(project)], {"PYTHONPATH": pkg})
+
+
+def repair_savings_main(argv=None):
+    """``python -m pa.hooks.stop --repair-savings <sid> <project>``: the Stop hook's repair,
+    detached (3.15.3).  ``doctor --repair savings`` for the flagged session; a FAIL row
+    stamps ``hook_repair``/``row`` into that session's flag for the router (design A B.5);
+    the row is toasted either way.  Prints nothing; never raises."""
+    import sys
+
+    args = list(sys.argv[1:] if argv is None else argv)
+    try:
+        at = args.index("--repair-savings")
+        sid, project = args[at + 1], args[at + 2]
+    except (ValueError, IndexError):
+        return 2
+    try:
+        from .. import config, fsutil
+        from ..ledger_cli import repair_savings
+
+        cfg = config.load()
+        ok, row = repair_savings(sid, project)
+        if not ok:
+            hpath = os.path.join(project, ".run", "health.json")
+            health = fsutil.read_json(hpath, None) or {}
+            flag = health.get("savings_missing")
+            if isinstance(flag, dict) and (flag.get("session") or sid) == sid:
+                flag["hook_repair"] = time.time()
+                flag["row"] = row
+                fsutil.atomic_write_json(hpath, health, indent=1)
+        name = os.path.basename(os.path.normpath(project)) or "session"
+        toast(cfg, "PA3 · %s · savings display" % name, row, kind="waiting", session_id=sid,
+              project_cfg=project_config(project), cause="savings" if ok else "crash")
+    except Exception as exc:
+        log.log("stop_repair_savings_failed", session=sid, err=repr(exc)[:200])
+    return 0
 
 
 def _rebuild(conn, cfg):
@@ -422,3 +476,9 @@ def _maybe_toast(cfg, inp, sid, message, waiting, background, pcfg):
     kind = "waiting" if waiting in ("REPLAN.md", "REVIEW.md") else ("question" if waiting else "stop")
     return toast(cfg, title, message or "(no message)", kind=kind, session_id=sid,
                  project_cfg=pcfg, cause=cause, run_id=sid, skip=skip)
+
+
+if __name__ == "__main__":
+    import sys
+
+    sys.exit(repair_savings_main())

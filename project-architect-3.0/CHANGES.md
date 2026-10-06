@@ -2,6 +2,13 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, the router reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.15.3 — Long sessions keep their savings
+
+- A session open for more than two days keeps its saving on the Session line. PA3's summary kept an open session for 48 hours from its start instead of from its last turn, so a router busy for three days showed `-` for its saving once it passed 48 hours, and so did a session resumed more than two days after it started. A session now stays while it has had a turn in the last 48 hours, and the savings check in `pa_ledger.py doctor` counts sessions the same way.
+- The end-of-turn hook no longer runs the savings repair itself. On a long session the repair recalculated the whole session and ran past the hook's 8-second limit, so the hook was stopped at the end of every turn: the `-` never cleared, the router was never told, and the hook's later steps (sweeping helper agents that finished without notice, showing the router a warmer ping it missed) were skipped. The hook now clears the warning once the saving is back, and otherwise starts the repair in the background, at most once every 15 minutes per session. The repair rebuilds the summary first and recalculates a session only when that is not enough.
+- When a phase closes, the expert writing its recap now checks that every change you can see (an agent, a command, a default, a notice, the meaning of a statusline figure) came with its edit to the project's README, wiki, install notes or published docs, and has a coder fix a miss before the phase closes. PA3's own install notes now count the 19 agents 3.15 ships, and the statusline definitions describe the Project line's share of the meter as 3.15.1 computes it.
+- After the update, a Session line that shows `-` for this reason gets its figures back within a minute.
+
 ## 3.15.2 — The discussion in its own view, the savings on the right account
 
 - A discuss agent now answers you in its own view, in plain text, and returns to the router only after `/proceed`, with its decisions and the record it wrote. Claude Code nudges background agents to hand their result back after every reply; PA3 now refuses a discuss agent's hand-back until the record file it names exists, so a discussion no longer ends after its first reply. If a hand-back without a record still reaches the router, the router passes it on to you word for word.

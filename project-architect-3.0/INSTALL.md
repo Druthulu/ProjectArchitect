@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.15.2 (the version is the phase that published it).
+Project Architect 3.0, version 3.15.3 (the version is the phase that published it).
 
 Two commands: the first runs **once per machine** (once per Claude config dir), the second
 **once per repository** you want PA3 to drive. Both are idempotent — a second run writes
@@ -86,7 +86,7 @@ which runs with `--yes`), then:
 
 - **bootstrap** — `.run/` (gitignored), `phase-ends/` with `current/{tasks,logs,research,
   discussions}` and their indexes, `.claude/pa.json`, a `.gitignore` block;
-- **files** — the 17 agents (16 on Max 5x and Pro, where expert-fable is not installed), the
+- **files** — the 19 agents (17 on Max 5x and Pro, where expert-fable and expert-fable-5m are not installed), the
   `project-architect` skill and the six commands into `.claude/`, the tools into `tools/`, plus
   `templates/`, the 32 seed rules into `rules/`, `cookbook/INDEX.md` and
   `docs/project-architect.md` (every copy is byte-compared; an edited rule or cookbook index is
@@ -139,7 +139,7 @@ discuss, discuss-high, discuss-max) is the same on every tier.
 
 | rung | agents | max20 | max5 | pro |
 |---|---|---|---|---|
-| hard | expert-fable | Fable 5.1 medium | not installed | not installed |
+| hard | expert-fable, expert-fable-5m | Fable 5.1 medium | not installed | not installed |
 | judge | critic, review, auditor, memory-curator | Fable 5.1 medium | Fable 5.1 medium | Opus 5.5 medium |
 | plain | plain | Fable 5.1 high | Fable 5.1 medium | Opus 5.5 medium |
 

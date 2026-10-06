@@ -482,6 +482,73 @@ class SavingsDisplayDoctorTest(unittest.TestCase):
         ok, row = ledger_cli.repair_savings(project=self.project)      # idempotent
         self.assertTrue(ok, row)
 
+    def _session(self, sid, started, cost, turn_ts=None, ended=None):
+        conn = db.connect(paths.db_path())
+        db.upsert_session(conn, {"session_id": sid, "account": ACCT_A, "cwd": CWD,
+                                  "started": started, "ended": ended, "cost_usd": cost})
+        if turn_ts:
+            conn.execute("INSERT INTO turns(msg_id, run_id, session_id, account, ts, cost_usd)"
+                         " VALUES(?, ?, ?, ?, ?, ?)", ("m-" + sid, sid, sid, ACCT_A, turn_ts, cost))
+            conn.commit()
+        db.close(conn)
+
+    @staticmethod
+    def _ago(seconds):
+        import time
+
+        return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - seconds))
+
+    def test_open_session_counts_by_its_last_turn(self):
+        """3.15.3: an open session started three days ago with a turn an hour ago is checked
+        and repaired; by its start it was out of the check and of summary.json."""
+        from unittest import mock
+
+        self._session("s_long", self._ago(3 * 86400), 9.0, turn_ts=self._ago(3600))
+        conn = db.connect(paths.db_path())
+        try:
+            fails, _n = ledger_cli._savings_display_fails(conn)
+        finally:
+            db.close(conn)
+        self.assertIn(("s_long", "no windows block"), fails)
+        recalcs = []
+        with mock.patch.object(ledger_cli, "_cmd_recalc_run", lambda a: recalcs.append(a)):
+            ok, row = ledger_cli.repair_savings("s_long", self.project)
+        self.assertTrue(ok, row)
+        self.assertEqual(recalcs, [])          # the rebuild alone brought the block back
+        with open(paths.summary_path(), encoding="utf-8") as fh:
+            self.assertIn("windows", json.load(fh)["sessions"]["s_long"])
+
+    def test_flagged_session_is_checked_at_any_cost(self):
+        """3.15.3: the flagged session is checked under $1 and past 24 h while active within
+        the summary's 48 h; a session quiet for three days is not."""
+        self._session("s_small", self._ago(30 * 3600), 0.4, turn_ts=self._ago(30 * 3600))
+        self._session("s_quiet", self._ago(4 * 86400), 5.0, turn_ts=self._ago(3 * 86400))
+        conn = db.connect(paths.db_path())
+        try:
+            general = [f[0] for f in ledger_cli._savings_display_fails(conn)[0]]
+            small = [f[0] for f in ledger_cli._savings_display_fails(conn, sid="s_small")[0]]
+            quiet = [f[0] for f in ledger_cli._savings_display_fails(conn, sid="s_quiet")[0]]
+        finally:
+            db.close(conn)
+        self.assertNotIn("s_small", general)
+        self.assertIn("s_small", small)
+        self.assertNotIn("s_quiet", quiet)
+
+    def test_recalc_only_what_the_rebuild_leaves_failing(self):
+        """3.15.3: the rebuild runs first; a session still FAIL after it is recalculated, and
+        a row still FAIL keeps the flag."""
+        from unittest import mock
+
+        recalcs = []
+        with mock.patch.object(ledger_cli, "rebuild_summary", lambda *a, **k: None), \
+                mock.patch.object(ledger_cli, "_cmd_recalc_run",
+                                  lambda a: recalcs.append(a.session)):
+            ok, row = ledger_cli.repair_savings(self.SID, self.project)
+        self.assertFalse(ok, row)
+        self.assertEqual(recalcs, [self.SID])
+        with open(self.health, encoding="utf-8") as fh:
+            self.assertIn("savings_missing", json.load(fh))
+
 
 class AccountsTierTest(unittest.TestCase):
     """``accounts tier EMAIL max20|max5|pro|clear``: the override, and the list's tier column."""

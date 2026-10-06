@@ -28,6 +28,10 @@ import time
 
 SCHEMA = 1
 SESSION_WINDOW_H = 48
+# a session's last activity: the latest of its start, its end and its last turn (3.15.3; was
+# COALESCE(ended, started): an open router busy for three days aged out by its start at 48 h)
+LAST_ACTIVE_SQL = ("MAX(COALESCE(started, ''), COALESCE(ended, ''), COALESCE((SELECT MAX(ts)"
+                   " FROM turns WHERE turns.session_id = sessions.session_id), ''))")
 WEEKS_FIELDS = ("weeks_used", "weeks_saved", "unrated_usd", "unrated_saved_usd")  # fix-9
 
 
@@ -1233,7 +1237,7 @@ def projects_block(conn, cfg=None, readers=None, accounts=None):
 
 
 def sessions_block(conn, cfg=None, hours=SESSION_WINDOW_H, accounts=None):
-    """Sessions seen in the last ``hours`` with their cost and savings.
+    """Sessions active in the last ``hours`` (:data:`LAST_ACTIVE_SQL`) with their cost and savings.
 
     ``accounts``: the already-built :func:`accounts_block` result; when given,
     each session gets a ``windows`` dict with ``cost_used`` and ``net_saved`` per
@@ -1244,7 +1248,7 @@ def sessions_block(conn, cfg=None, hours=SESSION_WINDOW_H, accounts=None):
     wcache = {}                                   # rated seven-day windows per account (fix-9.c2)
     rows = conn.execute(
         "SELECT session_id, account, kind, project, phase, started, ended, cost_usd, "
-        "cost_source FROM sessions WHERE COALESCE(ended, started, '') >= ? "
+        "cost_source FROM sessions WHERE " + LAST_ACTIVE_SQL + " >= ? "
         "ORDER BY started", (cutoff,)).fetchall()
     for row in rows:
         sid = row["session_id"]

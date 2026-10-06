@@ -113,6 +113,7 @@ class LedgerCase(unittest.TestCase):
         self.warmers = []                  # 3.9.5 T4: the warmer daemon's spawns, kept apart from toasts
         self.rebuilds = []                 # 3.9.6 T5: the detached summary rebuilds, run inline here
         self.run_rebuilds = True
+        self.repairs = []                  # 3.15.3: the Stop hook's detached savings repairs, never run
         notify.set_spawner(self._spawn)
         self._auth = accounts.auth_status
         accounts.auth_status = lambda *a, **k: {"email": ACCOUNT, "source": "auth",
@@ -140,6 +141,8 @@ class LedgerCase(unittest.TestCase):
             self.rebuilds.append((cmd, env))
             if self.run_rebuilds:
                 summary.main(cmd[cmd.index("pa.summary") + 1:])
+        elif "--repair-savings" in cmd:
+            self.repairs.append((cmd, env))
         else:
             self.toasts.append((cmd, env))
 
@@ -2147,8 +2150,9 @@ class LatencyTest(LedgerCase):
 
 
 class StopRepairSavingsTest(LedgerCase):
-    """T11.1: a ``savings_missing`` flag in ``<project>/.run/health.json`` makes the Stop
-    hook run ``doctor --repair savings`` and toast the row."""
+    """T11.1: a ``savings_missing`` flag in ``<project>/.run/health.json``: the Stop hook drops
+    it once the session's ``windows`` block is back, else starts ``doctor --repair savings``
+    detached, once per cooldown, never inline (3.15.3); the child toasts the row."""
 
     SID = "stop-sd"
 
@@ -2178,35 +2182,67 @@ class StopRepairSavingsTest(LedgerCase):
         from pa.hooks import stop
 
         calls = []
-        with mock.patch.object(stop, "toast", lambda *a, **k: calls.append((a, k))):
+        self.inline = []
+        with mock.patch.object(stop, "toast", lambda *a, **k: calls.append((a, k))), \
+                mock.patch("pa.ledger_cli.repair_savings",
+                           lambda *a, **k: self.inline.append(a) or (True, "OK")):
             stop.run({"session_id": self.SID, "cwd": self.root, "agent_type": "router",
                       "last_assistant_message": "done.", "background_tasks": [],
                       "transcript_path": os.path.join(self.projects, "slug", self.SID + ".jsonl")},
                      self.cfg)
+        self.assertEqual(self.inline, [])       # 3.15.3: never inside the hook's 8 s budget
         return [c for c in calls if "savings display" in str(c[0][1])]
+
+    def _child(self):
+        """The detached child, run here in-process with the real ``repair_savings``."""
+        from pa.hooks import stop
+
+        calls = []
+        with mock.patch.object(stop, "toast", lambda *a, **k: calls.append((a, k))):
+            self.assertEqual(stop.repair_savings_main(["--repair-savings", self.SID, self.root]), 0)
+        return calls
 
     def _health(self):
         with open(self.health, encoding="utf-8") as fh:
             return json.load(fh)
 
-    def test_flag_runs_the_repair_and_toasts_the_row(self):
-        toasts = self._stop()
-        self.assertEqual(len(toasts), 1)
-        self.assertTrue(toasts[0][0][2].startswith("OK"), toasts[0][0][2])
+    def test_block_back_drops_the_flag(self):
+        self.assertEqual(self._stop(), [])      # the Stop's own rebuild (inline here) wrote it
+        self.assertEqual(self.repairs, [])
         self.assertEqual(self._health(), {"keep": True})
 
-    def test_failed_repair_stamps_the_flag(self):
+    def test_block_missing_starts_the_repair_detached_once(self):
+        self.run_rebuilds = False               # summary.json keeps the patch-only row
+        self.assertEqual(self._stop(), [])
+        self.assertEqual(len(self.repairs), 1)
+        cmd, env = self.repairs[0]
+        self.assertEqual(cmd[cmd.index("-m") + 1:],
+                         ["pa.hooks.stop", "--repair-savings", self.SID, self.root])
+        self.assertIn("PYTHONPATH", env)
+        self.assertIn("savings_missing", self._health())
+        self._stop()                            # inside the cooldown: no second child
+        self.assertEqual(len(self.repairs), 1)
+
+    def test_child_repair_drops_the_flag_and_toasts_the_row(self):
+        calls = self._child()
+        self.assertEqual(len(calls), 1)
+        self.assertTrue(calls[0][0][2].startswith("OK"), calls[0][0][2])
+        self.assertEqual(calls[0][1]["cause"], "savings")
+        self.assertEqual(self._health(), {"keep": True})
+
+    def test_failed_child_repair_stamps_the_flag(self):
         with mock.patch("pa.ledger_cli.repair_savings",
                         lambda sid=None, project=None: (False, "FAIL savings display: x")):
-            toasts = self._stop()
+            calls = self._child()
         flag = self._health()["savings_missing"]
         self.assertIsNotNone(flag["hook_repair"])
         self.assertEqual(flag["row"], "FAIL savings display: x")
-        self.assertEqual(toasts[0][1]["cause"], "crash")
+        self.assertEqual(calls[0][1]["cause"], "crash")
 
     def test_no_flag_no_repair(self):
         os.remove(self.health)
         self.assertEqual(self._stop(), [])
+        self.assertEqual(self.repairs, [])
 
 
 class StopPhaseRestampTest(LedgerCase):

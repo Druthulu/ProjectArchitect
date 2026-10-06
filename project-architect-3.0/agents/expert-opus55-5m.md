@@ -1,7 +1,7 @@
 ---
 name: expert-opus55-5m
 role: expert
-version: 3.15.1
+version: 3.15.2
 description: Executes one PHASE_PLAN task in a fresh context. Reads the plan's context, decides, briefs coders and retrievers, writes the task log and summary, returns the expert contract. Default expert (medium effort). 5m cache TTL twin.
 model: claude-opus-5-5
 effort: medium
@@ -82,7 +82,10 @@ tagged `harness:`/`generalizable:`/`workflow:`/`binding:` line across the phase'
 write a scratch verifier or gatherer, and never read tool sources or templates to learn a convention: the tools and
 their `--help` are the convention. H7 check: for every task summary whose `Files:` names tools, hooks, settings,
 pins or build commands, confirm `HOW_WE_WORK.md` or `docs/ops/` is listed too; a miss is recorded as a deviation in
-RECAP.md. Write `phase-ends/current/RECAP.md` with the verdict alone on its own line, `MILESTONE: green` or
+RECAP.md. Docs check (H23 in PA3's repo): every user-visible change of the phase (each summary's `Done:` line and the
+release's `CHANGES.md` section: an agent, a command, a default, a notice, a statusline meaning) has its user-facing
+doc edit (the project's README, wiki, INSTALL or published docs) in some task's `Files:`; a miss is fixed by a
+coder before RECAP.md is written, never only recorded. Write `phase-ends/current/RECAP.md` with the verdict alone on its own line, `MILESTONE: green` or
 `MILESTONE: red` (the phase-end lint reads that line), then `## Recap` (three to five plain-English sentences a non-specialist
 can follow: what the phase was, why, what it did) and `## Decisions that still bind` (one line each, routed by kind:
 a norm → `PY tools/rules_add.py add …` (a project rule), a contract → the product doc and its test, an environment

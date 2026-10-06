@@ -28,7 +28,7 @@ stated assumption). Modeled figures are never added to each other (spec D39).
 | Pace | `N%/day left` | meter | percent left over max(1 day, time to the reset). |
 | Pace | `N% fewer tokens than vanilla` | modeled | saved over (paid plus saved). paid: this account's ledger cost since its 7d window started, all projects, all machines. saved: this account's share of the carry model over the same span. |
 | Pace | `lasts Mx longer` | modeled | (paid plus saved) over paid, same inputs. |
-| Project | `x/y of 5h`, `x/y of 7d` | modeled | x: this account's share of the project's ledger cost in the window, as percent of the window through points per dollar. y: this account's project savings in its own window, same conversion. Both sides are one account and one window. |
+| Project | `x/y of 5h`, `x/y of 7d` | modeled | x: this account's meter reading for the window, shared among its projects by each project's part of the account's ledger cost in the window on every machine. y: this account's project savings in its own window, same conversion. Both sides are one account and one window. |
 | Project | `month ~Xw/Yw`, `lifetime ~Xw/Yw` | modeled | weeks of allowance used and saved: each window instance's dollars times that instance's own rate, summed; dollars in weeks without a rate stay unconverted and turn `~` into `≈` when over 10%. Never today's rate on an earlier week. |
 | Project | `N% fewer`, `lasts Mx longer` | modeled | the project's lifetime saving (per-run rows) against its lifetime ledger cost, all accounts. |
 | Project | `· N accounts` | counted | accounts with turns on this project. |

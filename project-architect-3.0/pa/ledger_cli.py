@@ -1783,7 +1783,9 @@ def _thinking_rows(conn, args, since):
         where.append("account = ?")
         params.append(args.account)
     if since:
-        where.append("COALESCE(ended, started, '') >= ?")
+        from .summary import LAST_ACTIVE_SQL
+
+        where.append(LAST_ACTIVE_SQL + " >= ?")       # active since, not started (3.15.3)
         params.append(since)
     try:
         rows = conn.execute("SELECT session_id, transcript_path FROM sessions WHERE %s"
@@ -4299,40 +4301,52 @@ SAVINGS_DISPLAY_MIN_USD = 1.0
 SAVINGS_DISPLAY_HOURS = 24
 
 
-def _savings_display_fails(conn, doc=None):
-    """``[(sid, cause)]`` for sessions with ledger cost >= $1 in the last 24 h whose
+def _savings_display_fails(conn, doc=None, sid=None):
+    """``[(sid, cause)]`` for sessions with ledger cost >= $1 active in the last 24 h whose
     ``summary.json`` entry has no ``windows`` block, or has helper runs and a null
-    ``saved_measured`` (T11.1: the statusline shows ``-`` for them)."""
+    ``saved_measured`` (T11.1: the statusline shows ``-`` for them).  Active by
+    ``summary.LAST_ACTIVE_SQL``, not by start (3.15.3).  ``sid``, the session the statusline
+    flagged, is checked too at any cost while active within ``summary.SESSION_WINDOW_H``, the
+    summary's own promise: a repair never reports OK for the session that raised the flag."""
+    from .summary import LAST_ACTIVE_SQL, SESSION_WINDOW_H
+
     if doc is None:
         doc = fsutil.read_json(paths.summary_path(), None) or {}
     sess = (doc.get("sessions") if isinstance(doc, dict) else None) or {}
+    now = time.time()
     cutoff = time.strftime("%Y-%m-%dT%H:%M:%SZ",
-                           time.gmtime(time.time() - SAVINGS_DISPLAY_HOURS * 3600.0))
+                           time.gmtime(now - SAVINGS_DISPLAY_HOURS * 3600.0))
     try:
         rows = conn.execute(
             "SELECT session_id, COALESCE(cost_usd, 0) AS cost FROM sessions"
-            " WHERE COALESCE(ended, started, '') >= ? AND COALESCE(cost_usd, 0) >= ?"
+            " WHERE " + LAST_ACTIVE_SQL + " >= ? AND COALESCE(cost_usd, 0) >= ?"
             " ORDER BY session_id", (cutoff, SAVINGS_DISPLAY_MIN_USD)).fetchall()
     except sqlite3.DatabaseError:
         rows = []
+    sids = [row["session_id"] for row in rows]
+    if sid and sid not in sids:
+        window = time.strftime("%Y-%m-%dT%H:%M:%SZ",
+                               time.gmtime(now - SESSION_WINDOW_H * 3600.0))
+        if scalar(conn, "SELECT COUNT(*) FROM sessions WHERE session_id=? AND "
+                        + LAST_ACTIVE_SQL + " >= ?", (sid, window), 0):
+            sids.append(sid)
     fails = []
-    for row in rows:
-        sid = row["session_id"]
-        entry = sess.get(sid)
+    for one in sids:
+        entry = sess.get(one)
         if not isinstance(entry, dict) or "windows" not in entry:
-            fails.append((sid, "no windows block"))
+            fails.append((one, "no windows block"))
             continue
         if entry.get("saved_measured") is None:
             helpers = int(scalar(conn, "SELECT COUNT(*) FROM agent_runs"
-                                       " WHERE session_id=? AND run_id<>?", (sid, sid), 0))
+                                       " WHERE session_id=? AND run_id<>?", (one, one), 0))
             if helpers:
-                fails.append((sid, "saved_measured null with %d helper runs" % helpers))
+                fails.append((one, "saved_measured null with %d helper runs" % helpers))
     return fails, len(rows)
 
 
-def _savings_display_row(conn):
+def _savings_display_row(conn, sid=None):
     """``(ok, row)``: the doctor's ``savings display`` row text (level first)."""
-    fails, n = _savings_display_fails(conn)
+    fails, n = _savings_display_fails(conn, sid=sid)
     if fails:
         return False, "FAIL savings display: %s (pa_ledger.py doctor --repair savings)" % "; ".join(
             "%s %s" % (sid, cause) for sid, cause in fails)
@@ -4341,34 +4355,31 @@ def _savings_display_row(conn):
 
 
 def repair_savings(sid=None, project=None):
-    """``doctor --repair savings``: recalc then full ``summary.rebuild`` for the FAIL
-    sessions (plus ``sid``), re-check; on OK drop ``savings_missing`` from
-    ``<project>/.run/health.json``.  Idempotent; prints nothing.  ``(ok, row)``."""
+    """``doctor --repair savings``: a full ``summary.rebuild``, re-check; only the sessions
+    still FAIL are recalculated (each recalc rebuilds again), then the row is re-checked
+    (3.15.3: the rebuild first -- a recalc of a long session runs for minutes and was the
+    whole repair).  ``sid`` is checked as :func:`_savings_display_fails` says.  On OK drop
+    ``savings_missing`` from ``<project>/.run/health.json``.  Idempotent; prints nothing.
+    ``(ok, row)``."""
     import contextlib
     import io
 
-    conn = open_db()
-    try:
-        fails, _n = _savings_display_fails(conn)
-    finally:
-        db.close(conn)
-    targets = sorted(set([f[0] for f in fails] + ([sid] if sid else [])))
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-        for target in targets:
+        conn = open_db()
+        try:
+            rebuild_summary(conn, config.load())
+            fails, _n = _savings_display_fails(conn, sid=sid)
+        finally:
+            db.close(conn)
+        for target in sorted(set(f[0] for f in fails)):
             try:
                 _cmd_recalc_run(build_parser().parse_args(["recalc", "--session", target]))
             except Exception as exc:        # a recalc failure leaves the row FAIL
                 err("repair savings: %s: %s" % (target, exc))
-        if not targets:                     # nothing flagged: still refresh summary.json once
-            conn = open_db()
-            try:
-                rebuild_summary(conn, config.load())
-            finally:
-                db.close(conn)
     conn = open_db()
     try:
-        ok, row = _savings_display_row(conn)
+        ok, row = _savings_display_row(conn, sid=sid)
     finally:
         db.close(conn)
     if ok:
@@ -5163,10 +5174,10 @@ def build_parser():
     dc.add_argument("--project", help="project directory for --sizes, card checks and"
                     " --repair (its .run/health.json)")
     dc.add_argument("--repair", choices=["savings", "phase"],
-                    help="savings: recalc + rebuild summary.json for the FAIL sessions,"
+                    help="savings: rebuild summary.json, recalc the sessions still FAIL,"
                          " re-check, clear the health flag (T11.1); phase: restamp each"
                          " session's agent_runs/savings/tool_calls to its sessions.phase (T31)")
-    dc.add_argument("--session", help="with --repair: also repair this session id")
+    dc.add_argument("--session", help="with --repair: also check and repair this session id")
     dc.set_defaults(func=cmd_doctor)
 
     bn = sub.add_parser("bench", help="bench results: report / import / export")

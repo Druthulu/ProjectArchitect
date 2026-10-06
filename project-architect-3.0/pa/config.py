@@ -90,7 +90,8 @@ DEFAULTS = {
         "window_durations_s": {"five_hour": 18000, "default": 604800},
     },
     "sampling": {"heartbeat_s": 600, "spool_max_lines": 5000},
-    "summary": {"session_rebuild_cooldown_s": 60},  # 3.9.6 T11.1: statusline render-time sessions rebuild, once per sid per cooldown
+    "summary": {"session_rebuild_cooldown_s": 60,  # 3.9.6 T11.1: statusline render-time sessions rebuild, once per sid per cooldown
+                "savings_repair_cooldown_s": 900},  # 3.15.3: the Stop hook's detached savings repair, once per sid per cooldown
     "modeled": {"ttl_old_s": 3600, "subtract_agent_seeds": True},  # T30: seed/reset keys retired (plain 1M cycle)
     "savings": {"kept_out_mode": "results_share", "tokenizer_uplift": 1.0,
                 "track_retriever_live": False,
