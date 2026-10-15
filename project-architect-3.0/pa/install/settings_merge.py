@@ -8,6 +8,8 @@ Public:
     is_pa_command(cmd), is_retired_command(cmd), pa_action(cmd)
     retired_script_token(cmd)
     merge(current, snippet, hooks=True, statusline=True)  -> (merged, report)
+    prune_plugin_configs(settings, declared, report)  -> settings less dead PA options
+    register_mod(settings, pa3_dir, report)           -> settings declaring + enabling the root's mod (3.24 T4)
     render(settings)                    the exact text the installer writes
 
 The rules implemented here are the ``_merge_rules`` key of
@@ -29,7 +31,7 @@ The rules implemented here are the ``_merge_rules`` key of
 merge; :func:`merge` asserts that at the end and raises ``MergeError`` rather than
 emit a document that touched them.  With ``scope="project"`` (``pa_install.py
 --project``, 3.1 T9) they are add-if-absent instead: a product repo gets the
-pa-session's pinned model and effort once, and a hand-edited value is kept.
+Claude's starting model and effort (project.MOD_PINS) once, and a hand-edited value is kept.
 """
 
 import json
@@ -266,6 +268,92 @@ def _merge_hooks(cur, snip, report):
             if not placed:
                 groups.append(_clone(sgroup))
                 report["hooks_added"].append((event, _cmd_of(sentries[0])))
+    return out
+
+
+# --------------------------------------------------------------------------- plugin options
+
+PA_PLUGINS = ("pa", "pa-watch")
+
+
+def prune_plugin_configs(settings, declared, report):
+    """Drop saved options the PA plugins no longer declare (3.23 T13d.c11).
+
+    ``declared`` maps a plugin name (``pa``, ``pa-watch``) to the option names its
+    plugin.json ``userConfig`` declares; a plugin absent from it is left alone.  In
+    ``pluginConfigs``, an entry whose key starts with ``<name>@`` loses every
+    ``options`` key not declared; an entry left with no options and nothing else is
+    dropped, and an empty ``pluginConfigs`` with it.  Each removal goes to
+    ``report["changed"]`` as ``(dotted key, old, "<removed>")``.  Returns a new dict.
+    """
+    pcs = settings.get("pluginConfigs") if isinstance(settings, dict) else None
+    if not isinstance(pcs, dict):
+        return settings
+    out = _clone(settings)
+    pcs = out["pluginConfigs"]
+    for key in sorted(pcs):
+        name = key.split("@", 1)[0]
+        entry = pcs[key]
+        if "@" not in key or name not in PA_PLUGINS or name not in declared or not isinstance(entry, dict):
+            continue
+        opts = entry.get("options")
+        if isinstance(opts, dict):
+            for opt in sorted(opts):
+                if opt not in declared[name]:
+                    report["changed"].append(("pluginConfigs.%s.options.%s" % (key, opt), opts[opt], "<removed>"))
+                    del opts[opt]
+            if not opts:
+                del entry["options"]
+        if not entry:
+            report["changed"].append(("pluginConfigs.%s" % key, {}, "<removed>"))
+            del pcs[key]
+    if not pcs:
+        del out["pluginConfigs"]
+    return out
+
+
+# 3.24 T4 (decision 1, T2's way (a)): the root's mod/ is a local marketplace, declared and enabled in the
+# user settings; Claude Code loads it in place (no `claude plugin install`: that leaves an unused cache copy)
+MARKETPLACE = "pa3"
+MOD_PLUGINS = tuple("%s@%s" % (name, MARKETPLACE) for name in PA_PLUGINS)    # ("pa@pa3", "pa-watch@pa3")
+
+
+def mod_marketplace(pa3_dir):
+    """The ``extraKnownMarketplaces`` entry for ``<pa3_dir>/mod`` (forward slashes)."""
+    return {"source": {"source": "directory", "path": abs_fwd(os.path.join(pa3_dir, "mod"))}}
+
+
+def register_mod(settings, pa3_dir, report):
+    """Declare ``pa3`` -> ``<pa3_dir>/mod`` and enable ``pa@pa3``/``pa-watch@pa3``; copy saved options
+    ``pluginConfigs."pa@inline"`` to ``"pa@pa3"`` where the latter is absent (``pa@inline`` is kept:
+    trials load the mod with ``--plugin-dir``).  Other marketplaces and plugins are kept.  Each change
+    goes to ``report``.  Returns a new dict."""
+    out = _clone(settings) if isinstance(settings, dict) else {}
+    want = mod_marketplace(pa3_dir)
+    mks = out.get("extraKnownMarketplaces")
+    mks = mks if isinstance(mks, dict) else {}
+    old = mks.get(MARKETPLACE)
+    if old != want:
+        if old is None:
+            report["added"].append("extraKnownMarketplaces.%s" % MARKETPLACE)
+        else:
+            report["changed"].append(("extraKnownMarketplaces.%s" % MARKETPLACE, old, want))
+        mks[MARKETPLACE] = want
+    out["extraKnownMarketplaces"] = mks
+    enabled = out.get("enabledPlugins")
+    enabled = enabled if isinstance(enabled, dict) else {}
+    for key in MOD_PLUGINS:
+        if enabled.get(key) is not True:
+            if key in enabled:
+                report["changed"].append(("enabledPlugins.%s" % key, enabled[key], True))
+            else:
+                report["added"].append("enabledPlugins.%s" % key)
+            enabled[key] = True
+    out["enabledPlugins"] = enabled
+    pcs = out.get("pluginConfigs")
+    if isinstance(pcs, dict) and "pa@inline" in pcs and "pa@%s" % MARKETPLACE not in pcs:
+        pcs["pa@%s" % MARKETPLACE] = _clone(pcs["pa@inline"])
+        report["added"].append("pluginConfigs.pa@%s" % MARKETPLACE)
     return out
 
 

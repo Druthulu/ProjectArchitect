@@ -10,21 +10,18 @@ harness's own number, V2) and falls back to the sum of the attributed turns.
 
 Toast policy (design A section C.2):
   * ``stop_hook_active`` -> never (we are inside a stop hook loop);
-  * a ``background_tasks`` entry with ``status: "running"`` means the router is
-    idle-waiting on an expert, not on the developer -> skip unless
+  * a ``background_tasks`` entry with ``status: "running"`` means the session is
+    idle-waiting on an agent, not on the developer -> skip unless
     ``notify.toast_on_stop_with_background``;
   * a question / ``needs-developer`` / ``Recommended:`` ending, or a REPLAN.md /
     REVIEW.md newer than the session start -> **always** toast and write
     ``state/waiting/<sid>.json`` for statusline line 4;
   * otherwise one ordinary toast, rate-limited to one per 20 s per session;
   * 3.9.5 T2: each toast names a cause (question|review|replan|stop; ``empty`` for a
-    blank or ``.`` message -- the warmer's pings -- which never sends) and the
-    pa.json ``toast`` level decides (see :func:`pa.hooks.toast`).
-
-Undelivered wake lines (3.15 T6): main session only, each new line of
-``<root>/.run/warmer/<sid>.undelivered`` (offset in ``<sid>.undelivered.off``) is
-consumed one per Stop call and returns ``{"decision": "block", "reason": …}`` telling
-the router to arm its Monitor, even under ``stop_hook_active`` (bounded: one per line).
+    blank message, which never sends) and the pa.json ``toast`` level decides (see
+    :func:`pa.hooks.toast`);
+  * 3.24 T3.2: a governed project is always a mod session: the mod raises its own
+    toast (skip ``mod``) and its hidden stub turn neither sets nor clears the marker.
 """
 
 import json
@@ -32,7 +29,7 @@ import os
 import time
 
 from .. import log, notify, running
-from . import (agent_of, close_db, drain_spool, governed, now_iso, open_db, pinned_for,
+from . import (close_db, drain_spool, governed, now_iso, open_db, pinned_for,
                project_config, project_name, read_offset, role_of, session_pre_install,
                sid_of, status_patch, toast, waiting_clear, waiting_write, write_offset)
 
@@ -48,6 +45,7 @@ def _question_re():
     return _QUESTION_RE
 
 _TAIL_CHARS = 300
+MOD_STUB = "‹sent›"     # 3.22: the mod's local answer text
 _CAUSES = {"question": "question", "REVIEW.md": "review", "REPLAN.md": "replan"}
 
 
@@ -65,7 +63,9 @@ def run(inp, cfg):
     background = _running_children(inp.get("background_tasks"))
 
     # waiting marker and toast before the ledger: the 8 s watchdog ate a close toast (3.9.5 T6)
-    if waiting:
+    if message.strip() == MOD_STUB:                                # 3.22: a hidden stub turn
+        pass                                                          # neither sets nor clears it
+    elif waiting:
         waiting_write(sid, {"reason": waiting, "agent": inp.get("agent_type") or "main",
                             "message": notify.plain(message, 300)})
         if root:
@@ -96,40 +96,7 @@ def run(inp, cfg):
         liveness.sweep_if_due(sid, cfg)
     except Exception:
         pass
-    if root and sid and not agent_of(inp):       # 3.15 T6: an unrelayed wake line blocks once
-        return _undelivered_block(root, sid)
     return None
-
-
-_ARM_REASON = ("Arm `Monitor` on `tail -n0 -F .run/warmer/%s.wake` (timeout 30 min), "
-               "then end the turn with `.`")
-
-
-def _undelivered_block(root, sid):
-    """Consume one new line of ``.run/warmer/<sid>.undelivered`` -> a block dict, else None."""
-    p = os.path.join(root, ".run", "warmer", "%s.undelivered" % sid)
-    off_p = p + ".off"
-    try:
-        if not os.path.exists(p):
-            return None
-        try:
-            with open(off_p, encoding="utf-8") as fh:
-                off = int(fh.read().strip() or 0)
-        except (OSError, ValueError):
-            off = 0
-        if off > os.path.getsize(p):                 # file replaced: start over
-            off = 0
-        with open(p, "rb") as fh:
-            fh.seek(off)
-            raw = fh.readline()
-        if not raw.endswith(b"\n"):                 # nothing new, or a partial line
-            return None
-        with open(off_p, "w", encoding="utf-8") as fh:
-            fh.write(str(off + len(raw)))
-        return {"decision": "block", "reason": _ARM_REASON % sid}
-    except Exception:
-        log.log("stop_undelivered_failed", session=sid)
-        return None
 
 
 # --------------------------------------------------------------------------- ledger
@@ -462,12 +429,14 @@ def _running_children(background_tasks):
 
 def _maybe_toast(cfg, inp, sid, message, waiting, background, pcfg):
     skip = "stop_hook_active" if inp.get("stop_hook_active") else None
+    if governed(inp):                                              # 3.22: the mod raises its own toast
+        skip = "mod"
     allow_bg = bool((cfg.get("notify") or {}).get("toast_on_stop_with_background"))
     if background and not waiting and not allow_bg and not skip:   # non-waiting causes only
         log.log("stop_toast_skipped", session=sid, running=len(background))
         skip = "background"
     cause = _CAUSES.get(waiting, "stop")
-    if str(message or "").strip() in ("", "."):  # blank, or the warmer's "." ping
+    if not str(message or "").strip():           # blank (3.24 T3.2: the "." ping left with the warmer)
         cause = "empty"
     who = inp.get("agent_type") or "main"
     title = "PA3 · %s · %s" % (project_name(inp) or "session", who)

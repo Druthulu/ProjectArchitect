@@ -42,7 +42,7 @@ from . import paths
 from . import prices
 from .fsutil import disk_free_mb  # re-exported: the WSL disk guard lives here
 
-SCHEMA_VERSION = 7  # was 6
+SCHEMA_VERSION = 8  # was 7; 3.24 T13l: turns.output_est
 
 PRAGMAS = (
     "PRAGMA journal_mode=WAL",
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS turns(
   ctx INTEGER,
   new_tokens INTEGER,
   gap_s REAL, cold INTEGER, rewrite INTEGER, stop_reason TEXT,
-  cost_usd REAL, ttl_assumed TEXT, kind TEXT DEFAULT 'api');
+  cost_usd REAL, ttl_assumed TEXT, kind TEXT DEFAULT 'api', output_est INTEGER DEFAULT 0);
 
 CREATE TABLE IF NOT EXISTS retrievals(
   run_id TEXT PRIMARY KEY, parent_run_id TEXT, agent_type TEXT, model TEXT,
@@ -190,7 +190,7 @@ TABLES = {
                             "model", "effort", "input", "cache_write_5m", "cache_write_1h",
                             "cache_write", "cache_read", "output", "thinking", "ctx", "new_tokens",
                             "gap_s", "cold", "rewrite", "stop_reason", "cost_usd", "ttl_assumed",
-                            "kind"), "replace"),
+                            "kind", "output_est"), "replace"),
     "retrievals": (("run_id",), ("run_id", "parent_run_id", "agent_type", "model", "spawned_at",
                                  "returned_at", "seed_ctx", "ctx_at_end", "growth_tokens",
                                  "result_tokens_est", "own_output_est", "kept_out_tokens",
@@ -282,6 +282,7 @@ def init_schema(conn, machine=None):
     _bench_v4(conn)   # a v3 bench left by IF NOT EXISTS (hooks and the installer call init_schema)
     _sessions_v5(conn)   # likewise a v4 sessions table (T30)
     _accounts_v7(conn)   # likewise a v6 accounts table (3.10.6 T1)
+    _turns_v8(conn)   # likewise a v7 turns table (3.24 T13l)
     _window_instances_v2(conn)   # likewise a v1 window_instances table (T2.1; 3.14.2 T1)
     now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
     if get_meta(conn, "created") is None:
@@ -321,7 +322,8 @@ def migrate(conn):
     transaction; SQLite cannot alter a primary key).  v4 -> v5 adds
     ``sessions.harness_cost_usd`` (:func:`_sessions_v5`, T30).  v5 -> v6 adds the
     ``fit_pool`` table (T32.1; created by ``SCHEMA_SQL``).  v6 -> v7 adds
-    ``accounts.tier`` and ``accounts.tier_source`` (:func:`_accounts_v7`).  A database stamped newer than
+    ``accounts.tier`` and ``accounts.tier_source`` (:func:`_accounts_v7`).  v7 -> v8 adds
+    ``turns.output_est`` (:func:`_turns_v8`, 3.24 T13l).  A database stamped newer than
     ``SCHEMA_VERSION`` is returned untouched: a version is never stamped down.
     """
     have = schema_version(conn)
@@ -345,6 +347,9 @@ def migrate(conn):
     # v6 -> v7: accounts.tier + tier_source, the account's plan tier and where it came from
     if have < 7:
         _accounts_v7(conn)
+    # v7 -> v8: turns.output_est, the output estimated for a placeholder-usage request (T13l)
+    if have < 8:
+        _turns_v8(conn)
     init_schema(conn)
     return SCHEMA_VERSION
 
@@ -381,6 +386,15 @@ def _accounts_v7(conn):
             conn.execute("ALTER TABLE accounts ADD COLUMN %s TEXT" % col)
             added = True
     return added
+
+
+def _turns_v8(conn):
+    """Add ``turns.output_est`` to a pre-v8 table (3.24 T13l); no-op when present."""
+    have = [r[1] for r in conn.execute("PRAGMA table_info(turns)").fetchall()]
+    if not have or "output_est" in have:
+        return False
+    conn.execute("ALTER TABLE turns ADD COLUMN output_est INTEGER DEFAULT 0")
+    return True
 
 
 def _bench_v4(conn):
@@ -555,10 +569,6 @@ def turn_row_from_request(req, run_id=None, session_id=None, account=None,
     ``usage.cache_creation`` split when present, otherwise the whole cache-write
     is attributed to ``ttl_default`` and ``ttl_assumed`` records which rule was
     used (``split`` | ``1h`` | ``5m``).
-
-    T8: does not price a >200k-context request at the long-context tier --
-    see ``pa.transcript.request_cost``, which this mirrors for the same reason
-    (``turns.cost_usd`` and the reconcile transcript-truth total must agree).
     """
     cost, parts = prices.cost_of(req, req.get("model"), ttl_default=ttl_default,
                                  at=req.get("ts_iso"))
@@ -595,6 +605,7 @@ def turn_row_from_request(req, run_id=None, session_id=None, account=None,
         "cost_usd": cost,
         "ttl_assumed": parts["ttl"],
         "kind": kind,
+        "output_est": 1 if req.get("output_est") else 0,    # T13l: placeholder usage, estimated
     }
 
 

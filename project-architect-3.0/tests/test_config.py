@@ -43,9 +43,6 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(c["usage_api"]["poll_min"], 15)     # was 5
         self.assertEqual(c["resume"]["liveness_min"], 5)
         self.assertEqual(c["resume"]["unstop"], True)
-        self.assertEqual(c["discussion_allow_scripts"],
-                         ["tools/analysis/*.py", "tools/plan_show.py", "tools/discussion.py",
-                          "tools/card.py slice|check", "tools/plan_edit.py show|grammar"])
 
     def test_machine_and_python_are_resolved(self):
         self.assertIn(self.cfg["machine"], ("win", "wsl", "linux", "mac"))
@@ -95,7 +92,7 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(d["install"]["source"],
                          "https://github.com/Druthulu/ProjectArchitect.git")
         self.assertEqual(d["install"]["clone_dir"], "pa3-src")
-        self.assertEqual(d["install"]["update_check_hours"], 24)
+        self.assertNotIn("update_check_hours", d["install"])   # 3.28 T5: the once-a-day gate is gone
         self.assertEqual(d["install"]["fetch_timeout_s"], 8)
 
         self.assertIn("card", d)
@@ -103,7 +100,7 @@ class DefaultsTest(unittest.TestCase):
 
         self.assertIn("guard", d)
         self.assertTrue(d["guard"]["spilled_read"])
-        self.assertEqual(d["guard"]["whole_plan_roles"], ["review", "critic"])
+        self.assertEqual(d["guard"]["whole_plan_roles"], [])      # 3.24 T3.6: was ["review", "critic"]
         self.assertEqual(d["guard"]["tool_source_roles"], ["expert"])
 
     def test_install_card_guard_groups_in_template(self):
@@ -129,10 +126,15 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(d["guard"]["whole_read_chars"], 20000)
         self.assertEqual(d["audit"]["router_ctx_flag"], 300000)
 
-    def test_warmer_cap_fallback_in_defaults(self):
-        """3.15 T3: max_pings_5m is the ceiling; max_pings_5m_fallback 3 when cap inputs are missing."""
-        w = config.DEFAULTS["warmer"]
-        self.assertEqual((w["max_pings_5m"], w["max_pings_5m_fallback"]), (12, 3))
+    def test_warmer_and_ttl_choice_retired(self):
+        """3.24 T3.1: warmer and ttl_choice left DEFAULTS; their old values are past defaults (slim drops them)."""
+        self.assertNotIn("warmer", config.DEFAULTS)
+        self.assertNotIn("ttl_choice", config.DEFAULTS)
+        self.assertNotIn("warmer", config.PROJECT_DEFAULTS)
+        dropped = []
+        self.assertEqual(config.slim({"warmer": {"max_pings_5m": 12, "poll_s": 5},
+                                      "ttl_choice": {"min_runs": 5}}, dropped), {})
+        self.assertEqual(sorted(dropped), ["ttl_choice.min_runs", "warmer.max_pings_5m", "warmer.poll_s"])
 
     def test_whole_read_chars_and_router_ctx_flag_in_template(self):
         """Both new keys exist in pa.json.template."""
@@ -200,7 +202,7 @@ class LoadTest(unittest.TestCase):
         self.assertEqual(cfg["handoff"]["roles"], ["expert", "coder"])
         self.assertEqual(cfg["handoff"]["threshold_tokens"], 350000)   # untouched key survives
         self.assertEqual(cfg["pinned_models"]["expert-fable"], "claude-opus-5")
-        self.assertEqual(cfg["pinned_models"]["router"], "claude-sonnet-5-5")
+        self.assertEqual(cfg["pinned_models"]["retriever-code"], "claude-haiku-5-5[1m]")
 
     def test_user_layer_only_stored_keys(self):
         """fix-14: user_layer() is config.json as stored, no defaults merged."""
@@ -239,7 +241,7 @@ class LoadTest(unittest.TestCase):
         for key in config.USER_KEYS:
             self.assertIn(key, raw)
         cached = config.load(self.path)
-        self.assertEqual(cached["pinned_models"]["router"], "claude-sonnet-5-5")
+        self.assertEqual(cached["pinned_models"]["retriever-code"], "claude-haiku-5-5[1m]")
         self.assertEqual(cached["statusline"]["max_width"], 120)
 
     def test_slim_drops_empty_dicts_and_reports(self):
@@ -273,11 +275,20 @@ class RoleMapTest(unittest.TestCase):
             "coder-opus46": "coder",
             "retriever-code": "retriever",
             "retriever-web": "retriever",
-            "router": "router",
-            "critic": "critic",
-            "review": "review",
-            "planner-gen": "planner",
-            "planner-phase": "planner",
+            "router": "other",               # 3.24 T3.1: the Gen 3 agents left the maps (was router,
+            "critic": "other",               # critic, review, planner); the roles stay valid for old rows
+            "review": "other",
+            "planner-gen": "other",
+            "pa-session": "other",
+            "partner": "partner",            # 3.22: the mod's agents
+            "thinker": "thinker",
+            "pa-claude": "partner",          # 3.22 T8g: exact name only
+            "claude": "other",               # 3.22 T8g: the built-in catch-all is never the partner
+            "claude-code-guide": "other",    # 3.22 T8f: never swallowed by a claude prefix
+            "deep-thinker": "thinker",
+            "pa-expert": "expert",           # 3.25 T6a: one agent per role
+            "pa-coder": "coder",
+            "pa-thinker": "thinker",
             "general-purpose": "other",
             "Explore": "other",
             "": "other",
@@ -291,11 +302,18 @@ class RoleMapTest(unittest.TestCase):
         self.assertEqual(config.role_from_agent_type("Expert-Fable", self.cfg), "expert")
 
     def test_pinned_model_for(self):
-        self.assertEqual(config.pinned_model_for("expert-fable", self.cfg), "claude-fable-5-1")
-        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-sonnet-5-5")
+        self.assertIsNone(config.pinned_model_for("expert-fable", self.cfg))   # 3.25 T6a: the ladder sets the roles
+        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-haiku-5-5")
         self.assertEqual(config.pinned_model_for("coder-opus46", self.cfg), "claude-opus-4-6")
         self.assertIsNone(config.pinned_model_for("nobody", self.cfg))
         self.assertIsNone(config.pinned_model_for(None, self.cfg))
+
+    def test_pinned_model_for_tagged(self):
+        """3.23 T13: every pinned model carries [1m]; the bare id unless the caller asks for the tag."""
+        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-haiku-5-5")
+        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg, tagged=True), "claude-haiku-5-5[1m]")
+        self.assertEqual(config.pinned_model_for("coder-opus46", self.cfg, tagged=True), "claude-opus-4-6")
+        self.assertIsNone(config.pinned_model_for("nobody", self.cfg, tagged=True))
 
     def test_ttl_for_role(self):
         self.assertEqual(config.ttl_for_role("expert", self.cfg), "1h")   # was "5m" (3.15 T4); was "1h" before
@@ -303,6 +321,8 @@ class RoleMapTest(unittest.TestCase):
         self.assertEqual(config.ttl_for_role("main", self.cfg), "1h")
         self.assertEqual(config.ttl_for_role("retriever", self.cfg), "5m")
         self.assertEqual(config.ttl_for_role("unknown-role", self.cfg), "5m")
+        self.assertEqual(config.ttl_for_role("partner", self.cfg), "1h")    # 3.22
+        self.assertEqual(config.ttl_for_role("thinker", self.cfg), "5m")
 
     def test_dotted_get(self):
         self.assertEqual(config.get(self.cfg, "handoff.threshold_tokens"), 350000)
@@ -320,28 +340,29 @@ class LadderPinTest(unittest.TestCase):
 
     def test_max20_equals_defaults(self):
         config._set_ladder_tier("max20")
-        for agent in ("critic", "review", "expert-fable"):
-            self.assertEqual(config.pinned_model_for(agent, self.cfg),
-                             config.DEFAULTS["pinned_models"][agent])
-        self.assertEqual(config.pinned_model_for("plain", self.cfg), "claude-fable-5-1")
+        for agent in ("pa-expert", "pa-coder", "pa-thinker"):   # 3.25 T6a: the role agents' base rows
+            self.assertEqual(config.pinned_model_for(agent, self.cfg, tagged=True), "claude-opus-5-5[1m]")
+        for agent in ("auditor",):   # 3.24 T3.1: was critic, review, plain; T17e: the curator left
+            self.assertEqual(config.pinned_model_for(agent, self.cfg, tagged=True), "claude-fable-5-1[1m]")
+        self.assertEqual(config.pinned_model_for("memory-curator", self.cfg, tagged=True), "claude-opus-5-5[1m]")
 
     def test_pro_and_max5(self):
         config._set_ladder_tier("pro")
-        self.assertEqual(config.pinned_model_for("critic", self.cfg), "claude-opus-5-5")
+        self.assertEqual(config.pinned_model_for("memory-curator", self.cfg), "claude-opus-5-5")
         self.assertEqual(config.pinned_model_for("Auditor", self.cfg), "claude-opus-5-5")
-        self.assertEqual(config.pinned_model_for("expert-fable", self.cfg), "claude-fable-5-1")
-        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-sonnet-5-5")
+        self.assertEqual(config.pinned_model_for("pa-expert", self.cfg), "claude-opus-5-5")
+        self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-haiku-5-5")
         config._set_ladder_tier("max5")
-        self.assertEqual(config.pinned_model_for("review", self.cfg), "claude-fable-5-1")
+        self.assertEqual(config.pinned_model_for("memory-curator", self.cfg), "claude-opus-5-5")  # 3.24 T17e
+        self.assertEqual(config.pinned_model_for("auditor", self.cfg), "claude-fable-5-1")
 
     def test_user_pin_and_override(self):
         config._set_ladder_tier("pro")
         cfg = config.defaults()
-        cfg["pinned_models"] = dict(cfg["pinned_models"], Critic="claude-sonnet-5")
-        del cfg["pinned_models"]["critic"]
-        self.assertEqual(config.pinned_model_for("critic", cfg), "claude-sonnet-5")
-        config._set_ladder_tier("max5", {"critic": {"model": "claude-opus-5-5[1m]"}})
-        self.assertEqual(config.pinned_model_for("critic", self.cfg), "claude-opus-5-5")
+        cfg["pinned_models"] = dict(cfg["pinned_models"], Auditor="claude-sonnet-5")
+        self.assertEqual(config.pinned_model_for("auditor", cfg), "claude-sonnet-5")
+        config._set_ladder_tier("max5", {"auditor": {"model": "claude-opus-5-5[1m]"}})
+        self.assertEqual(config.pinned_model_for("auditor", self.cfg), "claude-opus-5-5")
 
     def test_resolved_from_pa_json(self):
         tmp = tempfile.mkdtemp(prefix="pa3-ladpin-")
@@ -354,7 +375,7 @@ class LadderPinTest(unittest.TestCase):
         os.chdir(tmp)
         try:
             config._set_ladder_tier(None)
-            self.assertEqual(config.pinned_model_for("critic", self.cfg), "claude-opus-5-5")
+            self.assertEqual(config.pinned_model_for("auditor", self.cfg), "claude-opus-5-5")
             self.assertEqual(config._LADDER_TIER, ("pro", None))
         finally:
             os.chdir(old_cwd)

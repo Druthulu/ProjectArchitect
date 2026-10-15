@@ -2,13 +2,18 @@
 
 The installer writes ``.claude/agents/*.md`` only through :func:`render`, so a max5 or pro
 account never carries rows its plan cannot serve.  ``max20`` is the shipped frontmatter
-byte for byte.  Hot path (T3's SessionStart reconcile calls :func:`mismatches`): module-level
+byte for byte, except ``pa-planner`` (3.24 T17), whose file carries the safe default (Opus 5.5 at
+high) that every resolver fallback lands on.  Hot path (T3's SessionStart reconcile calls :func:`mismatches`): module-level
 imports stay json, os, sys, time.
 
 Public:
-    PRESETS                             ``{tier: {agent: {"model", "effort"} | None}}``; None = not installed
+    PRESETS                             ``{tier: {agent: {"model", "effort"} | None}}``; None = not installed;
+                                        3.25 T6a: a ``<type>@<level>`` key is a variant row (a hinted spawn)
     MANAGED                             the agents the ladder owns; every other agent passes through
-    row(agent, preset, override=None)   the agent's row (override merged), None when absent or unmanaged
+                                        (3.24 T3.1: MOD_MANAGED folded in, MOD_AGENTS and ``mod=`` gone)
+    row(agent, preset, override=None)
+                                        the agent's row (override merged), None when absent or unmanaged;
+                                        ``agent`` may be ``<type>@<level>`` (managed when its type is)
     render(agent, pkg_text, preset, override=None)
                                         the packaged text with its frontmatter ``model:``/``effort:``
                                         lines rewritten; None = absent at this tier
@@ -21,27 +26,49 @@ import os
 import sys      # noqa: F401
 import time     # noqa: F401
 
-MANAGED = ("expert-fable", "expert-fable-5m", "critic",  # expert-fable-5m: 3.15 T4 twin, rows as expert-fable
-           "review", "auditor", "memory-curator", "plain")
-_JUDGES = ("critic", "review", "auditor", "memory-curator")
+# 3.24 T3.1: was ("expert-fable", "expert-fable-5m", "critic", "review", "auditor", "memory-curator", "plain")
+# plus MOD_MANAGED ("deep-thinker",) under mod on; the Gen 3 agents left
+# 3.25 T6a: one agent per role (pa-expert, pa-coder, pa-thinker); was ("expert-fable", "auditor",
+# "memory-curator", "deep-thinker", "pa-planner") (3.24 T17: + pa-planner)
+MANAGED = ("pa-expert", "pa-coder", "pa-thinker", "auditor", "memory-curator", "pa-planner")
+_JUDGES = ("auditor",)  # was ("auditor", "memory-curator"); before 3.24, + "critic", "review"
+# 3.24 T17e: the memory curator runs Opus 5.5 at medium on every tier (developer 2026-10-12: "curator is
+# opus55medium for all tiers"); it left the judges' Fable row
 _FABLE = "claude-fable-5-1[1m]"
 _OPUS = "claude-opus-5-5[1m]"
+_SONNET = "claude-sonnet-5-5[1m]"  # 3.27 T11: Pro's coder
 
 
 def _r(model, effort):
     return {"model": model, "effort": effort}
 
 
+# 3.24 T17f: the planner's effort per tier (developer 2026-10-12): Max 20x max, Max 5x high, Pro medium
+# 3.25 T6a: the role rows carry the old agents' values: pa-expert@high was expert-fable (Fable medium on max20,
+# None on max5/pro, now Opus high there), pa-thinker was thinker, pa-thinker@deep was deep-thinker
+def _roles(expert_high, thinker_deep):
+    return [("pa-expert", _r(_OPUS, "medium")), ("pa-expert@high", expert_high),
+            ("pa-coder", _r(_OPUS, "medium")),
+            ("pa-thinker", _r(_OPUS, "max")), ("pa-thinker@deep", thinker_deep)]
+
+
 PRESETS = {
-    "max20": dict([("expert-fable", _r(_FABLE, "medium")), ("expert-fable-5m", _r(_FABLE, "medium"))]
+    "max20": dict(_roles(_r(_FABLE, "medium"), _r(_FABLE, "max"))
                   + [(a, _r(_FABLE, "medium")) for a in _JUDGES]
-                  + [("plain", _r(_FABLE, "high"))]),
-    "max5": dict([("expert-fable", None), ("expert-fable-5m", None)]
+                  + [("memory-curator", _r(_OPUS, "medium"))]
+                  + [("pa-planner", _r(_OPUS, "max"))]),
+    "max5": dict(_roles(_r(_OPUS, "high"), _r(_FABLE, "max"))
                  + [(a, _r(_FABLE, "medium")) for a in _JUDGES]
-                 + [("plain", _r(_FABLE, "medium"))]),
-    "pro": dict([("expert-fable", None), ("expert-fable-5m", None)]
+                 + [("memory-curator", _r(_OPUS, "medium"))]
+                 + [("pa-planner", _r(_OPUS, "high"))]),
+    # 3.27 T11 (developer 2026-10-13, the 3.27 benches): Pro runs pa-expert Opus low, pa-coder Sonnet medium,
+    # pa-thinker Opus medium; were Opus medium, Opus medium, Opus max (the base rows)
+    "pro": dict(_roles(_r(_OPUS, "high"), None)
+                + [("pa-expert", _r(_OPUS, "low")), ("pa-coder", _r(_SONNET, "medium")),
+                   ("pa-thinker", _r(_OPUS, "medium"))]
                 + [(a, _r(_OPUS, "medium")) for a in _JUDGES]
-                + [("plain", _r(_OPUS, "medium"))]),
+                + [("memory-curator", _r(_OPUS, "medium"))]
+                + [("pa-planner", _r(_OPUS, "medium"))]),
 }
 
 
@@ -49,14 +76,18 @@ def row(agent, preset, override=None):
     """``{"model", "effort"}`` for ``agent`` at ``preset``; None when absent or not managed.
 
     ``override`` is the raw pa.json ``ladder`` value ``{agent: {model?, effort?}}``: merged onto
-    the preset row, or onto the max20 row when the preset row is None (an override installs it)."""
-    if agent not in MANAGED:
+    the preset row, or onto the max20 row when the preset row is None (an override installs it).
+    3.25 T6a: ``agent`` may be a variant ``<type>@<level>``, managed when ``<type>`` is; a variant the
+    table lacks is None unless the override names it (then merged onto the type's row)."""
+    if agent.split("@", 1)[0] not in MANAGED:
         return None
     base = PRESETS.get(preset, PRESETS["max5"]).get(agent)
     ov = override.get(agent) if isinstance(override, dict) else None
     if not isinstance(ov, dict):
         return dict(base) if base else None
-    out = dict(base or PRESETS["max20"][agent])
+    out = dict(base or PRESETS["max20"].get(agent) or row(agent.split("@", 1)[0], preset) or {})
+    if not out:
+        return None
     for key in ("model", "effort"):
         if isinstance(ov.get(key), str) and ov[key].strip():
             out[key] = ov[key].strip()

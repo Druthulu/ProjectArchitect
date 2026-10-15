@@ -103,6 +103,25 @@ class InboxConsumeTest(unittest.TestCase):
             self.assertEqual(parts[3], "now" if r.startswith("now") else "deferred:" + r)
             self.assertTrue(parts[4].startswith("phase-ends/current/discussions/inbox-"))
 
+    def test_routes_between_generations(self):
+        """3.23 T2: no open phase -> deferred:gen<G+1>; no GENERATION_PLAN.md -> deferred:gen1."""
+        with open(os.path.join(self.cur, "INBOX.md"), "w", encoding="utf-8") as fh:
+            fh.write("- a note with no plan\n")
+        p = _tool("inbox-consume", env_extra=self._env())
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("route: I1 -> gen1", p.stdout)
+        with open(os.path.join(self.root, "GENERATION_PLAN.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Generation 3\n\n## Phases\n"
+                     "- 2.1 old | milestone: m | status: closed\n"
+                     "- 3.1 a | milestone: m | status: closed\n"
+                     "- 3.2 b | milestone: m | status: closed\n")
+        with open(os.path.join(self.cur, "INBOX.md"), "w", encoding="utf-8") as fh:
+            fh.write("- tidy the launcher -> 3.2\n- Gen 3: a stale tag\n")
+        p = _tool("inbox-consume", env_extra=self._env())
+        self.assertEqual(p.returncode, 0, p.out)
+        routes = [l for l in p.stdout.split("\n") if l.startswith("route: ")]
+        self.assertEqual(routes, ["route: I2 -> gen4", "route: I3 -> gen4"])
+
     def test_pending_now_rows_and_mark(self):
         """T29: consume flags a `now` row no task or Changes line names; inbox-mark resolves it."""
         os.makedirs(os.path.join(self.cur, "discussions"))

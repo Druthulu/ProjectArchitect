@@ -15,6 +15,8 @@ Discipline carried from ``project-architect-2.0/SETUP.md`` §0: every step is
 with a one-line reason, so a second ``--root`` is a no-op and the run needs no
 resume pointer.  Nothing is ever deleted: the settings file is backed up before
 it is rewritten and the retired PA2 guard scripts are renamed ``*.retired``.
+3.24 T4: the one exception is ``<pa3-dir>/mod/``, where R2 removes a file it no
+longer ships (the mod loads in place from there); 3.24 T7b: likewise ``rules-seed/`` and ``templates/``.
 
 Two directories are deliberately independent: the **config dir** (``~/.claude``
 or ``~/.claude-vantage`` or ``$CLAUDE_CONFIG_DIR``) receives ``settings.json``,
@@ -40,6 +42,15 @@ from . import settings_merge as sm
 MIN_CLAUDE = (2, 1, 270)
 ENTRY_SCRIPTS = ("pa_hook.py", "pa_statusline.py", "pa_ledger.py", "pa_install.py")
 COPY_SUFFIXES = (".py", ".ps1")
+# 3.24 T4: the mod (both plugins + marketplace.json), loaded in place from <pa3-dir>/mod; tests stay behind
+MOD_SUFFIXES = (".ts", ".tsx", ".json", ".sh", ".py")
+MOD_TEST_SUFFIXES = (".test.ts", ".test.tsx", ".vectors.ts")
+MOD_SKIP_DIRS = ("__pycache__", "node_modules", "tests", "test", "fixtures", "testdata")
+# 3.24 T7b: the seed rules (with HISTORY.json) and the templates, read by a project's tools/curate.py
+SEED_DIRS = ("rules-seed", "templates")
+PRUNE_DIRS = ("mod",) + SEED_DIRS   # R2 removes a file it no longer ships under these
+MANIFEST = "MANIFEST.json"     # beside VERSION: {"format", "version", "files": {rel: sha256}}
+FLOOR_FILE = "mod/pa/hooks/activation.ts"   # VERSION_FLOOR: the one source of the mod's Claude Code floor
 GUARD_SCRIPTS = ("ctx_guard.sh", "ctx90.sh")
 
 REMINDERS = (
@@ -139,6 +150,30 @@ def claude_version():
 def _version_tuple(text):
     m = re.match(r"(\d+)\.(\d+)\.(\d+)", text or "")
     return tuple(int(x) for x in m.groups()) if m else None
+
+
+def mod_floor(pkg=None):
+    """The mod's Claude Code floor (``"2.1.292"``): ``VERSION_FLOOR`` read from ``<pkg>/`` :data:`FLOOR_FILE`,
+    the constant the mod itself checks (3.24 T4); ``None`` when the file or the constant is missing."""
+    text = fsutil.read_text(os.path.join(pkg or package_root(), FLOOR_FILE), "") or ""
+    m = re.search(r"VERSION_FLOOR\s*=\s*['\"](\d+\.\d+\.\d+)['\"]", text)
+    return m.group(1) if m else None
+
+
+def floor_check(pkg=None, version=None):
+    """``(ok, line)``: Claude Code ``version`` (default :func:`claude_version`) against :func:`mod_floor`.
+
+    ``ok`` is False only for a readable version below a readable floor; ``line`` is the one plain
+    sentence to print then (else ``None``).  An unknown version or floor passes (cross-machine
+    installs).  3.24 T4: the root install stops on it before changing anything; T5's project step
+    reuses it."""
+    floor = mod_floor(pkg)
+    ver = version if version is not None else claude_version()
+    have, need = _version_tuple(ver), _version_tuple(floor)
+    if have is None or need is None or have >= need:
+        return True, None
+    return False, ("Claude Code %s is older than %s, the oldest release PA3 runs on: update Claude Code "
+                   "first (claude update), then run this again. Nothing was changed." % (ver, floor))
 
 
 def git_short_hash(path):
@@ -350,7 +385,64 @@ def package_files(pkg):
     fixture = os.path.join(pkg, "tests", "fixtures", "hooks", "probe1.log")
     if os.path.isfile(fixture):
         out.append(("tests/fixtures/hooks/probe1.log", fixture))
+    out.extend(mod_files(pkg))                                    # 3.24 T4: the mod, agents, CHANGES.md
+    agents = os.path.join(pkg, "agents")
+    if os.path.isdir(agents):
+        for name in sorted(os.listdir(agents)):
+            if name.endswith(".md") and os.path.isfile(os.path.join(agents, name)):
+                out.append(("agents/" + name, os.path.join(agents, name)))
+    changes = os.path.join(pkg, "CHANGES.md")
+    if os.path.isfile(changes):
+        out.append(("CHANGES.md", changes))
+    for top in SEED_DIRS:                                         # 3.24 T7b: rules-seed/, templates/
+        for dirpath, dirnames, filenames in os.walk(os.path.join(pkg, top)):
+            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+            for name in sorted(filenames):
+                src = os.path.join(dirpath, name)
+                out.append((os.path.relpath(src, pkg).replace("\\", "/"), src))
     return out
+
+
+def mod_files(pkg):
+    """``[(rel, src)]`` of ``<pkg>/mod/``: both plugins and ``.claude-plugin/marketplace.json``, by
+    :data:`MOD_SUFFIXES`, without tests (:data:`MOD_TEST_SUFFIXES`, :data:`MOD_SKIP_DIRS`)."""
+    out = []
+    mod = os.path.join(pkg, "mod")
+    for dirpath, dirnames, filenames in os.walk(mod):
+        dirnames[:] = sorted(d for d in dirnames if d not in MOD_SKIP_DIRS)
+        for name in sorted(filenames):
+            if name.endswith(MOD_SUFFIXES) and not name.endswith(MOD_TEST_SUFFIXES):
+                src = os.path.join(dirpath, name)
+                out.append((os.path.relpath(src, pkg).replace("\\", "/"), src))
+    return out
+
+
+def _mod_stale(pa3_dir, shipped):
+    """Files under ``<pa3-dir>/`` :data:`PRUNE_DIRS` that R2 no longer ships (``__pycache__`` left alone)."""
+    out = []
+    for top in PRUNE_DIRS:
+        for dirpath, dirnames, filenames in os.walk(os.path.join(pa3_dir, top)):
+            dirnames[:] = sorted(d for d in dirnames if d != "__pycache__")
+            for name in sorted(filenames):
+                rel = os.path.relpath(os.path.join(dirpath, name), pa3_dir).replace("\\", "/")
+                if rel not in shipped:
+                    out.append(rel)
+    return out
+
+
+def _sha256(path):
+    import hashlib
+    with open(path, "rb") as fh:
+        return hashlib.sha256(fh.read()).hexdigest()
+
+
+def manifest_text(files, ver):
+    """``MANIFEST.json``: ``{"format": 1, "version": <the VERSION text it goes with>, "files": {rel: sha256}}``.
+
+    Written before VERSION, so a half copy reads as manifest ``version`` != VERSION (T6's health check)."""
+    doc = {"format": 1, "version": ver,
+           "files": dict((rel, _sha256(src)) for rel, src in sorted(files))}
+    return json.dumps(doc, indent=1, sort_keys=True) + "\n"
 
 
 def _git_tree(path, spec):
@@ -401,7 +493,11 @@ def _same_bytes(src, dst):
 
 
 def copy_package(env, opts):
-    """R2: copy ``pa/`` + the entry scripts into ``<pa3-dir>``, byte-compare, VERSION."""
+    """R2: copy ``pa/`` + the entry scripts into ``<pa3-dir>``, byte-compare, VERSION.
+
+    3.24 T4: also ``mod/`` (no tests), ``agents/`` and ``CHANGES.md``; a file under ``mod/`` that is no
+    longer shipped is removed (3.24 T7b: also ``rules-seed/`` and ``templates/``, same prune);
+    ``MANIFEST.json`` (rel -> sha256) is written next, VERSION last."""
     # When a clone exists and --no-clone is not set, read the package from the clone.
     clone_path = getattr(env, "clone_path", None)
     clone_head = getattr(env, "clone_head", None)
@@ -422,19 +518,26 @@ def copy_package(env, opts):
                        clone_head=clone_head if (clone_path and not no_clone) else None)
     ver_path = os.path.join(env.pa3_dir, "VERSION")
     ver_stale = fsutil.read_text(ver_path, "") != ver
+    stale = _mod_stale(env.pa3_dir, set(rel for rel, _src in files))
+    man = manifest_text(files, ver)
+    man_path = os.path.join(env.pa3_dir, MANIFEST)
+    man_stale = fsutil.read_text(man_path, "") != man
 
-    result = {"files": len(files), "copied": 0, "missing": missing, "status": "SKIP"}
+    result = {"files": len(files), "copied": 0, "removed": 0, "missing": missing, "status": "SKIP"}
 
     if opts.dry_run:
         result["status"] = "SKIP"
         _line("R2", "package copy", "SKIP",
               "dry-run: would write %d of %d files to %s"
-              % (len(todo) + (1 if ver_stale else 0), len(files) + 1, env.pa3_dir))
+              % (len(todo) + (1 if ver_stale else 0) + (1 if man_stale else 0), len(files) + 2,
+                 env.pa3_dir))
         for rel, _src in todo[:8]:
             _note("+ %s" % rel)
         if len(todo) > 8:
             _note("... %d more" % (len(todo) - 8))
-    elif not todo and not ver_stale:
+        for rel in stale:
+            _note("- %s" % rel)
+    elif not todo and not ver_stale and not man_stale and not stale:
         _line("R2", "package copy", "SKIP", "%d files already byte-identical in %s"
               % (len(files), env.pa3_dir))
     else:
@@ -446,20 +549,37 @@ def copy_package(env, opts):
                 if not _same_bytes(src, dst):
                     raise OSError("byte compare failed for %s" % rel)
                 result["copied"] += 1
-            if ver_stale:
+            for rel in stale:                                       # PRUNE_DIRS only: no longer shipped
+                os.remove(os.path.join(env.pa3_dir, rel.replace("/", os.sep)))
+                result["removed"] += 1
+            for top in PRUNE_DIRS:
+                if os.path.isdir(os.path.join(env.pa3_dir, top)):
+                    _prune_empty_dirs(os.path.join(env.pa3_dir, top))
+            if man_stale:
+                fsutil.atomic_write_text(man_path, man)
+            if ver_stale:                                           # last: a half copy is detectable
                 fsutil.atomic_write_text(ver_path, ver)
         except OSError as exc:
             result["status"] = "FAIL"
             _line("R2", "package copy", "FAIL", str(exc))
             return result
         result["status"] = "DONE"
-        _line("R2", "package copy", "DONE", "%d of %d files written to %s (byte-compared)"
-              % (result["copied"], len(files), env.pa3_dir))
+        _line("R2", "package copy", "DONE", "%d of %d files written to %s (byte-compared)%s"
+              % (result["copied"], len(files), env.pa3_dir,
+                 ", %d removed from %s" % (result["removed"], ", ".join(sorted(set(
+                     r.split("/")[0] + "/" for r in stale)))) if result["removed"] else ""))
 
     if missing:
         _note("warn: not in the package yet: %s (their hooks no-op until installed)"
               % ", ".join(missing))
     return result
+
+
+def _prune_empty_dirs(top):
+    """Remove empty directories under ``top`` (``top`` itself kept)."""
+    for dirpath, _dirnames, _filenames in sorted(os.walk(top), key=lambda t: -len(t[0])):
+        if dirpath != top and not os.listdir(dirpath):
+            os.rmdir(dirpath)
 
 
 # --------------------------------------------------------------------------- R3
@@ -802,6 +922,17 @@ def _backup(settings_path):
     return path, raw
 
 
+def plugin_options(pkg):
+    """The option names each PA plugin declares: ``{name: set}`` from ``<pkg>/mod/<name>/.claude-plugin/plugin.json``
+    ``userConfig``; a plugin whose manifest is missing or unreadable is left out (its saved options are kept)."""
+    out = {}
+    for name in sm.PA_PLUGINS:
+        doc = fsutil.read_json(os.path.join(pkg, "mod", name, ".claude-plugin", "plugin.json"), None)
+        if isinstance(doc, dict):
+            out[name] = set(doc.get("userConfig") or {})
+    return out
+
+
 def merge_settings(env, opts):
     """R4: merge ``settings/user.snippet.json`` into ``<config-dir>/settings.json``."""
     result = {"status": "SKIP", "report": None, "backup": None, "retired": [],
@@ -820,6 +951,10 @@ def merge_settings(env, opts):
         _line("R4", "settings merge", "FAIL", str(exc))
         result["status"] = "FAIL"
         return result
+    # 3.23 T13d.c11: saved options the PA plugins no longer declare (e.g. pa-watch's `level`) are pruned.
+    merged = sm.prune_plugin_configs(merged, plugin_options(package_root()), report)
+    # 3.24 T4: the mod is a user-scope plugin loaded in place from <pa3-dir>/mod
+    merged = sm.register_mod(merged, env.pa3_dir, report)
     result["report"] = report
 
     changed = (merged != current)
@@ -962,6 +1097,10 @@ def install_root(opts):
     print("Project Architect 3.0 -- per-machine install (--root)%s"
           % ("  [dry run]" if opts.dry_run else ""))
     env = detect(opts)
+    ok, why = floor_check(env.pkg, env.claude)                   # 3.24 T4: before anything is written
+    if not ok:
+        print(why)
+        return 2
 
     # Clone or update the package source repository when --no-clone is absent.
     no_clone = getattr(opts, "no_clone", False)

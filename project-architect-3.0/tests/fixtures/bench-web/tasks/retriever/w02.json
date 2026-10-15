@@ -1,0 +1,16 @@
+{
+  "id": "w02",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which RFC defines the HTTP status code 425 (Too Early)? Give its RFC number.\n\nFind the answer in the published source on the web. Give the answer and the full address (URL) of the page you read it on.",
+  "expect": {
+    "tokens": [
+      "8470",
+      "rfc8470"
+    ]
+  },
+  "hidden": "—"
+}

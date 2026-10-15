@@ -1,0 +1,16 @@
+{
+  "id": "w03",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which RFC obsoletes RFC 4122 (the UUID URN namespace)? Give its RFC number.\n\nFind the answer in the published source on the web. Give the answer and the full address (URL) of the page you read it on.",
+  "expect": {
+    "tokens": [
+      "9562",
+      "rfc9562"
+    ]
+  },
+  "hidden": "—"
+}

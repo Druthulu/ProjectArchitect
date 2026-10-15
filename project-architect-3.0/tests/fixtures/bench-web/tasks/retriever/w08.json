@@ -1,0 +1,16 @@
+{
+  "id": "w08",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "What MIME type does the TOML v1.0.0 specification give for TOML files sent over the internet?\n\nFind the answer in the published source on the web. Give the answer and the full address (URL) of the page you read it on.",
+  "expect": {
+    "tokens": [
+      "application/toml",
+      "toml.io"
+    ]
+  },
+  "hidden": "—"
+}

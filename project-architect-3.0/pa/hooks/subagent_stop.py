@@ -28,8 +28,7 @@ import os
 
 from .. import log, running
 from . import (close_db, drain_spool, governed, now_iso, open_db, pinned_for,
-               project_config, project_name, role_of, session_pre_install, sid_of,
-               status_patch, toast)
+               role_of, session_pre_install, sid_of, status_patch)
 
 CONTRACT_TOKEN_BUDGET = 300
 
@@ -63,12 +62,6 @@ def run(inp, cfg):
 
     close_follow_tab(agent_id)
     _cleanup(inp, cfg, sid, agent_id, role)
-    _warm_end(inp, sid, agent_id)
-    if (str(agent_type or "") in ("discuss", "discuss-high", "discuss-max")     # 3.9.5 T2/T13: the discussion's turn ended; no other type toasts
-            and str(answer).strip() != "."):                                   # 3.14.1: a warmer ping's reply is no turn for the developer
-        toast(cfg, "PA3 · %s · discussion turn ended" % (project_name(inp) or "session"),
-              str(answer)[-240:] or "(no message)", kind="waiting", session_id=sid,
-              project_cfg=project_config(governed(inp)), cause="discussion", run_id=agent_id)
 
     # sweep other finished agents that missed their SubagentStop
     try:
@@ -108,20 +101,6 @@ def _close_in_db(conn, cfg, inp, sid, agent_id, role, path, live, answer_tokens)
     _book_savings(conn, cfg, inp, sid, agent_id, role, totals, live)
     drain_spool(conn, sid, cfg)
     _rebuild(conn, cfg)
-
-
-def _warm_end(inp, sid, agent_id):
-    """3.9.5 T4: the warmer's watch on this run ends (``{"end": id}`` in ``<sid>.runs``)."""
-    root = governed(inp)
-    if not root:
-        return
-    try:
-        from .. import fsutil, warmer
-
-        if os.path.isdir(warmer.warmer_dir(root)):
-            fsutil.append_line(warmer.path(root, sid, "runs"), json.dumps({"end": agent_id}))
-    except Exception as exc:
-        log.log("warmer_end_failed", session_id=sid, agent=agent_id, error=str(exc)[:200])
 
 
 def close_follow_tab(agent_id):
@@ -305,10 +284,15 @@ def _book_retrieval(conn, cfg, inp, sid, agent_id, role, path, totals, answer_to
         row["void"] = 1
         row["kept_out_mode"] = "ungoverned"
         row["kept_out_tokens"] = 0
+    elif role == "partner":                                  # 3.22: its tokens are the conversation
+        row["void"] = 1
+        row["kept_out_mode"] = "partner"
+        row["kept_out_tokens"] = 0
     kept = row["kept_out_tokens"]
     void = row["void"]
     db.upsert_retrieval(conn, row)
-    if parent and parent != sid and not is_workflow and not is_ungoverned and not is_pre_install:
+    if (parent and parent != sid and not is_workflow and not is_ungoverned and not is_pre_install
+            and role != "partner"):
         running.add_retrieval(sid, parent, agent_id,
                               {"R": kept, "returned_at": returned, "n_after": 0,
                                "void": bool(void)})

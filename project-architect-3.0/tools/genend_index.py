@@ -2,7 +2,6 @@
 """genend_index.py -- assemble phase-ends/GenerationEnd_<G>.md from PhaseEnd files.
 
     genend_index.py assemble <G>
-    genend_index.py lint [<G>]
 
 The recap placeholder is filled from `## Generation Recap` in current/RECAP.md, or in
 phase-<N>/RECAP.md once phaseend_index.py archive has moved it there (the last phase's
@@ -143,47 +142,15 @@ def cmd_assemble(a, root):
     return 0
 
 
-def cmd_lint(a, root):
-    gen = a.gen
-    problems = []
-    if not gen:
-        for name in sorted(os.listdir(PE.phase_dir(root))):
-            m = re.match(r"^GenerationEnd_(\S+)\.md$", name)
-            if m:
-                gen = m.group(1)
-    if not gen:
-        die("no GenerationEnd_<G>.md found; pass the generation id")
-    target = os.path.join(PE.phase_dir(root), "GenerationEnd_%s.md" % gen)
-    if not os.path.isfile(target):
-        die("no %s" % PE.rel(root, target))
-    text = PE.read_text(target)
-    if RECAP_PH in text:
-        problems.append("%s still has %s" % (PE.rel(root, target), RECAP_PH))
-    for p in gen_phases(root, gen):
-        if p["status"] != "closed":
-            problems.append("phase %s is %s (must be closed)" % (p["id"], p["status"]))
-        link = os.path.join(root, p["link"]) if p["link"] not in ("-", "") else None
-        if not link or not os.path.isfile(link):
-            problems.append("phase %s has no PhaseEnd file (%s)" % (p["id"], p["link"]))
-    if problems:
-        PE.emit(["ERROR " + x for x in problems]
-                + ["FAILED: %d problem(s)" % len(problems)])
-        return 1
-    sys.stdout.write("OK\n")
-    return 0
-
-
 def main(argv=None):
     p = argparse.ArgumentParser(
         prog="genend_index.py", description="Assemble GenerationEnd_<G>.md.")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("assemble", help="build GenerationEnd_<G>.md")
     s.add_argument("gen")
-    s = sub.add_parser("lint", help="all phases closed, no placeholder left")
-    s.add_argument("gen", nargs="?")
     a = p.parse_args(argv)
     root = PE.find_root()
-    return {"assemble": cmd_assemble, "lint": cmd_lint}[a.cmd](a, root)
+    return {"assemble": cmd_assemble}[a.cmd](a, root)
 
 
 if __name__ == "__main__":

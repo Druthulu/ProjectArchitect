@@ -2,7 +2,8 @@
 # commit_task.sh <TaskId> "<one line <=100 chars>" [paths...]
 #
 # Stages the explicit paths plus the task-owned areas only: phase-ends/current/{tasks,logs,
-# research,discussions,RECAP.md,TASK_PROGRESS.md} and .claude-state/memory. Never `git add -u`:
+# research,discussions,RECAP.md,TASK_PROGRESS.md} and .claude-state/memory; .claude-state/journal
+# only for the loop's own ids (3.24 T13j: router, plan, review, phase-end, partner, ...). Never `git add -u`:
 # a dirty HOW_WE_WORK.md (the card: staged only when passed), PHASE_PLAN.md, GENERATION_PLAN.md,
 # cookbook/, rules/ or code file is committed only when passed explicitly (the router commits its own plan edits:
 # commit_task.sh router "<what>" phase-ends/current/PHASE_PLAN.md). The message gets the
@@ -55,12 +56,23 @@ if [ -f .claude/pa.json ]; then
   [ -n "$V" ] && PE="$V"
 fi
 AUTO="$PE/current/tasks $PE/current/logs $PE/current/research $PE/current/discussions $PE/current/RECAP.md $PE/current/TASK_PROGRESS.md .claude-state/memory"  # was also HOW_WE_WORK.md (3.9 T1)
+# 3.24 T13j: the journal is committed with the loop's own records, never with task work (T2's commit
+# in the attended run swept in 19 journal files). The loop's ids: the mod's autopilot (router, plan,
+# review, phase-end), the closing expert (PHASE-END), Claude (partner), the curator (curate), the
+# auditor (AUDIT). A task id (T<n>, T<n>.c<k>, fix-<n>) leaves new journal files untracked and unlisted.
+JOURNAL=".claude-state/journal"
+LOOP_IDS="router plan review phase-end PHASE-END partner curate AUDIT"
+SKIP="$JOURNAL"
+for i in $LOOP_IDS; do
+  [ "$TASK" = "$i" ] && { AUTO="$AUTO $JOURNAL"; SKIP=""; }
+done
 
 EXPLICIT="$*"
 BAD=""
 while IFS= read -r u; do
   [ -z "$u" ] && continue
   ok=0
+  [ -n "$SKIP" ] && case "$u" in "$SKIP"/*) continue;; esac
   for a in $AUTO; do
     case "$u" in "$a"|"$a"/*) ok=1;; esac
   done

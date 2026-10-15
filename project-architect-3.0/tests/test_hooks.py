@@ -39,7 +39,7 @@ EVENT_MAP = {
     "PostModelSwitch": "model_switch", "SessionEnd": "session_end",
 }
 PROBE1_SID = "a1b2c3d4-0000-4000-8000-00000000c0de"
-PROBE1_AGENT = "a5cf611700000000b"
+PROBE1_AGENT = "a5cf6117000000015"
 ACCOUNT = "probe@example.com"
 _PATH_KEYS = ("transcript_path", "agent_transcript_path")
 
@@ -110,7 +110,6 @@ class LedgerCase(unittest.TestCase):
         self.cfg = config.defaults()
         self.cfg["accounts"] = {ACCOUNT: {"renewal_day": 21}}   # 3.11 T9: a known day, so no hook asks for it
         self.toasts = []
-        self.warmers = []                  # 3.9.5 T4: the warmer daemon's spawns, kept apart from toasts
         self.rebuilds = []                 # 3.9.6 T5: the detached summary rebuilds, run inline here
         self.run_rebuilds = True
         self.repairs = []                  # 3.15.3: the Stop hook's detached savings repairs, never run
@@ -135,9 +134,7 @@ class LedgerCase(unittest.TestCase):
 
     def _spawn(self, cmd, env):
         """The test spawner: never a real child; a summary rebuild runs inline (synchronously)."""
-        if "pa.warmer" in cmd:
-            self.warmers.append((cmd, env))
-        elif "pa.summary" in cmd:
+        if "pa.summary" in cmd:
             self.rebuilds.append((cmd, env))
             if self.run_rebuilds:
                 summary.main(cmd[cmd.index("pa.summary") + 1:])
@@ -238,7 +235,7 @@ class ProbeReplayTest(LedgerCase):
         self.assertEqual(sid, PROBE1_SID)
         self.assertEqual(account, ACCOUNT)
         self.assertEqual(source, "auth")
-        self.assertEqual(kind, "probe-main")
+        self.assertEqual(kind, "mod")                     # 3.24 T3.2: a governed session is a mod session
         self.assertTrue(machine)
         self.assertEqual(end_reason, "other")             # the SessionEnd block closed it
         self.assertEqual(self.rows("SELECT email FROM accounts"), [(ACCOUNT,)])
@@ -286,8 +283,8 @@ class ProbeReplayTest(LedgerCase):
         self.replay("probe2.log")
         runs = dict((r[0], r[1]) for r in
                     self.rows("SELECT run_id, agent_type FROM agent_runs"))
-        self.assertIn("abc0135b000000015", runs)
-        self.assertEqual(runs["abc0135b000000015"], "Explore")
+        self.assertIn("abc0135b000000024", runs)
+        self.assertEqual(runs["abc0135b000000024"], "Explore")
 
     def test_summary_json_is_written(self):
         self.replay("probe1.log")
@@ -315,10 +312,10 @@ class HandoffTest(LedgerCase):
     """T7: the 350k crossing fires exactly once."""
 
     SID = "handoff-session"
-    AGENT = "a1111111000000002"
+    AGENT = "a1111111000000004"
 
     def _input(self):
-        return {"session_id": self.SID, "agent_id": self.AGENT, "agent_type": "expert-fable",
+        return {"session_id": self.SID, "agent_id": self.AGENT, "agent_type": "pa-expert",
                 "cwd": self.root, "hook_event_name": "PostToolUse", "tool_name": "Read",
                 "tool_input": {"file_path": "x.py"},
                 "transcript_path": os.path.join(self.projects, "slug", self.SID + ".jsonl")}
@@ -388,6 +385,20 @@ class HandoffTest(LedgerCase):
         self.assertEqual(self.rows("SELECT phase FROM agent_runs WHERE run_id=?",
                                    (self.AGENT,)), [("beside 24",)])
 
+    def test_subagent_start_live_entry_carries_the_transcript_path(self):
+        """3.24 T13h: the liveness sweep reads the path from the running entry."""
+        inp = self._input()
+        self.run_hook("subagent_start", inp)
+        self.assertEqual(running.agent(self.SID, self.AGENT).get("transcript_path"),
+                         hooks.agent_transcript(inp))
+
+    def test_post_tool_use_recreated_entry_carries_the_transcript_path(self):
+        """3.24 T13h: an entry re-created after a sweep keeps the path, so it is not swept again."""
+        path = self._transcript(120_000)
+        self.assertEqual(running.agent(self.SID, self.AGENT), {})
+        post_tool_use.run(self._input(), self.cfg)
+        self.assertEqual(running.agent(self.SID, self.AGENT).get("transcript_path"), path)
+
     def test_effort_seen_is_sampled_from_the_transcript(self):
         """3.1 T10: the record-level ``effort`` field lands in running.json as effort_seen."""
         inp = self._input()
@@ -407,6 +418,19 @@ class HandoffTest(LedgerCase):
         self.assertEqual(entry["ctx"], 120_000)
         self.assertFalse(entry["handoff_fired"])
         self.assertEqual(entry["n_requests"], 1)
+
+    def test_window_comes_from_the_pinned_tag_not_the_transcript(self):
+        """3.23 T13: transcripts record the bare model id; the pinned [1m] tag keeps the configured threshold."""
+        inp = self._input()
+        path = hooks.agent_transcript(inp)
+        self.write_transcript(path, [usage_line("msg_seed", model="claude-fable-5-1", inp=2000, write=1000, out=100),
+                                     usage_line("msg_mid", model="claude-fable-5-1", inp=1000, write=2000,
+                                                read=200_000 - 5000, out=2000, ts="2026-09-12T21:00:00.000Z")])
+        self.assertIsNone(post_tool_use.run(inp, self.cfg))
+        self.assertFalse(running.agent(self.SID, self.AGENT)["handoff_fired"])
+        self.write_transcript(path, [usage_line("msg_big", model="claude-fable-5-1", inp=1000, write=2000,
+                                                read=355_000 - 5000, out=2000, ts="2026-09-12T21:05:00.000Z")])
+        self.assertIsNotNone(post_tool_use.run(inp, self.cfg))
 
     def test_crossing_fires_exactly_once(self):
         self._transcript(355_000)
@@ -479,22 +503,12 @@ class HandoffTest(LedgerCase):
         """The harness writes parentAgentId into meta.json; the child's first sample adopts it."""
         path = self._transcript(120_000)
         with open(path[:-6] + ".meta.json", "w", encoding="utf-8") as fh:
-            json.dump({"agentType": "expert-fable", "parentAgentId": "a2222222000000006",
+            json.dump({"agentType": "expert-fable", "parentAgentId": "a222222200000000a",
                        "spawnDepth": 2}, fh)
         post_tool_use.run(self._input(), self.cfg)
         entry = running.agent(self.SID, self.AGENT)
-        self.assertEqual(entry["parent"], "a2222222000000006")
+        self.assertEqual(entry["parent"], "a222222200000000a")
         self.assertEqual(entry["parent_source"], "meta")
-
-    def test_planner_is_sampled_live_but_never_handed_off(self):
-        """Planners and the critic get ctx, effort and savings live; only handoff roles hand off."""
-        inp = dict(self._input(), agent_type="planner-phase")
-        self._transcript(400_000)
-        self.assertIsNone(post_tool_use.run(inp, self.cfg))
-        entry = running.agent(self.SID, self.AGENT)
-        self.assertEqual(entry["ctx"], 400_000)
-        self.assertEqual(entry["role"], "planner")
-        self.assertFalse(entry.get("handoff_fired"))
 
     def test_agent_tool_acknowledgment_links_the_child_to_its_parent(self):
         """A background Agent launch answers with text; the child id in it still links the parent."""
@@ -504,14 +518,14 @@ class HandoffTest(LedgerCase):
                "tool_input": {"subagent_type": "retriever-code", "description": "Interfaces"},
                "tool_response": {"content": [{"type": "text", "text":
                    "Async agent launched successfully. (internal metadata)\n"
-                   "agentId: a9999999000000010 (internal ID - do not mention to user)"}]}}
+                   "agentId: a999999900000001b (internal ID - do not mention to user)"}]}}
         self.assertIsNone(post_tool_use.run(inp, self.cfg))
-        child = running.agent(self.SID, "a9999999000000010")
+        child = running.agent(self.SID, "a999999900000001b")
         self.assertEqual(child["parent"], self.AGENT)
         self.assertEqual(child["parent_source"], "agent_tool")
         self.assertEqual(child["agent_type"], "retriever-code")
         self.assertEqual(self.rows("SELECT parent_run_id, parent_source, agent_type FROM agent_runs "
-                                   "WHERE run_id=?", ("a9999999000000010",)),
+                                   "WHERE run_id=?", ("a999999900000001b",)),
                          [(self.AGENT, "agent_tool", "retriever-code")])
 
     def test_retriever_savings_flow_into_live_saved(self):
@@ -534,8 +548,8 @@ class RetrievalTest(LedgerCase):
     """SubagentStop of a retriever: kept_out_tokens and the parent's live entry."""
 
     SID = "retr-session"
-    PARENT = "a2222222000000006"
-    RETR = "a3333333000000008"
+    PARENT = "a222222200000000a"
+    RETR = "a333333300000000e"
 
     def test_kept_out_tokens_formula(self):
         from pa.hooks.subagent_stop import kept_out_tokens
@@ -612,11 +626,11 @@ class RetrievalTest(LedgerCase):
         """The harness fires SubagentStop for the router's own turns: no start, no transcript."""
         from pa.hooks import subagent_stop
 
-        inp = {"session_id": self.SID, "agent_id": "a9f9f9f9000000011", "agent_type": "pa-session",
+        inp = {"session_id": self.SID, "agent_id": "a9f9f9f900000001d", "agent_type": "pa-session",
                "cwd": self.root, "last_assistant_message": "T3 done."}
         self.assertIsNone(subagent_stop.run(inp, self.cfg))
         self.assertEqual(self.rows("SELECT COUNT(*) FROM agent_runs WHERE run_id=?",
-                                   ("a9f9f9f9000000011",)), [(0,)])
+                                   ("a9f9f9f900000001d",)), [(0,)])
 
     def test_parent_stop_orphans_its_running_children(self):
         """A retriever still marked running when its expert returns is dropped and marked orphaned."""
@@ -626,7 +640,7 @@ class RetrievalTest(LedgerCase):
         running.set_expert(self.SID, self.PARENT)
         running.set_agent(self.SID, self.RETR, {"agent_type": "retriever-code", "role": "retriever",
                                                 "parent": self.PARENT, "status": "running"})
-        running.set_agent(self.SID, "a4444444000000009", {"agent_type": "retriever-web",
+        running.set_agent(self.SID, "a444444400000000f", {"agent_type": "retriever-web",
                                                             "role": "retriever", "parent": self.SID,
                                                             "status": "running"})
         path = os.path.join(self.projects, "slug", self.SID, "subagents",
@@ -639,7 +653,7 @@ class RetrievalTest(LedgerCase):
         self.assertEqual(running.agent(self.SID, self.RETR), {})
         self.assertEqual(self.rows("SELECT status FROM agent_runs WHERE run_id=?", (self.RETR,)),
                          [("orphaned",)])
-        self.assertEqual(running.agent(self.SID, "a4444444000000009")["status"], "running")   # not its child
+        self.assertEqual(running.agent(self.SID, "a444444400000000f")["status"], "running")   # not its child
 
     def test_expert_stop_locks_measured_savings(self):
         """SubagentStop of the expert prices every avoided re-send (spec 3.9.2)."""
@@ -680,6 +694,37 @@ class RetrievalTest(LedgerCase):
         self.assertEqual(locked, 1)
         self.assertEqual(detail["per_retrieval"][0]["N"], 2)
         self.assertEqual(detail["source"], "measured")
+
+    def test_partner_stop_books_no_kept_out_savings_to_main(self):
+        """3.22 pin: a partner's tokens are the conversation itself, never work kept out of main."""
+        from pa import savings
+        from pa.hooks import subagent_stop
+
+        PARTNER = "a5b6389c000000014"
+        running.set_agent(self.SID, PARTNER, {"agent_type": "partner", "role": "partner"})
+        path = os.path.join(self.projects, "slug", self.SID, "subagents",
+                            "agent-%s.jsonl" % PARTNER)
+        self.write_transcript(path, [
+            usage_line("msg_pt1", inp=3000, write=1000, read=0, out=500,
+                       ts="2026-09-12T20:05:00.000Z"),
+            usage_line("msg_pt2", inp=500, write=500, read=20000, out=300,
+                       ts="2026-09-12T20:10:00.000Z")])
+        subagent_stop.run({"session_id": self.SID, "agent_id": PARTNER,
+                           "agent_type": "partner", "cwd": self.root,
+                           "last_assistant_message": "hello",
+                           "agent_transcript_path": path}, self.cfg)
+        conn = hooks.open_db()
+        try:                                              # a later session turn would carry R
+            db.upsert_turn(conn, {"msg_id": "msg_later", "session_id": self.SID,
+                                  "run_id": "a8888888000000019", "kind": "api",
+                                  "ts": "2099-01-01T00:00:00Z", "model": "claude-opus-5-5",
+                                  "ctx": 30000})
+            detail = savings.measured_saved(conn, self.SID)
+        finally:
+            db.close(conn)
+        self.assertEqual(detail["gross_usd"], 0.0)
+        self.assertEqual(self.rows("SELECT kept_out_tokens, void FROM retrievals WHERE run_id=?",
+                                   (PARTNER,)), [(0, 1)])
 
     def test_ungoverned_session_voids_retrieval_and_skips_savings(self):
         """T11: no .claude/pa.json at cwd -> retrieval void='ungoverned', no savings row."""
@@ -778,7 +823,7 @@ class RetrievalTest(LedgerCase):
         """A12: a memory-curator (or planner-gen) with kept_out_tokens > 0 gets a savings row."""
         from pa.hooks import subagent_stop
 
-        CURATOR = "a777777700000000d"
+        CURATOR = "a7777777000000018"
         running.set_agent(self.SID, CURATOR, {"agent_type": "memory-curator",
                                               "role": "other"})
         path = os.path.join(self.projects, "slug", self.SID, "subagents",
@@ -803,17 +848,9 @@ class RetrievalTest(LedgerCase):
 
 
 class FollowTabTest(LedgerCase):
-    """3.1 T12.1.1.1: follow_agents on -> a focused wt tab per planner/expert/critic; stop closes it."""
+    """3.1 T12.1.1.1: ``pa_ledger.py follow``; 3.24 T3.2: the follow_agents tab left (key ignored)."""
 
     SID = "follow-s"
-
-    def setUp(self):
-        super().setUp()
-        os.environ["PA_WT_EXE"] = "C:/fake/wt.exe"
-
-    def tearDown(self):
-        os.environ.pop("PA_WT_EXE", None)
-        super().tearDown()
 
     def _pa_json(self, follow):
         with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
@@ -824,36 +861,11 @@ class FollowTabTest(LedgerCase):
                 "cwd": self.root, "hook_event_name": "SubagentStart",
                 "transcript_path": os.path.join(self.projects, "slug", self.SID + ".jsonl")}
 
-    def test_off_by_default_opens_nothing(self):
+    def test_retired_follow_agents_key_opens_nothing(self):
+        self._pa_json("on")
         self.run_hook("subagent_start", self._start("expert-fable"))
         self.assertEqual(self.toasts, [])
         self.assertFalse(os.path.exists(paths.follow_path("f1111111111111111")))
-
-    def test_on_opens_a_focused_tab_for_experts_only_and_stop_closes_it(self):
-        self._pa_json("on")
-        self.run_hook("subagent_start", self._start("retriever-code", "f2222222222222222"))
-        self.run_hook("subagent_start", self._start("coder-opus46", "f3333333333333333"))
-        self.assertEqual(self.toasts, [])                                  # never a leaf or a coder
-        with open(os.path.join(self.root, ".run", "status.json"), "w", encoding="utf-8") as fh:
-            json.dump({"task": "T3", "phase": "24"}, fh)
-        self.run_hook("subagent_start", self._start("expert-fable"))
-        self.assertEqual(len(self.toasts), 1)
-        cmd, _env = self.toasts[0]
-        self.assertEqual(cmd[:4], ["C:/fake/wt.exe", "-w", "0", "nt"])   # current window, new focused tab
-        self.assertEqual(cmd[cmd.index("--title") + 1], "expert-fable T3")
-        self.assertIn("follow", cmd)
-        self.assertEqual(cmd[cmd.index("follow") + 1], "f1111111111111111")
-        self.assertTrue(cmd[cmd.index("follow") - 1].endswith("pa_ledger.py"))
-        self.assertTrue(os.path.exists(paths.follow_path("f1111111111111111")))
-        inp = self._start("expert-fable")
-        inp["hook_event_name"] = "SubagentStop"
-        inp["agent_transcript_path"] = self.write_transcript(
-            hooks.agent_transcript(inp), [usage_line("msg_f", inp=2000, write=1000, read=0, out=100)])
-        self.run_hook("subagent_stop", inp)
-        self.assertTrue(os.path.exists(paths.follow_path("f1111111111111111", "stop")))
-        self.run_hook("subagent_start", self._start("critic", "f4444444444444444"))
-        self.run_hook("subagent_start", self._start("planner-phase", "f5555555555555555"))
-        self.assertEqual(len(self.toasts), 3)
 
     def test_follow_renders_like_the_subagent_view_then_exits_on_the_marker(self):
         from contextlib import redirect_stdout
@@ -958,8 +970,8 @@ class ModelMismatchTest(LedgerCase):
         self.set_toast("all")                                   # model is not a waiting cause
         inp = {"session_id": "mm-1", "cwd": self.root, "tool_name": "Agent",
                "tool_use_id": "toolu_1",
-               "tool_input": {"subagent_type": "expert-fable"},
-               "tool_response": {"agentId": "a9999999000000010", "agentType": "expert-fable",
+               "tool_input": {"subagent_type": "coder-opus46"},
+               "tool_response": {"agentId": "a999999900000001b", "agentType": "coder-opus46",
                                  "resolvedModel": "claude-opus-5", "status": "completed"}}
         self.assertIsNone(post_tool_use.run(inp, self.cfg))
         self.assertIsNone(post_tool_use.run(inp, self.cfg))
@@ -968,13 +980,13 @@ class ModelMismatchTest(LedgerCase):
         self.assertEqual(len(self.toasts), 1)
         body = self.toasts[0][1]["PA_TOAST_BODY"]
         self.assertIn("claude-opus-5", body)
-        self.assertIn("claude-fable-5-1", body)
+        self.assertIn("claude-opus-4-6", body)  # 3.25 T6a: was expert-fable, now ladder-set
 
     def test_matching_model_is_silent(self):
         inp = {"session_id": "mm-2", "cwd": self.root, "tool_name": "Agent",
                "tool_input": {"subagent_type": "retriever-code"},
-               "tool_response": {"agentId": "a888888800000000e", "agentType": "retriever-code",
-                                 "resolvedModel": "claude-sonnet-5-5",
+               "tool_response": {"agentId": "a8888888000000019", "agentType": "retriever-code",
+                                 "resolvedModel": "claude-haiku-5-5",   # 3.27 T11
                                  "status": "completed"}}
         post_tool_use.run(inp, self.cfg)
         self.assertEqual(self.rows("SELECT COUNT(*) FROM events WHERE kind='model_mismatch'"),
@@ -987,64 +999,33 @@ class ModelMismatchTest(LedgerCase):
         self.assertFalse(post_tool_use.mismatch(None, "claude-opus-5"))
 
 
-class StopUndeliveredTest(LedgerCase):
-    """3.15 T6: each new line of .run/warmer/<sid>.undelivered blocks one main-session Stop."""
-
-    SID = "stop-und-1"
-    REASON = ("Arm `Monitor` on `tail -n0 -F .run/warmer/stop-und-1.wake` (timeout 30 min), "
-              "then end the turn with `.`")
-
-    def _stop(self, **extra):
-        from pa.hooks import stop
-
-        inp = {"session_id": self.SID, "cwd": self.root, "last_assistant_message": ".",
-               "background_tasks": [], "stop_hook_active": False}
-        inp.update(extra)
-        return stop.run(inp, self.cfg)
-
-    def _line(self, n=1):
-        p = os.path.join(self.root, ".run", "warmer", "%s.undelivered" % self.SID)
-        os.makedirs(os.path.dirname(p), exist_ok=True)
-        with open(p, "a", encoding="utf-8", newline="\n") as fh:
-            for _ in range(n):
-                fh.write(json.dumps({"run_id": "a1", "line": "warm a1 262", "at": 1.0}) + "\n")
-
-    def test_no_file_no_block(self):
-        self.assertIsNone(self._stop())
-
-    def test_one_block_per_line(self):
-        self._line(2)
-        block = {"decision": "block", "reason": self.REASON}
-        self.assertEqual(self._stop(), block)
-        self.assertEqual(self._stop(stop_hook_active=True), block)   # bounded: one per line
-        self.assertIsNone(self._stop(stop_hook_active=True))
-        self._line()
-        self.assertEqual(self._stop(), block)
-        self.assertIsNone(self._stop())
-
-    def test_subagent_never_blocks(self):
-        self._line()
-        self.assertIsNone(self._stop(agent_id="a1", agent_type="coder-opus55"))
-        self.assertEqual(self._stop()["decision"], "block")              # the line stays for main
-
-
 class StopToastTest(LedgerCase):
     """Design A C.2: when the Stop hook is allowed to interrupt the developer."""
 
-    def _stop(self, message, background=None, stop_hook_active=False, cfg=None):
+    def _stop(self, message, background=None, stop_hook_active=False, cfg=None, cwd=None):
         from pa.hooks import stop
 
-        inp = {"session_id": "stop-1", "cwd": self.root, "agent_type": "router",
+        inp = {"session_id": "stop-1", "cwd": cwd or self.root, "agent_type": "router",
                "last_assistant_message": message, "background_tasks": background or [],
                "stop_hook_active": stop_hook_active,
                "transcript_path": os.path.join(self.projects, "slug", "stop-1.jsonl")}
         return stop.run(inp, cfg or self.cfg)
 
-    def test_plain_stop_toasts(self):
-        self.set_toast("all")                                   # stop is not a waiting cause
+    def _ungoverned(self):
+        """3.24 T3.2: a governed Stop leaves the toast to the mod; an ungoverned one still toasts."""
+        d = os.path.join(self.dir, "ungoverned")
+        os.makedirs(d, exist_ok=True)
+        return d
+
+    def test_governed_stop_leaves_the_toast_to_the_mod(self):
+        self.set_toast("all")
         self._stop("Task T3 done, committed.")
+        self.assertEqual(self.toasts, [])
+        self.assertEqual(self.toast_rows()[-1]["reason"], "mod")
+
+    def test_ungoverned_question_toasts(self):
+        self._stop("Which engine should the closer pin for Phase 36?", cwd=self._ungoverned())
         self.assertEqual(len(self.toasts), 1)
-        self.assertIn("stop-1", "stop-1")
         self.assertIn("PA3", self.toasts[0][1]["PA_TOAST_TITLE"])
 
     def test_running_background_subagent_suppresses_the_toast(self):
@@ -1052,16 +1033,9 @@ class StopToastTest(LedgerCase):
                    background=[{"id": "a1", "type": "subagent", "status": "running"}])
         self.assertEqual(self.toasts, [])
 
-    def test_background_toast_can_be_configured_on(self):
-        cfg = config.defaults()
-        cfg["notify"]["toast_on_stop_with_background"] = True
-        self.set_toast("all")
-        self._stop("Waiting...", background=[{"id": "a1", "status": "running"}], cfg=cfg)
-        self.assertEqual(len(self.toasts), 1)
-
     def test_question_always_toasts_and_writes_the_waiting_marker(self):
         self._stop("Which engine should the closer pin for Phase 36?",
-                   background=[{"id": "a1", "status": "running"}])
+                   background=[{"id": "a1", "status": "running"}], cwd=self._ungoverned())
         self.assertEqual(len(self.toasts), 1)
         marker = os.path.join(self.ledger, "state", "waiting", "stop-1.json")
         self.assertTrue(os.path.exists(marker))
@@ -1075,7 +1049,7 @@ class StopToastTest(LedgerCase):
             usage_line("msg_q0", model="claude-sonnet-5", inp=2000, write=1000, read=0, out=100),
             json.dumps({"type": "assistant", "message": {"role": "assistant", "content": [
                 {"type": "text", "text": "What's your favorite color?"}]}})])
-        self._stop("", background=[{"id": "a1", "status": "running"}])
+        self._stop("", background=[{"id": "a1", "status": "running"}], cwd=self._ungoverned())
         marker = os.path.join(self.ledger, "state", "waiting", "stop-1.json")
         with open(marker, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["reason"], "question")
@@ -1090,29 +1064,17 @@ class StopToastTest(LedgerCase):
         self._stop("done?", stop_hook_active=True)
         self.assertEqual(self.toasts, [])
 
-    def _project_webhook(self, url):
-        with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
-            json.dump({"pa_version": "3.0.0", "project": "hooks-test",
-                       "discord_webhook": url}, fh)
-
-    def test_question_with_a_project_webhook_fires_toast_and_discord_together(self):
-        """3.1 T4: pa.json discord_webhook set -> one detached python child toasts, then posts."""
-        self._project_webhook("https://discord.example/api/webhooks/1/x")
+    def test_governed_question_marks_waiting_without_a_toast(self):
+        """3.24 T3.2: the project's own question still writes the marker; the mod toasts."""
         self._stop("Which engine should the closer pin for Phase 36?")
-        self.assertEqual(len(self.toasts), 1)
-        cmd, env = self.toasts[0]
-        self.assertEqual(env["PA_DISCORD_WEBHOOK"], "https://discord.example/api/webhooks/1/x")
-        self.assertIn("-c", cmd)                                    # the notifier child
-        self.assertIn("PA_DISCORD_WEBHOOK", cmd[-1])                # which posts the webhook
-        self.assertIsInstance(json.loads(env["PA_TOAST_CMD"]), list)    # and runs the toast
-        self.assertIn("Which engine", env["PA_TOAST_BODY"])
+        self.assertEqual(self.toasts, [])
         marker = os.path.join(self.ledger, "state", "waiting", "stop-1.json")
         with open(marker, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["reason"], "question")
 
     def test_question_without_a_webhook_toasts_only(self):
         """The installed default: pa.json discord_webhook null (deferred, Phase 3.1)."""
-        self._stop("Which engine should the closer pin for Phase 36?")
+        self._stop("Which engine should the closer pin for Phase 36?", cwd=self._ungoverned())
         self.assertEqual(len(self.toasts), 1)
         cmd, env = self.toasts[0]
         self.assertNotIn("PA_DISCORD_WEBHOOK", env)
@@ -1253,11 +1215,12 @@ class ToastPolicyTest(LedgerCase):
         with open(marker, encoding="utf-8") as fh:
             self.assertEqual(json.load(fh)["reason"], "question")
 
-    def test_question_under_waiting_is_sent(self):
+    def test_question_under_waiting_is_left_to_the_mod(self):
         self._stop("Which engine should the closer pin for Phase 36?")
         row = self._last()
-        self.assertEqual((row["cause"], row["level"], row["sent"]), ("question", "waiting", 1))
-        self.assertEqual(len(self.toasts), 1)
+        self.assertEqual((row["cause"], row["level"], row["sent"], row["reason"]),
+                         ("question", "waiting", 0, "mod"))
+        self.assertEqual(self.toasts, [])
         self.assertEqual(self.rows("SELECT session_id, run_id FROM events WHERE kind='toast'"),
                          [(self.SID, self.SID)])
 
@@ -1268,11 +1231,11 @@ class ToastPolicyTest(LedgerCase):
             fh.write("# review\n")
         self._stop("T4 paused for review.")
         row = self._last()
-        self.assertEqual((row["cause"], row["sent"]), ("review", 1))
+        self.assertEqual((row["cause"], row["sent"]), ("review", 0))     # 3.24 T3.2: the mod's toast
 
-    def test_empty_and_dot_never_send_at_any_level(self):
+    def test_empty_never_sends_at_any_level(self):
         for level in ("off", "waiting", "all"):
-            for message in ("", "   ", "."):
+            for message in ("", "   "):
                 with self.subTest(level=level, message=message):
                     self.set_toast(level)
                     self._stop(message)
@@ -1302,12 +1265,53 @@ class ToastPolicyTest(LedgerCase):
                 self.assertEqual(row["cause"], cause)
                 self.assertEqual(row["sent"], 0 if cause == "other" else 1)
 
-    def test_idle_prompt_during_a_discussion_is_cause_discussion(self):
-        with open(os.path.join(self.root, ".run", "DISCUSSION"), "w", encoding="utf-8") as fh:
-            fh.write("on\n")
-        self._notification("idle_prompt")
+    # 3.24 T13h: under mod: on the mod's picker reaches Notification as a permission_prompt
+    # "Claude needs your permission" (C0101); it is recorded, not toasted.
+    def _mod_on(self):
+        with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
+            json.dump({"pa_version": "3.0.0", "project": "hooks-test", "mod": "on"}, fh)
+
+    def test_mod_picker_permission_prompt_is_recorded_not_sent(self):
+        self._mod_on()
+        self._notification("permission_prompt", "Claude needs your permission")
         row = self._last()
-        self.assertEqual((row["cause"], row["sent"]), ("discussion", 1))
+        self.assertEqual((row["cause"], row["sent"], row["reason"]),
+                         ("permission", 0, "mod picker"))
+        self.assertEqual(self.toasts, [])
+
+    def test_mod_on_subagent_and_tool_prompts_still_toast(self):
+        self._mod_on()
+        self._notification("permission_prompt", "Claude needs your permission to use Bash")
+        inp = self._base("Notification")
+        inp.update({"notification_type": "permission_prompt", "title": "Claude Code",
+                    "message": "Claude needs your permission", "agent_id": "c1111111111111111",
+                    "agent_type": "coder-opus55"})
+        self.run_hook("notification", inp)
+        self.assertEqual([r["sent"] for r in self.toast_rows()], [1, 1])
+        self.assertEqual(len(self.toasts), 2)
+
+    def test_repeat_waiting_prompt_toasts_once(self):
+        """3.26 T3: the same wait twice inside 60 s is one toast; older or different, both send."""
+        self._notification("permission_prompt", "Claude needs your approval for the plan")
+        self._notification("permission_prompt", "Claude needs your approval for the plan")
+        self.assertEqual([(r["sent"], r.get("reason")) for r in self.toast_rows()][-1], (0, "repeat"))
+        self.assertEqual(len(self.toasts), 1)
+        self._notification("permission_prompt", "Claude needs your permission to use Bash")
+        self.assertEqual(len(self.toasts), 2)
+        marker = paths.waiting_path(self.SID)
+        with open(marker, encoding="utf-8") as fh:
+            row = json.load(fh)
+        row["ts"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 61))
+        with open(marker, "w", encoding="utf-8") as fh:
+            json.dump(row, fh)
+        self._notification("permission_prompt", "Claude needs your permission to use Bash")
+        self.assertEqual(self._last()["sent"], 1)
+        self.assertEqual(len(self.toasts), 3)
+
+    def test_picker_message_without_mod_still_toasts(self):
+        self._notification("permission_prompt", "Claude needs your permission")
+        self.assertEqual(self._last()["sent"], 1)
+        self.assertEqual(len(self.toasts), 1)
 
     def test_stop_failure_under_waiting_is_crash_sent(self):
         inp = self._base("StopFailure")
@@ -1320,8 +1324,8 @@ class ToastPolicyTest(LedgerCase):
 
     def test_model_under_waiting_is_not_sent(self):
         inp = self._base("PostModelSwitch")
-        inp.update({"agent_type": "expert-fable", "from_model": "claude-fable-5-1",
-                    "to_model": "claude-opus-5", "requested_model": "claude-fable-5-1",
+        inp.update({"agent_type": "coder-opus46", "from_model": "claude-opus-4-6",
+                    "to_model": "claude-opus-5", "requested_model": "claude-opus-4-6",
                     "source": "fallback"})
         self.run_hook("model_switch", inp)
         row = self._last()
@@ -1330,32 +1334,14 @@ class ToastPolicyTest(LedgerCase):
 
     def test_true_is_all_and_false_is_off(self):
         self.set_toast(True)
-        self._stop("Task T3 done, committed.")
+        self._notification("idle_prompt")
         row = self._last()
-        self.assertEqual((row["cause"], row["level"], row["sent"]), ("stop", "all", 1))
+        self.assertEqual((row["cause"], row["level"], row["sent"]), ("idle", "all", 1))
         self.set_toast(False)
-        self._stop("Which engine should the closer pin?")
+        self._notification("permission_prompt")
         row = self._last()
-        self.assertEqual((row["cause"], row["level"], row["sent"]), ("question", "off", 0))
+        self.assertEqual((row["cause"], row["level"], row["sent"]), ("permission", "off", 0))
         self.assertEqual(len(self.toasts), 1)
-
-    def test_discuss_subagent_stop_toasts_discussion(self):
-        self._subagent_stop("discuss", "d1111111111111111", "Here is the trade-off. Proceed?")
-        row = self._last()
-        self.assertEqual((row["cause"], row["sent"]), ("discussion", 1))
-        self.assertIn("discussion turn ended", row["title"])
-        self.assertIn("Proceed?", self.toasts[0][1]["PA_TOAST_BODY"])
-
-    def test_discuss_max_subagent_stop_toasts_discussion(self):
-        self._subagent_stop("discuss-max", "d2222222222222222", "Max-effort trade-off. Proceed?")
-        row = self._last()
-        self.assertEqual((row["cause"], row["sent"]), ("discussion", 1))
-
-    def test_discuss_warmer_ping_reply_does_not_toast(self):
-        """3.14.1: the "." reply to a warmer ping ends a turn the developer did not take."""
-        self._subagent_stop("discuss", "d3333333333333333", ".")
-        self.assertEqual(self.toast_rows(), [])
-        self.assertEqual(self.toasts, [])
 
     def test_coder_subagent_stop_writes_no_toast_event(self):
         self._subagent_stop("coder-opus55", "c1111111111111111", "STATUS: done")
@@ -1533,13 +1519,13 @@ class SessionEndTest(LedgerCase):
 
         status_path = os.path.join(self.root, ".run", "status.json")
         with open(status_path, "w", encoding="utf-8") as fh:
-            json.dump({"task": "T3.1", "run_id": "a1b2c3d4000000005", "attempt": 1,
+            json.dump({"task": "T3.1", "run_id": "a1b2c3d4000000008", "attempt": 1,
                       "expert_agent_type": "expert-fable", "kind": "task"}, fh)
         session_end.run({"session_id": self.SID, "cwd": self.root,
                          "reason": "prompt_input_exit"}, self.cfg)
         with open(status_path, encoding="utf-8") as fh:
             st = json.load(fh)
-        self.assertEqual(st["run_id"], "a1b2c3d4000000005")     # not nulled
+        self.assertEqual(st["run_id"], "a1b2c3d4000000008")     # not nulled
         self.assertEqual(st["task"], "T3.1")
         self.assertEqual(st["attempt"], 1)
         self.assertEqual(st["expert_agent_type"], "expert-fable")
@@ -1597,78 +1583,6 @@ class SessionStartRepairsTest(LedgerCase):
         self.assertNotIn("turns 3", json.dumps(out.get("hookSpecificOutput") or {}))
         self.assertFalse(os.path.exists(paths.state_path("repairs_notice.json")))
         self.assertEqual(repairs.pop_notice(), [])
-
-
-class WarmerHooksTest(LedgerCase):
-    """3.9.5 T4: the four hooks drive the warmer, fed the harness's real payloads (probe1, C0025)."""
-
-    def _wfile(self, ext):
-        return os.path.join(self.root, ".run", "warmer", "%s.%s" % (PROBE1_SID, ext))
-
-    def _runs(self):
-        with open(self._wfile("runs"), encoding="utf-8") as fh:
-            return [json.loads(line) for line in fh if line.strip()]
-
-    def _replay(self):
-        for event, inp in read_blocks("probe1.log"):
-            if event == "subagent_stop":
-                target = self.rewrite(inp).get("agent_transcript_path")
-                if target and not os.path.exists(target):
-                    self.write_transcript(target, [usage_line("msg_w1", model="claude-haiku-4-5",
-                                                              inp=100, out=4, ttl="5m")])
-            self.run_hook(event, inp)
-
-    def test_probe_session_spawns_adds_ends_and_stops(self):
-        os.environ["CLAUDE_PID"] = "4242"
-        try:
-            self._replay()
-        finally:
-            os.environ.pop("CLAUDE_PID", None)
-        self.assertEqual(len(self.warmers), 2)             # SessionStart, SubagentStart: no pid file yet
-        self.assertEqual(self.toasts, [])
-        cmd, env = self.warmers[0]
-        self.assertEqual(cmd[cmd.index("-m") + 1], "pa.warmer")
-        self.assertNotIn("-I", cmd)                         # -I would drop PYTHONPATH
-        self.assertEqual(cmd[cmd.index("--project") + 1], self.root)
-        self.assertEqual(cmd[cmd.index("--session") + 1], PROBE1_SID)
-        self.assertEqual(cmd[cmd.index("--pid") + 1], "4242")
-        self.assertTrue(os.path.isdir(os.path.join(env["PYTHONPATH"], "pa")))
-        runs = self._runs()
-        self.assertEqual(runs[0]["add"], PROBE1_AGENT)
-        self.assertEqual(runs[0]["agent_type"], "probe-leaf")
-        self.assertIn("role", runs[0])
-        self.assertEqual(runs[-1], {"end": PROBE1_AGENT})
-        self.assertTrue(os.path.exists(self._wfile("stop")))   # SessionEnd
-        self.assertFalse(os.path.exists(self._wfile("pid")))
-
-    def test_a_live_pid_file_means_no_second_daemon(self):
-        start = [inp for ev, inp in read_blocks("probe1.log") if ev == "session_start"][0]
-        os.makedirs(os.path.dirname(self._wfile("pid")))
-        with open(self._wfile("pid"), "w", encoding="utf-8") as fh:
-            fh.write("%d\n" % os.getpid())
-        self.run_hook("session_start", start)
-        self.assertEqual(self.warmers, [])
-
-    def test_warmer_off_in_pa_json_spawns_nothing(self):
-        with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
-            json.dump({"pa_version": "3.0.0", "project": "hooks-test", "warmer": "off"}, fh)
-        start = [inp for ev, inp in read_blocks("probe1.log") if ev == "session_start"][0]
-        self.run_hook("session_start", start)
-        self.assertEqual(self.warmers, [])
-
-    def test_pa_warmer_off_env_never_reaches_spawn_detached(self):
-        """3.9.5 T8: ``PA_WARMER_OFF=1`` (the tests' switch) stops SessionStart and SubagentStart."""
-        os.environ["PA_WARMER_OFF"] = "1"
-        try:
-            with mock.patch.object(notify, "spawn_detached") as spawn:
-                for event, inp in read_blocks("probe1.log"):
-                    if event in ("session_start", "subagent_start"):
-                        self.run_hook(event, inp)
-        finally:
-            os.environ.pop("PA_WARMER_OFF", None)
-        spawn.assert_not_called()
-        self.assertEqual(self.warmers, [])
-        self.assertEqual(self._runs()[0]["add"], PROBE1_AGENT)     # the runs line is still written
 
 
 class SummaryTest(LedgerCase):
@@ -1766,9 +1680,9 @@ class DetachedRebuildTest(LedgerCase):
     def test_stale_lock_is_taken_over(self):
         self.run_rebuilds = False
         dead = 999999
-        from pa import warmer
+        from pa import fsutil
 
-        self.assertFalse(warmer.pid_alive(dead))
+        self.assertFalse(fsutil.pid_alive(dead))
         for content, age in (("%d rebuild\n" % dead, 0), ("%d rebuild\n" % os.getpid(), 700)):
             with self.subTest(lock=content.strip(), age=age):
                 self._clear()
@@ -1922,7 +1836,7 @@ class RefreshGrownRunsTest(LedgerCase):
     """T1.c2: a run's last request is picked up when its transcript grows after lock."""
 
     SID = "refresh-s"
-    AGENT = "a777777700000000d"
+    AGENT = "a7777777000000018"
 
     def _lock_and_grow(self):
         """Lock a subagent, then append one more usage line to its transcript."""
@@ -2054,7 +1968,7 @@ class ServedOutlineTest(LedgerCase):
     """3.9.5 T11: a denied whole Read serves the outline; the ranged Read after it is credited."""
 
     SID = "outline-session"
-    AGENT = "a4444444000000009"
+    AGENT = "a444444400000000f"
 
     def _big_py(self):
         path = os.path.join(self.root, "pa", "big.py").replace("\\", "/")
@@ -2364,7 +2278,8 @@ class EntryPointTest(unittest.TestCase):
         self.assertEqual(proc.returncode, 0)
         self.assertFalse(os.path.exists(os.path.join(self.dir, "ledger.sqlite")))
 
-    def test_clear_reseeds_the_router_through_context(self):
+    def test_clear_prints_no_router_reseed(self):
+        """3.24 T3.2: the mod re-arms after /clear (autopilot.tsx SessionStart); no seed-only nudge."""
         os.makedirs(os.path.join(self.dir, ".claude"), exist_ok=True)
         with open(os.path.join(self.dir, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
             json.dump({"pa_version": "3.0.0", "project": "demo"}, fh)
@@ -2372,11 +2287,7 @@ class EntryPointTest(unittest.TestCase):
                               "source": "clear", "cwd": self.dir})
         proc = self._run("session_start", payload)
         self.assertEqual(proc.returncode, 0)
-        self.assertIn("launch.py --seed-only", proc.stdout.decode("utf-8", "replace"))
-        payload = json.dumps({"session_id": "y", "hook_event_name": "SessionStart",
-                              "source": "startup", "cwd": self.dir})
-        proc = self._run("session_start", payload)
-        self.assertNotIn("seed-only", proc.stdout.decode("utf-8", "replace"))   # only a clear needs the nudge
+        self.assertNotIn("seed-only", proc.stdout.decode("utf-8", "replace"))
 
     def test_unknown_event_is_logged_not_crashed(self):
         proc = self._run("not_a_hook", "{}")
@@ -2506,7 +2417,7 @@ class TestMemoryLink(LedgerCase):
     def test_subagent_session_does_nothing(self):
         inp = {"session_id": "mem-test-002", "source": "startup",
                "cwd": self.root, "agent_type": "retriever-code",
-               "agent_id": "a1234567000000003"}
+               "agent_id": "a1234567000000005"}
         self.run_hook("session_start", inp)
         proj_mem = self._proj_mem()
         self.assertFalse(self._is_link(proj_mem))
@@ -2602,7 +2513,7 @@ class ProgressFromKillTest(LedgerCase):
         return os.path.join(self.root, "phase-ends", "current", "TASK_PROGRESS.md")
 
     def test_resume_writes_progress_with_header_and_sections(self):
-        run_id = "a1234567000000003"
+        run_id = "a1234567000000005"
         tp, _agent_tp = self._make_transcript(run_id)
         self._status(run_id)
         os.makedirs(os.path.join(self.root, "phase-ends", "current"), exist_ok=True)
@@ -2614,7 +2525,7 @@ class ProgressFromKillTest(LedgerCase):
         self.assertIn("# TASK_PROGRESS -- T3 attempt 1", text)
         self.assertIn("Task: T3 the test task", text)
         self.assertIn("Agent: expert-fable", text)
-        self.assertIn("Run: a1234567000000003", text)
+        self.assertIn("Run: a1234567000000005", text)
         self.assertIn("## Done so far", text)
         self.assertIn("Read -- /proj/foo.py", text)
         self.assertIn("Bash -- python -m unittest discover -s tests", text)
@@ -2628,7 +2539,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_12_call_cap(self):
         """Only the last 12 tool calls appear."""
-        run_id = "a2222222000000006"
+        run_id = "a222222200000000a"
         calls = [("Read", {"file_path": "/proj/f%d.py" % i}) for i in range(20)]
         tp, _agent_tp = self._make_transcript(run_id, tool_calls=calls,
                                               text_blocks=["last text"])
@@ -2646,7 +2557,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_three_text_blocks_in_flight(self):
         """Only the last 3 text blocks appear in ## In flight."""
-        run_id = "a3333333000000008"
+        run_id = "a333333300000000e"
         texts = ["text block %d" % i for i in range(6)]
         tp, _agent_tp = self._make_transcript(run_id, tool_calls=[], text_blocks=texts)
         self._status(run_id)
@@ -2661,7 +2572,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_subagent_session_writes_nothing(self):
         """A subagent's SessionStart must not write progress."""
-        run_id = "a4444444000000009"
+        run_id = "a444444400000000f"
         tp, _agent_tp = self._make_transcript(run_id)
         self._status(run_id)
         os.makedirs(os.path.join(self.root, "phase-ends", "current"), exist_ok=True)
@@ -2672,7 +2583,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_existing_progress_is_kept_and_the_digest_appended_once(self):
         """An expert-written TASK_PROGRESS.md is never replaced: the digest is appended, once."""
-        run_id = "a555555500000000a"
+        run_id = "a5555555000000012"
         killed_at = "2026-09-20T22:01:39Z"
         tp, _agent_tp = self._make_transcript(run_id)
         self._status(run_id, killed_at=killed_at)
@@ -2695,7 +2606,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_missing_transcript_writes_nothing(self):
         """When the killed transcript is missing, nothing is written."""
-        run_id = "a666666600000000c"
+        run_id = "a6666666000000016"
         self._status(run_id)
         os.makedirs(os.path.join(self.root, "phase-ends", "current"), exist_ok=True)
         tp = os.path.join(self.projects, "slug", self.SID + ".jsonl")
@@ -2791,6 +2702,97 @@ class ManagedEditTest(LedgerCase):
                 names.add(node.module.split(".")[0])
         self.assertLessEqual(names, {"json", "os", "sys", "time"})
         self.assertNotIn("hashlib", src)
+
+
+class ModHooksTest(LedgerCase):
+    """3.22: hooks in a governed project (3.24 T3.2: always a mod session, ``"mod": "on"`` or not)."""
+
+    SID = "mod-s"
+    PEER = ('<agent-message from="a5b6389c000000014">\n[Subagent hand-back] The text below is the '
+            'final report of a subagent this session delegated to.\n  STATUS: done\n  all good')
+
+    def _mod(self, on=True):
+        doc = {"pa_version": "3.0.0", "project": "hooks-test"}
+        if on:
+            doc["mod"] = "on"
+        with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
+            json.dump(doc, fh)
+        hooks._PROJECT_ROOTS.clear()
+
+    def _stop(self, message):
+        from pa.hooks import stop
+
+        return stop.run({"session_id": self.SID, "cwd": self.root, "last_assistant_message": message,
+                         "transcript_path": os.path.join(self.projects, "slug", self.SID + ".jsonl")},
+                        self.cfg)
+
+    def _marker(self):
+        return os.path.exists(paths.waiting_path(self.SID))
+
+    def test_session_kind_is_mod(self):
+        self._mod()
+        self.assertEqual(hooks.session_kind(None, self.cfg, self.root), "mod")
+        self._mod(on=False)
+        self.assertEqual(hooks.session_kind("router", self.cfg, self.root), "mod")
+        self.assertEqual(hooks.session_kind(None, self.cfg), "other")       # ungoverned
+
+    def test_stop_sends_no_toast_under_mod(self):
+        self._mod()
+        self._stop("Which engine should we pin?")
+        self.assertEqual(self.toasts, [])
+        self.assertEqual(self.toast_rows()[-1]["reason"], "mod")
+        self.assertTrue(self._marker())                     # a real question still marks waiting
+
+    def test_review_stop_sends_no_toast(self):
+        """3.23 T13d.c9: a REVIEW.md stop under the mod sends nothing (3.24 T3.2: mod key or not)."""
+        cur = os.path.join(self.root, "phase-ends", "current")
+        os.makedirs(cur, exist_ok=True)
+        with open(os.path.join(cur, "REVIEW.md"), "w", encoding="utf-8") as fh:
+            fh.write("# review\n")
+        self._mod()
+        self._stop("T4 paused for review.")
+        self.assertEqual(self.toasts, [])
+        self.assertEqual((self.toast_rows()[-1]["cause"], self.toast_rows()[-1]["reason"]),
+                         ("review", "mod"))
+        self._mod(on=False)
+        self._stop("T4 paused for review.")
+        self.assertEqual(self.toasts, [])
+
+    def test_stub_turn_neither_sets_nor_clears_the_marker(self):
+        self._mod()
+        self._stop("Which engine should we pin?")
+        self.assertTrue(self._marker())
+        self._stop("‹sent›")
+        self.assertTrue(self._marker())                     # not cleared
+        hooks.waiting_clear(self.SID)
+        self._stop(" ‹sent›\n")
+        self.assertFalse(self._marker())                    # not set
+
+    def test_without_the_mod_key_still_a_mod_session(self):
+        """3.24 T3.2: no ``mod`` key in pa.json: no toast, the stub leaves the marker alone."""
+        self._stop("Which engine should we pin?")
+        self.assertEqual(self.toasts, [])
+        self._stop("‹sent›")
+        self.assertTrue(self._marker())
+
+    def test_peer_hand_back_records_last_return(self):
+        from pa.hooks import user_prompt_submit as ups
+
+        fields = ups.parse_notification(self.PEER)
+        self.assertEqual(fields["task-id"], "a5b6389c000000014")
+        ups.run({"session_id": self.SID, "cwd": self.root, "prompt": self.PEER}, self.cfg)
+        ret = running.session(self.SID)["last_return"]
+        self.assertEqual(ret["agent_id"], "a5b6389c000000014")
+        self.assertEqual(ret["contract"], "done")
+        self.assertEqual(ups.parse_notification("hello <agent-message from=\"x\">"), {})
+
+    def test_marker_prompt_is_ignored(self):
+        from pa.hooks import user_prompt_submit as ups
+
+        prompt = "‹pa reply r1›\n" + self.PEER
+        self.assertIsNone(ups.run({"session_id": self.SID, "cwd": self.root, "prompt": prompt},
+                                  self.cfg))
+        self.assertNotIn("last_return", running.session(self.SID))
 
 
 if __name__ == "__main__":

@@ -64,7 +64,7 @@ class UnstopTest(unittest.TestCase):
         self.root = _setup_project(self.tmpdir)
 
         # transcript layout: session_dir strips .jsonl; subagents_dir appends /subagents
-        self.sid = "aaaa1111-0000-4000-8000-00000000000f"
+        self.sid = "aaaa1111-0000-4000-8000-000000000103"
         self.base = os.path.join(self.tmpdir, "transcripts")
         self.transcript_path = os.path.join(self.base, self.sid + ".jsonl")
         os.makedirs(os.path.dirname(self.transcript_path), exist_ok=True)
@@ -267,7 +267,13 @@ class LadderReconcileTest(unittest.TestCase):
         self.cfg_dir = os.path.join(self.tmpdir, "claude")
         self._old_cfg = os.environ.get("CLAUDE_CONFIG_DIR")
         os.environ["CLAUDE_CONFIG_DIR"] = self.cfg_dir
-        pkg_agents = os.path.join(self.cfg_dir, "pa3-src", "project-architect-3.0", "agents")
+        # 3.24 T4: the fix-up reads the installed root's agents (<pa3>/agents), never the clone
+        import pa.paths as _paths
+        pa3_dir = os.path.join(self.tmpdir, "pa3")
+        self._orig_install_dir = _paths.install_dir
+        _paths.install_dir = lambda: pa3_dir
+        pkg_agents = os.path.join(pa3_dir, "agents")
+        os.makedirs(self.cfg_dir)
         os.makedirs(pkg_agents)
         for agent in ladder.MANAGED:
             shutil.copy(os.path.join(ROOT, "agents", agent + ".md"), pkg_agents)
@@ -275,6 +281,8 @@ class LadderReconcileTest(unittest.TestCase):
         os.makedirs(self.agents)
 
     def _cleanup(self):
+        import pa.paths as _paths
+        _paths.install_dir = getattr(self, "_orig_install_dir", _paths.install_dir)
         self.conn.close()
         os.environ.pop("PA_LEDGER_DIR", None)
         if self._old_cfg is not None:
@@ -290,8 +298,9 @@ class LadderReconcileTest(unittest.TestCase):
                   newline="") as fh:
             return fh.read().replace("\r\n", "\n")
 
-    def _install(self, preset, pa_preset=None):
-        """The six agents rendered at ``preset`` with an unedited record; pa.json ``preset``."""
+    def _install(self, preset, pa_preset=None, mod="on"):
+        """The six agents rendered at ``preset`` with an unedited record; pa.json ``preset``
+        and ``mod`` (3.24 T17d: the reconcile runs only under ``mod: on``; None drops the key)."""
         files = {}
         for agent in self.ladder.MANAGED:
             rel = ".claude/agents/%s.md" % agent
@@ -307,6 +316,8 @@ class LadderReconcileTest(unittest.TestCase):
         pa = {"project": "test", "tier": "max5", "warmer": "off"}
         if pa_preset:
             pa["preset"] = pa_preset
+        if mod is not None:
+            pa["mod"] = mod
         with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8",
                   newline="\n") as fh:
             fh.write(json.dumps(pa, indent=2) + "\n")
@@ -323,6 +334,13 @@ class LadderReconcileTest(unittest.TestCase):
     def _pa(self):
         with open(os.path.join(self.root, ".claude", "pa.json"), encoding="utf-8") as fh:
             return json.load(fh)
+
+    def _absent(self, *tiers):
+        """3.25 T6a: no base row is absent at any tier now; pa-thinker plays the old expert-fable at ``tiers``."""
+        for tier in tiers:
+            p = mock.patch.dict(self.ladder.PRESETS[tier], {"pa-thinker": None})
+            p.start()
+            self.addCleanup(p.stop)
 
     def _stamp(self, tier):
         from pa import accounts
@@ -350,24 +368,26 @@ class LadderReconcileTest(unittest.TestCase):
         self._reconcile()
         self.assertEqual(self._snapshot(), before)
 
-    def test_downgrade_removes_expert_fable_and_rerenders(self):
+    def test_downgrade_removes_an_absent_agent_and_rerenders(self):
+        self._absent("max5", "pro")
         self._install("max20", pa_preset="max20")
         self._stamp("max5")
         self._reconcile()
-        self.assertFalse(os.path.exists(os.path.join(self.agents, "expert-fable.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.agents, "pa-thinker.md")))
         self.assertEqual(self.ladder.mismatches(self.agents, "max5"), [])
         files = self._record()["files"]
-        self.assertEqual(files[".claude/agents/expert-fable.md"],
+        self.assertEqual(files[".claude/agents/pa-thinker.md"],
                          {"absent": "tier", "base": None, "sha": None, "user": None})
-        with open(os.path.join(self.agents, "plain.md"), "rb") as fh:
-            self.assertEqual(files[".claude/agents/plain.md"]["sha"], self.managed.sha(fh.read()))
+        with open(os.path.join(self.agents, "auditor.md"), "rb") as fh:
+            self.assertEqual(files[".claude/agents/auditor.md"]["sha"], self.managed.sha(fh.read()))
         self.assertEqual(self._record()["git"], "abc")
         pa = self._pa()
         self.assertEqual((pa["preset"], pa["tier"], pa["warmer"]), ("max5", "max5", "off"))
 
     def test_edited_absent_agent_kept(self):
+        self._absent("max5", "pro")
         self._install("max20", pa_preset="max20")
-        path = os.path.join(self.agents, "expert-fable.md")
+        path = os.path.join(self.agents, "pa-thinker.md")
         with open(path, "a", encoding="utf-8", newline="") as fh:
             fh.write("\nmy own note\n")
         self._stamp("pro")
@@ -376,24 +396,39 @@ class LadderReconcileTest(unittest.TestCase):
             self._reconcile()
         self.assertTrue(os.path.exists(path))
         self.assertIn("ladder_reconcile_kept", [c.args[0] for c in lg.call_args_list])
-        self.assertIsNone(self._record()["files"][".claude/agents/expert-fable.md"].get("absent"))
+        self.assertIsNone(self._record()["files"][".claude/agents/pa-thinker.md"].get("absent"))
 
-    def test_upgrade_installs_expert_fable_from_package(self):
+    def test_upgrade_installs_an_absent_agent_from_package(self):
+        self._absent("max5", "pro")
         self._install("max5", pa_preset="max5")
         self._stamp("max20")
         self._reconcile()
-        with open(os.path.join(self.agents, "expert-fable.md"), "rb") as fh:
+        with open(os.path.join(self.agents, "pa-thinker.md"), "rb") as fh:
             data = fh.read()
-        self.assertEqual(data, self._pkg("expert-fable").encode("utf-8"))
-        ent = self._record()["files"][".claude/agents/expert-fable.md"]
+        self.assertEqual(data, self._pkg("pa-thinker").encode("utf-8"))
+        ent = self._record()["files"][".claude/agents/pa-thinker.md"]
         self.assertEqual(ent["sha"], self.managed.sha(data))
         self.assertIsNone(ent["user"])
         self.assertNotIn("absent", ent)
         self.assertEqual(self.ladder.mismatches(self.agents, "max20"), [])
 
+    def test_installs_the_thinker(self):
+        """3.24 T3.1: the thinker is a plain ladder agent (was mod-on only; the Gen 3 test left)."""
+        self._absent("pro")
+        self._install("pro", pa_preset="pro")   # pa-thinker made absent at pro
+        self.assertFalse(os.path.exists(os.path.join(self.agents, "pa-thinker.md")))
+        self._stamp("max5")
+        self._reconcile()
+        with open(os.path.join(self.agents, "pa-thinker.md"), "r", encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("\nmodel: claude-opus-5-5[1m]\neffort: max\n", text)
+        ent = self._record()["files"][".claude/agents/pa-thinker.md"]
+        self.assertEqual(ent["sha"], self.managed.sha(text.encode("utf-8")))
+        self.assertEqual(self.ladder.mismatches(self.agents, "max5"), [])
+
     def test_user_edited_body_kept_model_rewritten(self):
         self._install("max20", pa_preset="max20")
-        rel = ".claude/agents/critic.md"
+        rel = ".claude/agents/auditor.md"
         path = os.path.join(self.root, rel)
         with open(path, "a", encoding="utf-8", newline="") as fh:
             fh.write("\nuser line\n")
@@ -415,24 +450,70 @@ class LadderReconcileTest(unittest.TestCase):
         self._install("max20", pa_preset="max20")
         self._stamp("max20")
         pa = self._pa()
-        pa["ladder"] = {"critic": {"effort": "high"}}
+        pa["ladder"] = {"auditor": {"effort": "high"}}
         with open(os.path.join(self.root, ".claude", "pa.json"), "w") as fh:
             json.dump(pa, fh)
         before = self._snapshot()
         self._reconcile({"session_id": "s", "cwd": self.root, "agent_id": "a1"})
         self.assertEqual(self._snapshot(), before)
         self._reconcile()
-        with open(os.path.join(self.agents, "critic.md"), encoding="utf-8") as fh:
+        with open(os.path.join(self.agents, "auditor.md"), encoding="utf-8") as fh:
             self.assertIn("effort: high\n", fh.read())
 
     def test_probe_payload_writes_nothing(self):
         """T8.c1: doctor's latency probe (``pa_probe``) never mutates the project."""
+        self._absent("max5")
         self._install("max20", pa_preset="max20")
         self._stamp("max5")
         before = self._snapshot()
         self._reconcile({"session_id": "s", "cwd": self.root, "pa_probe": True})
         self.assertEqual(self._snapshot(), before)
-        self.assertTrue(os.path.exists(os.path.join(self.agents, "expert-fable.md")))
+        self.assertTrue(os.path.exists(os.path.join(self.agents, "pa-thinker.md")))
+
+    def _tree(self):
+        """Every file under the project root: ``{rel: (mtime_ns, bytes)}``."""
+        out = {}
+        for d, _dirs, names in os.walk(self.root):
+            for n in names:
+                p = os.path.join(d, n)
+                with open(p, "rb") as fh:
+                    out[os.path.relpath(p, self.root)] = (os.stat(p).st_mtime_ns, fh.read())
+        return out
+
+    def _run_start(self):
+        """run() at a main-session startup with the account on max5; network and offers patched."""
+        self._stamp("max5")
+        from pa.hooks import session_start as ss
+        inp = {"session_id": "dddd1111-0000-4000-8000-000000000156", "source": "startup",
+               "cwd": self.root}
+        with mock.patch.object(ss.accounts, "auth_status",
+                               return_value={"email": self.EMAIL, "source": "auth"}),                 mock.patch.object(ss.accounts, "restamp_tier"),                 mock.patch.object(ss, "_offer_parts", return_value=None),                 mock.patch.object(ss, "_update_check", return_value=None),                 mock.patch.object(ss, "_record_behind", return_value=None),                 mock.patch.dict(os.environ, {"PA_MOD_OFF": ""}):
+            ss.run(inp, config.defaults())
+
+    def test_mod_off_and_premod_untouched(self):
+        """3.24 T17d: a ``mod: off`` project and a 3.15.3-layout one (no ``mod`` key) on a stale
+        ladder are left byte-identical by session start: no agent, record or pa.json write."""
+        self._absent("pro")
+        for mod in ("off", None):
+            with self.subTest(mod=mod):
+                for n in os.listdir(self.agents):
+                    os.remove(os.path.join(self.agents, n))
+                self._install("pro", pa_preset="pro", mod=mod)   # max5 adds pa-thinker
+                before = self._tree()
+                self._run_start()
+                self.assertEqual(self._tree(), before)
+                self.assertFalse(os.path.exists(os.path.join(self.agents, "pa-thinker.md")))
+
+    def test_mod_on_reconciles_at_start(self):
+        """3.24 T17d: a ``mod: on`` project still gets its ladder reconcile from session start."""
+        self._absent("pro")
+        self._install("pro", pa_preset="pro")
+        from pa import health
+        with mock.patch.object(health, "session_start", return_value=None):
+            self._run_start()
+        self.assertTrue(os.path.exists(os.path.join(self.agents, "pa-thinker.md")))
+        self.assertEqual(self.ladder.mismatches(self.agents, "max5"), [])
+        self.assertEqual(self._pa()["preset"], "max5")
 
     def _timed_run(self, between=None):
         """run() on the governed project (tier from the temp credentials: max20), warmed once;
@@ -446,8 +527,7 @@ class LadderReconcileTest(unittest.TestCase):
                                return_value={"email": self.EMAIL, "source": "auth"}), \
                 mock.patch.object(ss, "_offer_install", return_value=None), \
                 mock.patch.object(ss, "_update_check", return_value=None), \
-                mock.patch.object(ss, "_record_behind", return_value=None), \
-                mock.patch("pa.warmer.start_if_needed"):
+                mock.patch.object(ss, "_record_behind", return_value=None):
             ss.run(inp, config.defaults())          # warm the imports once
             if between:
                 between()
@@ -464,13 +544,13 @@ class LadderReconcileTest(unittest.TestCase):
 
     def test_timed_one_mismatch(self):
         self._install("max20", pa_preset="max20")
-        path = os.path.join(self.agents, "plain.md")
+        path = os.path.join(self.agents, "pa-thinker.md")   # 3.24 T3.1: was plain.md (effort: high); 3.25: deep-thinker
 
         def lower_effort():
             with open(path, "r", encoding="utf-8", newline="") as fh:
                 text = fh.read()
             with open(path, "w", encoding="utf-8", newline="") as fh:
-                fh.write(text.replace("effort: high", "effort: low"))
+                fh.write(text.replace("effort: max", "effort: low"))
         dt, _ = self._timed_run(lower_effort)
         self.assertLess(dt, 0.6)
         self.assertEqual(self.ladder.mismatches(self.agents, "max20"), [])
@@ -645,6 +725,8 @@ class UpdateCheckTest(unittest.TestCase):
         os.makedirs(os.path.join(self.clone, "project-architect-3.0"))
         with open(os.path.join(self.clone, "project-architect-3.0", "f.txt"), "w") as fh:
             fh.write("v1\n")
+        with open(os.path.join(self.clone, "project-architect-3.0", "VERSION"), "w") as fh:
+            fh.write("3.11\n")                    # 3.24 T4 / I48: the package VERSION decides offers
         _git_run(["-C", self.clone, "add", "-A"])
         _git_run(["-C", self.clone, "commit", "-q", "-m", "initial"])
         _git_run(["-C", self.clone, "push", "-q", "origin", "HEAD"])
@@ -699,6 +781,20 @@ class UpdateCheckTest(unittest.TestCase):
         _git_run(["-C", self.pusher, "commit", "-q", "-m", msg])
         _git_run(["-C", self.pusher, "push", "-q", "origin", "HEAD"])
 
+    def _set_version(self, version, msg="release"):
+        """I48: push a package VERSION bump (a release) to origin."""
+        with open(os.path.join(self.pusher, "project-architect-3.0", "VERSION"), "w") as fh:
+            fh.write(version + "\n")
+        _git_run(["-C", self.pusher, "add", "-A"])
+        _git_run(["-C", self.pusher, "commit", "-q", "-m", msg])
+        _git_run(["-C", self.pusher, "push", "-q", "origin", "HEAD"])
+
+    def _release(self, msg, version="3.12"):
+        """A package change and a VERSION bump in one commit."""
+        with open(os.path.join(self.pusher, "project-architect-3.0", "f.txt"), "a") as fh:
+            fh.write(msg + "\n")
+        self._set_version(version, msg)
+
     def _inp(self, cwd=None):
         return {"session_id": "test-update", "source": "startup",
                 "cwd": cwd or os.path.join(self.tmpdir, "ledger")}
@@ -731,7 +827,7 @@ class UpdateCheckTest(unittest.TestCase):
         root = self._governed()
         from pa.hooks.session_start import _update_check
         # branch 2: behind > 0
-        self._push("project-architect-3.0/f.txt", "feature Z")
+        self._release("feature Z")
         result = _update_check(self._inp(root), config.defaults())
         self.assertIn("update available", result)
         self._assert_steps(result, root)
@@ -798,7 +894,7 @@ class UpdateCheckTest(unittest.TestCase):
     def test_legacy_behind_clone_names_project_refresh(self):
         root = self._governed()
         self._write_version(tree=False)
-        self._push("project-architect-3.0/f.txt", "feature L")
+        self._release("feature L")
         _git_run(["-C", self.clone, "pull", "-q"])
         from pa.hooks.session_start import _update_check
         result = _update_check(self._inp(root), config.defaults())
@@ -806,7 +902,7 @@ class UpdateCheckTest(unittest.TestCase):
         self._assert_steps(result, root)
 
     def test_ungoverned_offer_root_only(self):
-        self._push("project-architect-3.0/f.txt", "feature U")
+        self._release("feature U")
         from pa.hooks.session_start import _update_check
         result = _update_check(self._inp(), config.defaults())
         self._assert_steps(result, None)
@@ -821,43 +917,57 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertEqual(stamp["tree"], self.tree)
         self.assertEqual(stamp["remote_tree"], self.tree)
 
-    def test_package_commit_offers(self):
+    def test_package_commit_without_release_is_silent(self):
+        """I48: a changed package tree with the same VERSION (unreleased code) never offers."""
+        self._push("project-architect-3.0/f.txt", "feature W")
+        from pa.hooks.session_start import _update_check
+        self.assertIsNone(_update_check(self._inp(), config.defaults()))
+
+    def test_release_commit_offers(self):
         self._push("bench/results/2026-09-28.json", "bench: results")
-        self._push("project-architect-3.0/f.txt", "feature Y")
+        self._release("feature Y")
         from pa.hooks.session_start import _update_check
         result = _update_check(self._inp(), config.defaults())
         self.assertIsNotNone(result)
         self.assertIn("update available", result)
         self.assertIn("1 commits", result)
         self.assertIn("feature Y", result)
+        self.assertIn("(version 3.11 -> 3.12)", result)
         self.assertNotIn("bench: results", result)
 
     def test_version_only_change_offers_and_names_version(self):
-        """I11: same package tree, the clone's VERSION differs from the installed version: line."""
-        self._push("project-architect-3.0/VERSION", "3.11")
+        """I11/I48: the clone's VERSION above the installed version: line offers; equal or below
+        (a clone below the root) is silent."""
+        self._set_version("3.12")
         _git_run(["-C", self.clone, "pull", "-q"])
         r = _git_run(["-C", self.clone, "rev-parse", "HEAD:project-architect-3.0"],
                      capture_output=True, text=True)
         self.tree = r.stdout.strip()
-        self._write_version(tree=True, version="3.10")
+        self._write_version(tree=True, version="3.11")
         from pa.hooks.session_start import _update_check
         result = _update_check(self._inp(), config.defaults())
         self.assertIsNotNone(result)
-        self.assertIn("(version 3.10 -> 3.11)", result)
-        self._write_version(tree=True, version="3.11")    # versions and trees agree: silent
+        self.assertIn("(version 3.11 -> 3.12)", result)
+        self._write_version(tree=True, version="3.12")    # versions and trees agree: silent
+        self.assertIsNone(_update_check(self._inp(), config.defaults()))
+        self._write_version(tree=False, version="3.13")   # the clone below the root: silent
         self.assertIsNone(_update_check(self._inp(), config.defaults()))
 
-    def test_legacy_version_without_tree_offers(self):
+    def test_legacy_version_without_tree_offers_releases_only(self):
+        """I48: a VERSION without tree: follows the same rule (was: any new commit offered)."""
         self._write_version(tree=False)
         self._push("bench/results/2026-09-28.json", "bench: results")
         from pa.hooks.session_start import _update_check
+        self.assertIsNone(_update_check(self._inp(), config.defaults()))
+        self._set_version("3.12")
+        os.remove(os.path.join(self.pa3_dir, "update.json"))     # fetch again
         result = _update_check(self._inp(), config.defaults())
         self.assertIsNotNone(result)
         self.assertIn("update available", result)
-        self.assertIn("bench: results", result)
+        self.assertIn("(version 3.11 -> 3.12)", result)
 
     def test_update_behind_by_one(self):
-        self._push("project-architect-3.0/f.txt", "feature X")
+        self._release("feature X")
         from pa.hooks.session_start import _update_check
         result = _update_check(self._inp(), config.defaults())
         self.assertIsNotNone(result)
@@ -871,21 +981,16 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertEqual(stamp["behind"], 1)
         self.assertEqual(stamp["status"], "ok")
 
-    def test_second_call_within_window(self):
-        self._push("project-architect-3.0/f.txt", "feature X")
+    def test_second_call_fetches_again(self):
+        """3.28 T5: no once-a-day window: every check fetches."""
+        self._release("feature X")
         from pa.hooks.session_start import _update_check
         cfg = config.defaults()
         result1 = _update_check(self._inp(), cfg)
         self.assertIsNotNone(result1)
-        stamp_path = os.path.join(self.pa3_dir, "update.json")
-        with open(stamp_path, encoding="utf-8") as fh:
-            stamp1 = fh.read()
         result2, fetches = self._counting(_update_check, cfg)
         self.assertEqual(result2, result1)
-        self.assertEqual(fetches, 0)
-        with open(stamp_path, encoding="utf-8") as fh:
-            stamp2 = fh.read()
-        self.assertEqual(stamp1, stamp2)
+        self.assertEqual(fetches, 1)
 
     def _counting(self, fn, cfg):
         """Run fn(self._inp(), cfg) counting `git fetch` invocations; return (result, count)."""
@@ -909,26 +1014,20 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertIsNone(_update_check(self._inp(), cfg))
         result, fetches = self._counting(_update_check, cfg)
         self.assertIsNone(result)
-        self.assertEqual(fetches, 0)
+        self.assertEqual(fetches, 1)
 
-    def test_fresh_stamp_after_push_offers_from_cached_remote(self):
+    def test_fresh_stamp_does_not_skip_the_fetch(self):
+        """3.28 T5: a stamp written a moment ago no longer skips the fetch; a new release offers at once."""
         from pa.hooks.session_start import _update_check
         cfg = config.defaults()
         self.assertIsNone(_update_check(self._inp(), cfg))
-        stamp_path = os.path.join(self.pa3_dir, "update.json")
-        with open(stamp_path, encoding="utf-8") as fh:
-            stamp1 = fh.read()
-        self._push("project-architect-3.0/f.txt", "feature F")
+        self._release("feature F")
         result, fetches = self._counting(_update_check, cfg)
-        self.assertIsNone(result)           # the stamp skips the fetch: origin/main is stale
-        self.assertEqual(fetches, 0)
-        _git_run(["-C", self.clone, "fetch", "-q"])
-        result, fetches = self._counting(_update_check, cfg)
-        self.assertEqual(fetches, 0)
+        self.assertEqual(fetches, 1)
         self.assertIn("1 commits", result)
         self.assertIn("feature F", result)
-        with open(stamp_path, encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), stamp1)
+        with open(os.path.join(self.pa3_dir, "update.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.loads(fh.read())["behind"], 1)   # the stamp is rewritten
 
     def test_unreachable_origin_offline(self):
         _git_run(["-C", self.clone, "remote", "set-url", "origin",
@@ -953,12 +1052,22 @@ class RecordBehindTest(unittest.TestCase):
         self.clone = os.path.join(self.tmpdir, "clone")
         _init_repo(self.clone)
         self.old = self._head()
-        _git_run(["-C", self.clone, "commit", "--allow-empty", "-q", "-m", "second"])
+        os.makedirs(os.path.join(self.clone, "project-architect-3.0"))
+        with open(os.path.join(self.clone, "project-architect-3.0", "VERSION"), "w") as fh:
+            fh.write("3.11\n")
+        _git_run(["-C", self.clone, "add", "-A"])
+        _git_run(["-C", self.clone, "commit", "-q", "-m", "second"])
         self.new = self._head()
+        # 3.24 T4 / I48: an upstream, so the released-root check can read @{u}
+        self.origin = os.path.join(self.tmpdir, "origin.git")
+        _git_run(["init", "--bare", "-q", self.origin])
+        _git_run(["-C", self.clone, "remote", "add", "origin", self.origin])
+        _git_run(["-C", self.clone, "push", "-q", "-u", "origin", "HEAD"])
+        self.tree = _git_run(["-C", self.clone, "rev-parse", "HEAD:project-architect-3.0"],
+                             text=True).stdout.strip()
         self.pa3_dir = os.path.join(self.tmpdir, "pa3")
         os.makedirs(self.pa3_dir)
-        with open(os.path.join(self.pa3_dir, "VERSION"), "w", encoding="utf-8", newline="\n") as fh:
-            fh.write("version: 3.11\ngit: %s\n" % self.new)
+        self._version(self.new, self.tree)
         self.root = _setup_project(self.tmpdir)
         import pa.paths as _paths
         self._orig_install_dir = _paths.install_dir
@@ -977,6 +1086,18 @@ class RecordBehindTest(unittest.TestCase):
     def _head(self):
         return _git_run(["-C", self.clone, "rev-parse", "--short", "HEAD"],
                         text=True).stdout.strip()
+
+    def _version(self, git, tree):
+        with open(os.path.join(self.pa3_dir, "VERSION"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write("version: 3.11\ngit: %s\n%s" % (git, ("tree: %s\n" % tree) if tree else ""))
+
+    def _commit_push(self, rel, msg):
+        path = os.path.join(self.clone, rel)
+        with open(path, "a") as fh:
+            fh.write(msg + "\n")
+        _git_run(["-C", self.clone, "add", "-A"])
+        _git_run(["-C", self.clone, "commit", "-q", "-m", msg])
+        _git_run(["-C", self.clone, "push", "-q", "origin", "HEAD"])
 
     def _record(self, git):
         doc = {"format": 1, "files": {}}
@@ -1034,11 +1155,51 @@ class RecordBehindTest(unittest.TestCase):
     def test_record_ahead_or_subagent_silent(self):
         self._record(self.old)
         self.assertIsNone(self._check(agent_id="sub-1"))
-        self.assertIsNone(self._check(source="resume"))
-        with open(os.path.join(self.pa3_dir, "VERSION"), "w", encoding="utf-8") as fh:
-            fh.write("git: %s\n" % self.old)
+        self.assertIsNone(self._check(source="resume"))     # mod off: a resume checks nothing
+        self._version(self.old, self.tree)
         self._record(self.new)                    # record ahead of VERSION: not behind
         self.assertIsNone(self._check())
+
+    def test_resume_checks_only_with_mod_on(self):
+        """3.28 T5: a resume in a ``mod: on`` project checks like a startup; clear and compact never do."""
+        self._record(self.old)
+        with open(os.path.join(self.root, ".claude", "pa.json"), "w") as fh:
+            json.dump({"mod": "on"}, fh)
+        from unittest import mock
+        with mock.patch.dict(os.environ):
+            os.environ.pop("PA_MOD_OFF", None)
+            self.assertIn("(record %s)" % self.old, self._check(source="resume"))
+            self.assertIsNone(self._check(source="clear"))
+            self.assertIsNone(self._check(source="compact"))
+            self.assertIsNone(self._check(source="resume", agent_id="sub-1"))
+
+    def test_release_candidate_root_silent(self):
+        """I48: a root whose tree: is not the clone's @{u} package tree (--no-clone RC) offers nothing."""
+        self._record(self.old)
+        self._version(self.new, "0" * 40)
+        self.assertIsNone(self._check())
+        self._version(self.new, None)              # no tree: at all: not known to be released
+        self.assertIsNone(self._check())
+
+    def test_clone_below_root_silent(self):
+        """I48: the clone's @{u} behind the installed package (tree differs) offers nothing."""
+        self._record(self.old)
+        self._commit_push("project-architect-3.0/VERSION", "3.12")
+        new_tree = _git_run(["-C", self.clone, "rev-parse", "HEAD:project-architect-3.0"],
+                            text=True).stdout.strip()
+        _git_run(["-C", self.clone, "push", "-q", "-f", "origin", "HEAD~1:refs/heads/%s" % self._branch()])
+        _git_run(["-C", self.clone, "fetch", "-q"])
+        self._version(self._head(), new_tree)
+        self.assertIsNone(self._check())
+
+    def test_non_package_commit_after_release_still_offers(self):
+        """I48: a repo-only commit after the release (chore: install) keeps the package tree: offers."""
+        self._record(self.old)
+        self._commit_push("README.md", "chore: install")
+        self.assertIn("(record %s)" % self.old, self._check())
+
+    def _branch(self):
+        return _git_run(["-C", self.clone, "rev-parse", "--abbrev-ref", "HEAD"], text=True).stdout.strip()
 
 
 class AgentNotLoadedTest(unittest.TestCase):
@@ -1096,7 +1257,7 @@ class AgentNotLoadedTest(unittest.TestCase):
         with mock.patch.object(ss, "_offer_install", return_value=None), \
                 mock.patch.object(ss, "_update_check", return_value=None), \
                 mock.patch.object(ss, "_record"), mock.patch.object(ss, "open_db"), \
-                mock.patch.object(ss, "close_db"), mock.patch("pa.warmer.start_if_needed"), \
+                mock.patch.object(ss, "close_db"), \
                 mock.patch.object(ss.accounts, "auth_status", return_value={}), \
                 mock.patch.object(ss.paths, "ensure_ledger_tree"), \
                 mock.patch.object(ss, "_unstop_runs"), mock.patch.object(ss, "_progress_from_kill"), \

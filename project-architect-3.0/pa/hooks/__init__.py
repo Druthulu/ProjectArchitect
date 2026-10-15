@@ -70,10 +70,10 @@ def role_of(inp, cfg=None):
     return config.role_from_agent_type((inp or {}).get("agent_type"), cfg)
 
 
-def pinned_for(inp, cfg=None):
+def pinned_for(inp, cfg=None, tagged=False):
     from .. import config
 
-    return config.pinned_model_for((inp or {}).get("agent_type"), cfg)
+    return config.pinned_model_for((inp or {}).get("agent_type"), cfg, tagged=tagged)
 
 
 def effort_of(inp):
@@ -473,15 +473,14 @@ def project_name(inp):
     return os.path.basename(os.path.normpath(root)) if root else ""
 
 
-def session_kind(agent_type, cfg=None):
-    """``sessions.kind`` for a main-thread ``agent_type`` (design B.1)."""
+def session_kind(agent_type, cfg=None, root=None):
+    """``sessions.kind`` for a main-thread ``agent_type`` (design B.1): ``mod`` in a governed
+    project ``root`` (3.22; 3.24 T3.2: always, the router kinds left with the Gen 3 loop)."""
+    if root:
+        return "mod"
     name = str(agent_type or "").strip().lower()
     if not name:
         return "other"
-    if name.startswith("planner-"):
-        return name
-    if name in ("router", "review"):
-        return name
     from .. import config
 
     role = config.role_from_agent_type(name, cfg)

@@ -20,7 +20,7 @@ phase-ends/
     tasks/INDEX.md  tasks/T<n>.md                    summaries, ≤150 lines, written once
     logs/T<n>.md  logs/T<n>.c<k>.md  logs/T<n>.progress<k>.md   full expert log · coder runs · archived handoffs
     research/INDEX.md  research/R<N>-<nnn>.md        one report per question answered
-    discussions/INDEX.md  discussions/D<n>.md        /proceed records; inbox-<ts>.md, review-<ts>.md
+    discussions/INDEX.md                             inbox items; inbox-<ts>.md, review-<ts>.md
   phase-<N>/                 an archived current/, moved whole by phaseend_index.py --archive (git mv)
   logs/PhaseLog_*.md         PA2 worklogs kept from migration; never read automatically
 ```
@@ -30,8 +30,8 @@ index carries the task as a column instead of the folder binding the file to the
 
 ## In the load order
 
-Nothing here. A session starts from `.run/seed.md`, which the launcher writes: pointers, the task
-lines of the open plan, the next task, and whether `INBOX.md` exists. No PhaseEnd, no plan body,
+Nothing here. A session starts from its seed: pointers, the task lines of the open plan, the next
+task, and whether `INBOX.md` exists. No PhaseEnd, no plan body,
 no log, no report is read at session start, ever.
 
 ## On demand
@@ -45,7 +45,8 @@ no log, no report is read at session start, ever.
 | how it actually went | `phase-ends/*/logs/T<n>.md` — dispatch a retriever; never Read it whole |
 | pre-PA3 history | `LEGACY_INDEX.md` → `logs/PhaseLog_*.md` |
 
-Experts cite report ids and never read the bodies. The router reads none of these files at all.
+Experts cite report ids and never read the bodies. The loop (the mod) reads none of
+these files at all.
 A retriever-digest reads a full log when a question needs it, and writes what it found to
 `research/` so the next one does not start blind.
 

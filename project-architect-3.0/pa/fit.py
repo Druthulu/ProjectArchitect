@@ -677,12 +677,11 @@ def cost_axis(conn, account, started_epoch, epochs, model_filter=None,
     turns from every reader whose account matches are merged, deduped by
     ``msg_id``.  ``conn`` is always included (the local reader).
 
-    Billing note (T30.c2): the harness bills a ``[1m]`` launch model at the
-    long-context premium (``prices.LONG_CONTEXT_MULT``, pa/prices.py:47-48) on
-    every turn, inflating a router session's harness cost by about a third.
-    This axis is the ledger's own per-turn pricing (``turns.cost_usd``, base
-    rates; transcript.py never passes ``long_context``), so the fit is unbiased
-    by it; ``sessions.harness_cost_usd`` (T30.c3) is only a cross-check.
+    Billing note (T30.c2): the harness bills a ``[1m]`` launch model at a
+    long-context premium on every turn, inflating a router session's harness
+    cost by about a third.  This axis is the ledger's own per-turn pricing
+    (``turns.cost_usd``, base rates), so the fit is unbiased by it;
+    ``sessions.harness_cost_usd`` (T30.c3) is only a cross-check.
     """
     import bisect
 

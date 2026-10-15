@@ -257,15 +257,27 @@ class TestPlanEdit(ToolCase):
         self.assertIn("NONE", out)
         self.assertIn("T5", out)
 
-    def test_set_status_done_needs_a_verified_line(self):
+    def test_set_status_done_needs_a_summary_not_a_verified_line(self):
+        # 3.25 T4: the summary is the gate; a summary without a 'Verified:' line passes
         p = self.refused(self.tool("plan_edit.py", "set-status", "T3.1", "done"))
         self.assertIn("no summary", p)
         self.make_summary("T3.1", verified=False)
-        p = self.refused(self.tool("plan_edit.py", "set-status", "T3.1", "done"))
-        self.assertIn("Verified:", p)
-        self.make_summary("T3.1", verified=True)
         self.ok(self.tool("plan_edit.py", "set-status", "T3.1", "done"),
                 "T3.1: next -> done")
+
+    def test_loose_task_line_lints_shows_and_takes_set_status(self):
+        # 3.25 T4: `- T<n> | title: … | done-when: …` with everything else at its default
+        write(self.plan, "# Phase 9 -- loose\nMilestone: it works.\n\n## Triage\n- (none)\n\n"
+                         "## Tasks\n- T1 | title: x | done-when: y\n\n## Changes\n")
+        self.ok(self.tool("plan_edit.py", "lint"), "OK")
+        j = json.loads(self.ok(self.tool("plan_edit.py", "show", "--task", "T1", "--json")))
+        self.assertEqual((j["status"], j["agent"], j["coder"], j["effort"]),
+                         ("queued", "pa-expert", "opus55", "medium"))   # 3.25 T6a: was expert-opus55
+        self.assertEqual((j["files"], j["verify"], j["deps"]), ([], None, []))
+        self.ok(self.tool("plan_edit.py", "set-status", "T1", "next"), "T1: queued -> next")
+        self.assertIn("- T1 | next | title: x | done-when: y\n", read(self.plan))
+        self.ok(self.tool("plan_edit.py", "lint"), "OK")
+        self.ok(self.tool("plan_edit.py", "next", "--brief"), "T1 | next | pa-expert")
 
     def test_set_status_done_on_a_scratch_plan_without_tasks_dir(self):
         scratch = os.path.join(self.root, ".run", "plan_brief.md")
@@ -284,7 +296,7 @@ class TestPlanEdit(ToolCase):
                                 "--by", "router"))
         self.assertIn("T1.1 created (status next", out)
         text = read(self.plan)
-        self.assertIn("- T1.1 | next | expert-opus55 |", text)
+        self.assertIn("- T1.1 | next | pa-expert |", text)
         self.assertIn("title: mask builder, biome four", text)
         self.assertIn("- T1 | superseded", text)
         self.assertIn("router: reopened T1 as T1.1", text)
@@ -321,7 +333,7 @@ class TestPlanEdit(ToolCase):
         text = read(self.plan).split("\n")
         idx = [i for i, x in enumerate(text) if x.startswith("- T6 |")][0]
         self.assertTrue(text[idx - 1].startswith("- T1 |"), text[idx - 1])
-        self.assertIn("| expert-fable |", text[idx])
+        self.assertIn("| pa-expert |", text[idx])     # 3.25 T6a: was expert-fable for effort: high
         self.assertIn("coder: opus55", text[idx])   # was --coder sonnet (retired 3.9.5 T9)
         self.assertIn("coder: sonnet", read(self.plan))   # the fixture's legacy T2 line
         self.ok(self.tool("plan_edit.py", "lint"))        # lint still accepts it
@@ -359,50 +371,31 @@ class TestPlanEdit(ToolCase):
         conf["preset"] = preset
         write(pa, json.dumps(conf, indent=1) + "\n")
 
-    def test_no_hard_rung_presets_refuse_effort_high(self):
-        # 3.10.6 T4: max5 and pro have no expert-fable; the fixture's T2 is effort: high
-        for preset in ("max5", "pro"):
+    def test_every_preset_takes_effort_high(self):
+        # 3.25 T6a: every tier has a pa-expert@high row; the 3.10.6 T4 refusal on max5 and pro left
+        p0 = self.tool("plan_edit.py", "lint", PLAN_FIXTURE)
+        before = read(self.plan)
+        for preset in ("max20", "max5", "pro"):
             self._set_preset(preset)
-            before = read(self.plan)
-            p = self.tool("plan_edit.py", "add-task", "--title", "t", "--done-when", "d",
-                          "--effort", "high", "--by", "planner")
-            self.assertEqual(p.returncode, 1, p.out)
-            self.assertEqual(p.out.strip().splitlines(),
-                             ["refused: preset %s has no hard rung: T6 carries effort: high; "
-                              "mark it medium or split it" % preset])
-            p = self.tool("plan_edit.py", "reopen", "T1", "--title", "t", "--done-when", "d",
-                          "--effort", "high", "--by", "router")
-            self.refused(p, "preset %s has no hard rung: T1.1 carries effort: high" % preset)
-            self.assertEqual(read(self.plan), before)
-            # a medium line is written with expert-opus55
+            p1 = self.tool("plan_edit.py", "lint", PLAN_FIXTURE)
+            self.assertEqual((p1.returncode, p1.out), (0, p0.out), preset)
             self.ok(self.tool("plan_edit.py", "add-task", "--title", "t", "--done-when", "d",
-                              "--by", "planner"), "T6 added")
-            self.assertIn("- T6 | queued | expert-opus55 |", read(self.plan))
-            write(self.plan, before)
-            # approve refuses over every task line before writing anything
-            unstamped = before.replace(
-                "Approved: 2026-09-12   Planner: claude-fable-5-1[1m]/xhigh   "
-                "Plan-hash: " + "0" * 64, "Approved: —   Planner: —   Plan-hash: —")
-            write(self.plan, unstamped)
-            self.refused(self.tool("plan_edit.py", "approve", "--planner", "x"),
-                         "preset %s has no hard rung: T2 carries effort: high" % preset)
-            self.assertEqual(read(self.plan), unstamped)
-            # lint reports it as an ERROR
-            p = self.tool("plan_edit.py", "lint", PLAN_FIXTURE)
-            self.assertEqual(p.returncode, 1, p.out)
-            self.assertIn("ERROR line 27: preset %s has no hard rung: T2 carries effort: high"
-                          % preset, p.out)
+                              "--effort", "high", "--by", "planner"), "T6 added")
+            self.assertIn("- T6 | queued | pa-expert | coder: opus55 | effort: high |", read(self.plan))
+            self.ok(self.tool("plan_edit.py", "reopen", "T1", "--title", "t", "--done-when", "d",
+                              "--effort", "high", "--by", "router"), "T1.1 created")
             write(self.plan, before)
 
-    def test_max20_and_absent_preset_keep_effort_high(self):
-        p0 = self.tool("plan_edit.py", "lint", PLAN_FIXTURE)
-        self._set_preset("max20")
-        p1 = self.tool("plan_edit.py", "lint", PLAN_FIXTURE)
-        self.assertEqual(p1.out, p0.out)
-        self.assertEqual(p1.returncode, 0, p1.out)
-        self.ok(self.tool("plan_edit.py", "add-task", "--title", "t", "--done-when", "d",
-                          "--effort", "high", "--by", "planner"), "T6 added")
-        self.assertIn("- T6 | queued | expert-fable |", read(self.plan))
+    def test_old_expert_fable_line_reads_as_pa_expert_high(self):
+        # 3.25 T6a: an old agent name reads as pa-expert; expert-fable with no effort: reads as effort: high
+        write(self.plan, "# Phase 9 -- old\nMilestone: it works.\n\n## Triage\n- (none)\n\n"
+                         "## Tasks\n- T1 | next | expert-fable | title: x | done-when: y\n"
+                         "- T2 | queued | expert-opus55 | title: x | done-when: y\n\n## Changes\n")
+        j = json.loads(self.ok(self.tool("plan_edit.py", "show", "--task", "T1", "--json")))
+        self.assertEqual((j["agent"], j["effort"]), ("pa-expert", "high"))
+        j = json.loads(self.ok(self.tool("plan_edit.py", "show", "--task", "T2", "--json")))
+        self.assertEqual((j["agent"], j["effort"]), ("pa-expert", "medium"))
+        self.ok(self.tool("plan_edit.py", "next", "--brief"), "T1 | next | pa-expert")
 
     def test_lint_catches_a_bad_status_and_a_dangling_dep(self):
         text = read(self.plan)
@@ -426,6 +419,19 @@ class TestPlanEdit(ToolCase):
         self.assertEqual(p.returncode, 0, p.out)
         self.assertIn("WARN  line", p.out)
         self.assertIn("T5 no 'title:'", p.out)
+        self.assertIn("OK", p.out)
+
+    def test_lint_warns_on_a_line_over_4000(self):
+        """3.24 T13F: a 4,926-char Milestone line warns, naming the line, and still passes."""
+        text = read(self.plan)
+        lines = text.split("\n")
+        at = next(i for i, l in enumerate(lines) if l.startswith("Milestone:"))
+        lines[at] = lines[at] + " " + "; ".join(["check passes"] * 400)
+        write(self.plan, "\n".join(lines))
+        p = self.tool("plan_edit.py", "lint")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("WARN  line %d: " % (at + 1), p.out)
+        self.assertIn("over 4000", p.out)
         self.assertIn("OK", p.out)
 
     def test_show_variants_stay_small(self):
@@ -522,18 +528,6 @@ class TestPlanEdit(ToolCase):
                                 "next", "--brief"))
         self.assertLessEqual(len(out.encode("utf-8")), 240)
 
-    def test_launch_seed_only_two_lines(self):
-        """--seed-only prints only seed path and mode."""
-        p = self.tool("launch.py", "--seed-only")
-        self.assertEqual(p.returncode, 0, p.out)
-        lines = [l for l in p.stdout.strip().split("\n") if l.strip()]
-        if "mode=router" in lines:  # 3.15 T6: router mode prints the `Arm now:` line first
-            self.assertTrue(lines[0].startswith("Arm now:"), lines)
-            lines = lines[1:]
-        self.assertEqual(len(lines), 2)
-        self.assertTrue(any(l.startswith("seed=") for l in lines))
-        self.assertTrue(any(l.startswith("mode=") for l in lines))
-
     def test_add_task_default_coder_is_opus55(self):
         out = self.ok(self.tool("plan_edit.py", "add-task", "--title", "auto coder",
                                 "--done-when", "done", "--by", "planner"), "T6 added")
@@ -544,25 +538,18 @@ class TestPlanEdit(ToolCase):
         # the fixture already has coder: opus46 lines; lint must accept them
         self.ok(self.tool("plan_edit.py", "lint"))
 
-    def test_grammar_names_opus55(self):
-        tpl_src = os.path.join(os.path.dirname(TOOLS), "templates",
-                               "PHASE_PLAN.template.md")
-        tpl_dst = os.path.join(self.root, "templates", "PHASE_PLAN.template.md")
-        os.makedirs(os.path.dirname(tpl_dst), exist_ok=True)
-        shutil.copyfile(tpl_src, tpl_dst)
+    def test_grammar_describes_the_loose_line(self):
         out = self.ok(self.tool("plan_edit.py", "grammar"))
-        self.assertIn("opus55", out)
-        self.assertIn("expert-opus55", out)
-        self.assertIn("sonnet accepted in old plans", out)
-        self.assertIn("a line naming the retired expert-fable-high runs expert-fable", out)
-        self.assertNotIn("only when the task line names it", out)
+        self.assertIn("- T<n> | title: <a few words> | done-when: <observable>", out)
+        self.assertIn("pa-expert", out)
+        self.assertIn("Sections: ", out)
 
-    def test_retired_expert_fable_high_maps_to_expert_fable(self):
-        # the fixture's T2 names expert-fable-high: lint passes with one note; show prints expert-fable
+    def test_retired_expert_fable_high_maps_to_pa_expert(self):
+        # the fixture's T2 names expert-fable-high: lint passes with a note; show prints pa-expert (3.25 T6a)
         out = self.ok(self.tool("plan_edit.py", "lint"), "OK")
-        self.assertIn("note: T2 names the retired expert-fable-high; it runs expert-fable", out)
+        self.assertIn("note: T2 names the retired expert-fable-high; it runs pa-expert", out)
         out = self.ok(self.tool("plan_edit.py", "show", "--task", "T2"))
-        self.assertIn("| expert-fable |", out)
+        self.assertIn("| pa-expert |", out)
         self.assertNotIn("expert-fable-high", out)
 
     def test_next_brief_maps_retired_expert_fable_high(self):
@@ -570,7 +557,7 @@ class TestPlanEdit(ToolCase):
                                        "- T3.1 | next     | expert-fable-high ")
         write(self.plan, text)
         out = self.ok(self.tool("plan_edit.py", "next", "--brief"))
-        self.assertIn("T3.1 | next | expert-fable |", out)
+        self.assertIn("T3.1 | next | pa-expert |", out)
 
     def test_genend_assemble_one_line(self):
         """genend_index.py assemble prints one line."""
@@ -644,10 +631,10 @@ class TestTriage(ToolCase):
                               r"planned:3\.4/T3 \| phase-ends/PhaseEnd_Phase3\.3\.md$")
         cur = read(os.path.join(self.cur, "discussions", "INDEX.md"))
         self.assertIn("I1 | stale bullet | 2026-09-21 | dropped | INBOX.md\n", cur)
-        # the next seed for 3.4 lists none of the triaged items
-        p = self.tool("launch.py", "--dry-run", "--mode", "planner-phase")
+        # the next --state-json for 3.4 lists none of the triaged items (was the planner seed)
+        p = self.tool("launch.py", "--state-json")
         self.assertEqual(p.returncode, 0, p.out)
-        self.assertNotIn("Deferred:", read(os.path.join(self.root, ".run", "seed.md")))
+        self.assertEqual(json.loads(p.stdout)["deferred"], [])
 
 
 class TestStatus(ToolCase):
@@ -728,31 +715,6 @@ class TestStatus(ToolCase):
 
 
 # ------------------------------------------------------------------------- #
-class TestDiscussion(ToolCase):
-
-    def test_on_off_status_and_new_record(self):
-        flag = os.path.join(self.root, ".run", "DISCUSSION")
-        self.ok(self.tool("discussion.py", "status"))
-        self.ok(self.tool("discussion.py", "on", "--topic", "seam classes"),
-                "discussion ON")
-        self.assertTrue(os.path.isfile(flag))
-        self.ok(self.tool("discussion.py", "status"), "on |", "seam classes")
-        out = self.ok(self.tool("discussion.py", "off", "--new-record"),
-                      "discussion OFF", "discussions/D1.md")
-        self.assertFalse(os.path.exists(flag))
-        d1 = read(os.path.join(self.cur, "discussions", "D1.md"))
-        self.assertIn("# D1 — seam classes", d1)
-        self.assertIn("## Plan edits", d1)
-        index = read(os.path.join(self.cur, "discussions", "INDEX.md"))
-        self.assertIn("D1 | seam classes |", index)
-        self.assertIn("phase-ends/current/discussions/D1.md", index)
-        self.assertIn("D1 | seam classes", out)
-        self.ok(self.tool("discussion.py", "off", "--new-record", "--topic", "bake"),
-                "discussions/D2.md")
-        self.ok(self.tool("discussion.py", "status"), "off")
-
-
-# ------------------------------------------------------------------------- #
 class TestResearchAdd(ToolCase):
 
     def test_new_index_find_with_atomic_ids(self):
@@ -820,11 +782,11 @@ class TestTaskLog(ToolCase):
         self.assertIn("FAILED", p)
         self.assertFalse(os.path.exists(os.path.join(self.cur, "tasks", "INDEX.md")))
 
-    def test_missing_verified_is_a_warning_not_a_refusal(self):
+    def test_missing_verified_is_no_warning(self):
+        # 3.25 T4: a summary without a 'Verified:' line finishes without a warning
         self.make_summary("T2", verified=False)
         out = self.ok(self.tool("task_log.py", "finish", "T2"))
-        self.assertIn("WARN", out)
-        self.assertIn("Verified:", out)
+        self.assertNotIn("Verified:", out)
         self.assertIn("T2 | done |", out)
 
     def test_missing_log_and_tables_are_refusals(self):
@@ -916,96 +878,54 @@ class TestSkillAdd(ToolCase):
 
 # ------------------------------------------------------------------------- #
 class TestLaunch(ToolCase):
+    """launch.py --state-json (3.24 T3.6: launch.py starts no session; mode/reason are the mod's read)."""
 
-    def dry(self, *args):
-        p = self.tool("launch.py", "--dry-run", *args)
+    def state(self):
+        p = self.tool("launch.py", "--state-json")
         self.assertEqual(p.returncode, 0, p.out)
-        self.assertLessEqual(len(p.out.rstrip().split("\n")), 40, p.out)
-        cmd = [x for x in p.out.split("\n") if x.startswith("claude ")]
-        self.assertEqual(len(cmd), 1, p.out)
-        return p.out, cmd[0]
+        return json.loads(p.stdout)
+
+    def mode(self):
+        doc = self.state()
+        return doc["mode"], doc["reason"]
 
     def test_state_router_when_the_plan_is_approved(self):
-        out, cmd = self.dry()
-        self.assertIn("state=router (approved plan)", out)
-        self.assertEqual(cmd, 'claude --agent pa-session --model claude-sonnet-5-5[1m] '
-                              '--effort medium --permission-mode auto '
-                              '--name "pa:demo:router:P24"')
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertIn("# PA3 session seed -- router -- Phase 24 (Gen 3)", seed)
-        self.assertIn("## Tasks", seed)
-        self.assertIn("T3.1 |", seed)
-        self.assertIn("## Next", seed)
-        launch = json.loads(read(os.path.join(self.root, ".run", "launch.json")))
-        self.assertEqual(launch["mode"], "router")
-        self.assertEqual(launch["phase"], "24")
-        self.assertEqual(launch["model"], "claude-sonnet-5-5[1m]")
+        doc = self.state()
+        self.assertEqual((doc["mode"], doc["reason"], doc["phase"]), ("router", "approved plan", "24"))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".run", "seed.md")))
+        self.assertFalse(os.path.exists(os.path.join(self.root, ".run", "launch.json")))
 
-    def test_seed_names_the_running_expert_after_a_resume(self):
-        """A session resumed mid-task: the seed tells the router which run to continue."""
+    def test_state_names_the_running_expert_after_a_resume(self):
+        """A session resumed mid-task: --state-json `running` names the run (was the router seed's line)."""
         self.tool("status.py", "set", "--task", "T3.1", "--agent", "expert-fable", "--coder", "sonnet",
                   "--kind", "task", "--attempt", "1")
         write(os.path.join(self.root, ".run", "status.json"), read(
-            os.path.join(self.root, ".run", "status.json")).replace('"run_id": null', '"run_id": "a1b2c3d4000000005"'))
-        self.dry()
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertIn("Running: T3.1 run a1b2c3d4000000005 (attempt 1, task)", seed)
-        self.assertIn("SendMessage that run first", seed)
+            os.path.join(self.root, ".run", "status.json")).replace('"run_id": null', '"run_id": "a1b2c3d4000000008"'))
+        self.assertEqual(self.state()["running"],
+                         {"task": "T3.1", "run_id": "a1b2c3d4000000008", "kind": "task"})
         self.tool("status.py", "clear")
-        self.dry()
-        self.assertNotIn("Running:", read(os.path.join(self.root, ".run", "seed.md")))
+        self.assertIsNone(self.state()["running"])
 
-    def test_seed_names_a_killed_run_to_respawn(self):
-        """T13: killed_at -- the seed says respawn with progress."""
+    def test_state_names_a_killed_run(self):
+        """T13: killed_at -- --state-json `run_in_flight` (was the router seed's respawn line)."""
         self.tool("status.py", "set", "--task", "T3.1", "--agent", "expert-fable", "--coder", "sonnet",
                   "--kind", "task", "--attempt", "1")
         status_path = os.path.join(self.root, ".run", "status.json")
         st = json.loads(read(status_path))
-        st["run_id"] = "a1b2c3d4000000005"
+        st["run_id"] = "a1b2c3d4000000008"
         st["killed_at"] = "2026-09-20T22:01:39Z"
         write(status_path, json.dumps(st))
-        # without progress file: the seed says transcript was not found
-        self.dry()
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertIn("Run in flight: a1b2c3d4000000005 (task T3.1, expert-fable) was killed "
-                      "with the previous process at 2026-09-20T22:01:39Z", seed)
-        self.assertIn('continue it first: SendMessage(to="a1b2c3d4000000005"', seed)
-        self.assertIn("when the send fails", seed)
-        self.assertIn("respawn T3.1 as attempt 2", seed)
-        self.assertIn("no progress file: the transcript was not found", seed)
-        self.assertIn("SendMessage", seed)
-        # with progress file present
-        write(os.path.join(self.cur, "TASK_PROGRESS.md"), "# progress\n")
-        self.dry()
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertIn("PROGRESS: phase-ends/current/TASK_PROGRESS.md", seed)
-        self.assertNotIn("no progress file", seed)
-        # without killed_at, the run_id alone stays on the plain "Running:" wording
+        doc = self.state()
+        self.assertEqual(doc["run_in_flight"]["task"], "T3.1")
+        self.assertEqual(doc["run_in_flight"]["run_id"], "a1b2c3d4000000008")
+        self.assertEqual(doc["run_in_flight"]["killed_at"], "2026-09-20T22:01:39Z")
+        self.assertIsNone(doc["running"])
+        # without killed_at, the run_id alone is `running`
         del st["killed_at"]
         write(status_path, json.dumps(st))
-        self.dry()
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertNotIn("Run in flight:", seed)
-        self.assertIn("Running: T3.1 run a1b2c3d4000000005", seed)
-        self.tool("status.py", "clear")
-        self.dry()
-        self.assertNotIn("Run in flight:", read(os.path.join(self.root, ".run", "seed.md")))
-
-    def test_seed_only_writes_the_seed_and_does_not_launch(self):
-        p = self.tool("launch.py", "--seed-only")
-        self.assertEqual(p.returncode, 0, p.out)
-        lines = [l for l in p.stdout.strip().split("\n") if l.strip()]
-        if "mode=router" in lines:  # 3.15 T6: router mode prints the `Arm now:` line first
-            self.assertTrue(lines[0].startswith("Arm now:"), lines)
-            lines = lines[1:]
-        self.assertEqual(len(lines), 2)
-        self.assertTrue(any(l.startswith("seed=") for l in lines))
-        self.assertTrue(any(l.startswith("mode=") for l in lines))
-        self.assertFalse([x for x in p.out.split("\n") if x.startswith("claude ")], p.out)
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertIn("## Next", seed)
-        launch = json.loads(read(os.path.join(self.root, ".run", "launch.json")))
-        self.assertEqual(launch["agent"], "pa-session")
+        doc = self.state()
+        self.assertIsNone(doc["run_in_flight"])
+        self.assertEqual(doc["running"]["run_id"], "a1b2c3d4000000008")
 
     def test_from_draft_writes_the_plan_only_before_approval(self):
         draft = os.path.join(self.root, "draft.md")
@@ -1049,88 +969,45 @@ class TestLaunch(ToolCase):
 
     def test_state_planner_gen_without_a_generation_plan(self):
         os.remove(os.path.join(self.root, "GENERATION_PLAN.md"))
-        out, cmd = self.dry()
-        self.assertIn("state=planner-gen", out)
-        self.assertIn("--agent pa-session", cmd)
-        self.assertIn("--model claude-sonnet-5-5[1m]", cmd)
-        self.assertIn("--effort medium", cmd)
-        self.assertNotIn("--permission-mode", cmd)
+        self.assertEqual(self.mode()[0], "planner-gen")
 
     def test_state_planner_gen_when_every_phase_is_closed(self):
         gp = os.path.join(self.root, "GENERATION_PLAN.md")
         write(gp, read(gp).replace("status: open", "status: closed"))
-        out, _cmd = self.dry()
-        self.assertIn("state=planner-gen (no open generation phase)", out)
+        self.assertEqual(self.mode(), ("planner-gen", "no open generation phase"))
 
-    def test_state_planner_phase_without_an_approved_plan(self):
-        text = read(self.plan).replace("Approved: 2026-09-12", "Approved: —")
-        write(self.plan, text)
-        out, cmd = self.dry()
-        self.assertIn("state=planner-phase (PHASE_PLAN.md not approved)", out)
-        self.assertIn("--agent pa-session", cmd)
+    def test_state_empty_mode_without_an_approved_plan(self):
+        """3.24 T3.6: "" (was planner-phase): neither mode the mod's modeOf compares."""
+        write(self.plan, read(self.plan).replace("Approved: 2026-09-12", "Approved: —"))
+        self.assertEqual(self.mode(), ("", "PHASE_PLAN.md not approved"))
         os.remove(self.plan)
-        out, _cmd = self.dry()
-        self.assertIn("state=planner-phase (no PHASE_PLAN.md)", out)
+        self.assertEqual(self.mode(), ("", "no PHASE_PLAN.md"))
 
-    def test_state_planner_phase_for_replan_and_review(self):
+    def test_state_empty_mode_for_replan_and_review(self):
+        """3.24 T3.6: "" (was planner-phase and review)."""
         write(os.path.join(self.cur, "REPLAN.md"), "Trigger: the milestone moved\n")
-        out, cmd = self.dry()
-        self.assertIn("state=planner-phase (REPLAN.md present)", out)
-        self.assertIn("--agent pa-session", cmd)
-        self.assertIn("present: phase-ends/current/REPLAN.md",
-                      read(os.path.join(self.root, ".run", "seed.md")))
+        self.assertEqual(self.mode(), ("", "REPLAN.md present"))
         os.remove(os.path.join(self.cur, "REPLAN.md"))
         write(os.path.join(self.cur, "REVIEW.md"), "What ran: the bake\n")
-        out, cmd = self.dry()
-        self.assertIn("state=review (REVIEW.md present)", out)
-        self.assertEqual(cmd, 'claude --agent pa-session --model claude-sonnet-5-5[1m] '
-                              '--effort medium --name "pa:demo:review:P24"')
+        self.assertEqual(self.mode(), ("", "REVIEW.md present"))
 
-    def test_next_mode_overrides_once(self):
-        self.ok(self.tool("launch.py", "--request", "review"), "next_mode: review")
-        self.assertTrue(os.path.isfile(os.path.join(self.root, ".run", "next_mode")))
-        out, cmd = self.dry()
-        self.assertIn("state=review (.run/next_mode (consumed))", out)
-        self.assertIn("--agent pa-session", cmd)
-        self.assertFalse(os.path.isfile(os.path.join(self.root, ".run", "next_mode")))
-        out, cmd = self.dry()
-        self.assertIn("state=router", out)
+    def test_next_mode_is_reported_never_consumed(self):
+        """`next_mode` names a known mode (router, planner-gen); `mode` ignores it; the file stays."""
+        nxt = os.path.join(self.root, ".run", "next_mode")
+        write(nxt, "planner-gen\n")
+        doc = self.state()
+        self.assertEqual((doc["mode"], doc["next_mode"]), ("router", "planner-gen"))
+        self.assertTrue(os.path.isfile(nxt))
+        write(nxt, "review\n")                               # a retired mode string is no known mode
+        self.assertIsNone(self.state()["next_mode"])
 
-    def test_mode_model_effort_perm_and_resume_overrides(self):
-        out, cmd = self.dry("--mode", "planner-phase", "--effort", "high",
-                            "--model", "claude-opus-5", "--perm", "acceptEdits")
-        self.assertIn("state=planner-phase (--mode)", out)
-        self.assertEqual(cmd, 'claude --agent pa-session --model claude-opus-5 '
-                              '--effort high --permission-mode acceptEdits '
-                              '--name "pa:demo:planner-phase:P24"')
-        out, cmd = self.dry("--resume", "abc-123")
-        self.assertEqual(cmd, "claude --resume abc-123 --effort medium")
-
-    def test_router_permission_mode_is_configurable(self):
-        pa = os.path.join(self.root, ".claude", "pa.json")
-        conf = json.loads(read(pa))
-        conf["router_permission_mode"] = "acceptEdits"
-        write(pa, json.dumps(conf, indent=1) + "\n")
-        _out, cmd = self.dry()
-        self.assertIn("--permission-mode acceptEdits", cmd)
-
-    def test_plain_is_the_fallback_session(self):
-        out, cmd = self.dry("--plain")
-        self.assertIn("state=plain", out)
-        self.assertIn("--agent plain", cmd)                      # a design session, not the router
-        self.assertTrue(cmd.startswith("claude --agent plain --model claude-fable-5-1[1m] "
-                                       "--effort high"), cmd)
-
-    def test_check_fable_reads_the_ledger_summary_if_present(self):
-        out, _cmd = self.dry("--check-fable")
-        self.assertTrue("Fable window" in out or "summary.json" in out, out)
-
-    def test_refuses_outside_a_pa3_project(self):
-        other = tempfile.mkdtemp(prefix="pa3-none-")
-        self.addCleanup(shutil.rmtree, other, ignore_errors=True)
-        p = self.tool("launch.py", "--dry-run", cwd=other)
+    def test_launch_flags_are_gone(self):
+        """3.24 T3.6: no launch; the launch flags left."""
+        p = self.tool("launch.py")
         self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("pa.json", p.out)
+        self.assertIn("starts no session", p.out)
+        for flag in ("--dry-run", "--request", "--mode", "--resume", "--check-fable"):
+            self.assertEqual(self.tool("launch.py", flag).returncode, 2, flag)
 
 
 # ------------------------------------------------------------------------- #
@@ -1191,6 +1068,28 @@ class TestShellTools(ToolCase):
         self.assertIn("stray.py", files)
         self.assertIn("HOW_WE_WORK.md", files)     # staged when passed
         self.assertEqual(len(p.stdout.rstrip().split("\n")), 2)
+
+    def test_commit_task_stages_the_journal(self):
+        # 3.22: the PA 3.2 journal is committed; 3.24 T13j: only with the loop's own records
+        self.git_init()
+        self.make_summary("T1")
+        entry = ".claude-state/journal/2026-10-07/143005-001r-dev-msg.md"
+        write(os.path.join(self.root, *entry.split("/")), "---\nts: 2026-10-07T21:30:05Z\n---\n\nhello\n")
+
+        def shown():
+            return subprocess.run(["git", "show", "--name-only", "--format=", "HEAD"],
+                                  cwd=self.root, capture_output=True, text=True).stdout.replace("\\", "/")
+
+        p = self.sh("commit_task.sh", "T1", "task work")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertNotIn(".claude-state/journal", shown())        # a task commit leaves it
+        self.assertNotIn("untracked files outside", p.out)         # and does not list it
+        others = subprocess.run(["git", "ls-files", "--others", "--exclude-standard"],
+                                cwd=self.root, capture_output=True, text=True).stdout
+        self.assertIn(entry, others.replace("\\", "/"))
+        p = self.sh("commit_task.sh", "router", "T1 done")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn(entry, shown())                               # the loop's commit stages it
 
     def test_commit_task_refuses_bad_messages(self):
         self.git_init()
@@ -1539,7 +1438,7 @@ class TestCurate(ToolCase):
 
 # ------------------------------------------------------------------------- #
 class TestCurateSeed(ToolCase):
-    """T9: the curate seed line in launch.py."""
+    """T9: the curate line in launch.py --state-json `curate` (3.24 T3.6: no seed.md)."""
 
     def _close_every_phase(self):
         # planner-gen mode: no open generation phase
@@ -1550,17 +1449,12 @@ class TestCurateSeed(ToolCase):
         # create a GenerationEnd file
         write(os.path.join(self.root, "phase-ends", "GenerationEnd_3.md"),
               "# Generation 3 close\n")
-        out, _cmd = TestLaunch.dry(self)
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertNotIn("curate:", seed)                      # router mode
+        self.assertIsNone(TestLaunch.state(self)["curate"])    # router mode
         os.remove(self.plan)
-        out, _cmd = TestLaunch.dry(self)
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertNotIn("curate:", seed)                      # planner-phase: a generation is open
+        self.assertIsNone(TestLaunch.state(self)["curate"])    # no phase plan: a generation is open
         self._close_every_phase()
-        out, _cmd = TestLaunch.dry(self)
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertIn("curate: closing gen 3 -> opening gen 4", seed)   # planner-gen
+        self.assertEqual(TestLaunch.state(self)["curate"],
+                         "curate: closing gen 3 -> opening gen 4")   # planner-gen
 
     def test_seed_curate_line_with_legacy_entries(self):
         # write LEGACY_INDEX with entries
@@ -1572,14 +1466,10 @@ class TestCurateSeed(ToolCase):
         # launch.py _curate_seed_line also needs one memory file
         write(os.path.join(self.root, ".claude-state", "memory", "user-profile.md"),
               "profile\n")
-        out, _cmd = TestLaunch.dry(self)
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertIn("curate: migration -> gen legacy", seed)
+        self.assertEqual(TestLaunch.state(self)["curate"], "curate: migration -> gen legacy")
 
     def test_seed_no_curate_line_without_genend(self):
-        out, _cmd = TestLaunch.dry(self)
-        seed = read(os.path.join(self.root, ".run", "seed.md"))
-        self.assertNotIn("curate:", seed)
+        self.assertIsNone(TestLaunch.state(self)["curate"])
 
 
 # ------------------------------------------------------------------------- #
@@ -1596,7 +1486,7 @@ class TestCurateAgentFile(ToolCase):
         self.assertGreaterEqual(len(parts), 3, "no frontmatter delimiters")
         fm = parts[1]
         self.assertIn("name: memory-curator", fm)
-        self.assertIn("model: claude-fable-5-1[1m]", fm)
+        self.assertIn("model: claude-opus-5-5[1m]", fm)   # 3.24 T17e: Opus 5.5 at medium on every tier
         self.assertIn("effort: medium", fm)
         self.assertIn("omitClaudeMd: true", fm)
         self.assertNotIn("claude-opus-4-6[1m]", fm)    # 3.10.6 T2: the ladder owns tier models
@@ -1608,7 +1498,7 @@ class TestCurateAgentFile(ToolCase):
 
 
 class TestPhaseEndAudit(ToolCase):
-    """T10: ``phaseend_index.py assemble`` writes ``## Audit``, ``lint`` passes."""
+    """T10: ``phaseend_index.py assemble`` writes ``## Audit``."""
 
     def _close_phase(self):
         """Mark remaining tasks done/superseded, populate summaries and write RECAP."""
@@ -1643,52 +1533,6 @@ class TestPhaseEndAudit(ToolCase):
         self.assertGreater(audit_pos, research_pos)
         self.assertLess(audit_pos, runs_pos)
 
-    def test_assemble_then_lint_passes(self):
-        self._close_phase()
-        self.tool("phaseend_index.py", "assemble", "24")
-        self.tool("phaseend_index.py", "assemble", "24")
-        p = self.tool("phaseend_index.py", "lint")
-        self.ok(p, "OK")
-
-
-class TestPhaseEndLintFile(ToolCase):
-    """D5: ``phaseend_index.py lint --file PATH`` checks a standalone file."""
-
-    def test_good_file_passes(self):
-        path = os.path.join(self.root, "good.md")
-        write(path, "# PhaseEnd -- Phase 23.5: PA3 migration\n\n"
-                     "## Milestone\nMigration complete.\n\n"
-                     "## Tasks\n- move files\n\n"
-                     "## Plain-English Recap\nAll moved.\n")
-        p = self.tool("phaseend_index.py", "lint", "--file", path)
-        self.ok(p, "OK")
-
-    def test_placeholder_markers_fail(self):
-        path = os.path.join(self.root, "bad.md")
-        write(path, "# PhaseEnd\n\n## Milestone\n{{AUTHORED:recap}}\n\n"
-                     "## Plain-English Recap\ndone\n")
-        p = self.tool("phaseend_index.py", "lint", "--file", path)
-        self.refused(p, "placeholder marker")
-
-    def test_template_marker_fails(self):
-        path = os.path.join(self.root, "tmpl.md")
-        write(path, "# PhaseEnd\n\n## Milestone\n<one line: what this is>\n\n"
-                     "## Plain-English Recap\ndone\n")
-        p = self.tool("phaseend_index.py", "lint", "--file", path)
-        self.refused(p, "template marker")
-
-    def test_missing_section_fails(self):
-        path = os.path.join(self.root, "nosec.md")
-        write(path, "# PhaseEnd\n\n## Milestone\nDone.\n")
-        p = self.tool("phaseend_index.py", "lint", "--file", path)
-        self.refused(p, "missing ## Plain-English Recap")
-
-    def test_placeholder_word_fails(self):
-        path = os.path.join(self.root, "ph.md")
-        write(path, "# PhaseEnd\n\n## Milestone\nPLACEHOLDER here\n\n"
-                     "## Plain-English Recap\ndone\n")
-        p = self.tool("phaseend_index.py", "lint", "--file", path)
-        self.refused(p, "PLACEHOLDER")
 
 
 class TestAdoptPending(ToolCase):
@@ -1773,15 +1617,6 @@ class TestRetrieverFilesCut(ToolCase):
         self.assertIn("NOT FOUND:", body)
         self.assertIn("REPORT: pending/", body)
         self.assertIn("tools: WebSearch, WebFetch, Write", text)
-
-    def test_planner_phase_effort_rule(self):
-        # 3.9.5 T16 (developer 2026-09-24): the packaged body carries the high-mark rule
-        body = self._body(self._read_agent("planner-phase.md"))
-        rule = ("Mark `effort: high` only when the task's done-when rests on a judgment no test can "
-                "arbitrate (a design decision, a harness probe, a proof read from evidence), never for "
-                "size or importance; at most one task in five per phase plan; the Rationale names the "
-                "judgment for each high mark.")
-        self.assertIn(rule, " ".join(body.split()))
 
 
 if __name__ == "__main__":

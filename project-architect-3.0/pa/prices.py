@@ -7,11 +7,12 @@ Public:
     model_key(model)             first matching PRICES key by priority, else None
     price_for(model, at=None)    price row dict, or None when the model is unknown
     tokenizer_for(model, at=None)
-    cost_of(usage, model, ttl_default="1h", at=None, long_context=False)
-                                  -> (cost_usd, parts)
+    cost_of(usage, model, ttl_default="1h", at=None, ctx=None) -> (cost_usd, parts)
     usage_fields(usage)          normalize an API/cost-state/ledger usage dict
     rows_for_db()                tuples for db.seed_prices()
-    LONG_CONTEXT_TOKENS          200000: the long-context tier threshold
+    PROMPT_TIERS                 model_key -> (threshold, over-threshold rates)
+    prompt_tier(model)           (threshold, rates) of a model priced by prompt length, or None
+    rates_for(row, ctx=0) -> (rates, tier): what one request bills at
 
 Matching rule (kept identical to the delivered analyzers): the normalized model
 id is searched for each ``model_key`` in priority order, so the most specific
@@ -24,31 +25,22 @@ reproduce ``modelUsage[m].costUSD`` exactly for claude-fable-5-1 (1h writes),
 claude-opus-5[1m] (1h writes), claude-sonnet-5 (5m writes) and
 claude-haiku-4-5-20251001.
 
-Long-context tier (T8): a 1M-window model (``window="1m"``) bills a request
-whose context (input + cache write + cache read) exceeds
-``LONG_CONTEXT_TOKENS`` at 2x input/cache/read and 1.5x output (the published
-rule); ``cost_of`` never auto-detects this from pooled/session-total usage --
-a real per-request caller (``pa.transcript.request_cost``, ``db.turn_row_from_
-request``) passes ``long_context`` explicitly, computed from that one
-request's own context.  A cost-state pool total (``pa.ledger_cli._price_check``)
-stays priced flat: apportioning it between under/over-200k shares from the
-transcript's own ratio was tried against the WSL session b2fa9a37 and verified
-to only widen the delta (its cost-state tokens include an unknown share of
-invisible "subagent overhead" the transcript never sees, T8 log); what fixed
-that pool's price check (+6.11 % -> +0.12 %) was a separate, real bug the same
-investigation turned up: a lone bracket-tagged model key ("[1m]") does not mean
-every call used the 1h TTL -- a workflow's 5m-TTL subagent traffic can carry
-the exact same bracketed id as its 1h main thread.
+Prompt-length tier (3.22): a model the pricing page prices "by prompt length"
+(Haiku 5.5, 2026-10-07: steps at 100,000 tokens) bills the whole request at
+its ``PROMPT_TIERS`` rates once that request's own prompt (input + cache write
++ cache read) exceeds the threshold.  That is the model's real billing, so
+``cost_of`` infers it from a request's usage (a pooled caller passes ``ctx=0``).
+
+3.27 T13: Gen 3's 1M long-context tier (T8: 2x/1.5x over 200k) is gone; the pricing page
+(2026-10-13) bills the full 1M window at standard rates on every model but Haiku 5.5.
 """
 
 import re
 
-PRICES_VERSION = "2026-09"
-LONG_CONTEXT_TOKENS = 200000
-LONG_CONTEXT_MULT = {"input": 2.0, "write_5m": 2.0, "write_1h": 2.0, "read": 2.0, "output": 1.5}
+PRICES_VERSION = "2026-10"     # was "2026-09"; 3.22: haiku-5-5 + its prompt tier, sonnet-5-5 read 0.10
 
 # (model_key, priority, effective_from, input, write_5m, write_1h, read, output, tokenizer, window)
-# window "1m" marks the 1M-context models the long-context tier applies to.
+# window "1m" marks the 1M-context models (savings reads it as the context size).
 PRICES = [
     ("fable-5-1",  10, "2026-09-01", 10.0, 12.50, 20.0, 0.25, 50.0, "new", "1m"),
     ("fable-5",    20, "2026-09-01", 10.0, 12.50, 20.0, 1.00, 50.0, "new", None),
@@ -59,12 +51,24 @@ PRICES = [
     ("opus-5",     42, "2026-09-01",  5.0,  6.25, 10.0, 0.50, 25.0, "new", "1m"),
     ("opus",       50, "2026-09-01",  5.0,  6.25, 10.0, 0.50, 25.0, "new", None),
     ("sonnet-5-5", 59, "2026-09-28",  2.0,  2.50,  4.0, 0.20, 10.0, "new", "1m"),
+    # 3.22: cache hits 5% of input ("$0.10 USD on Claude Sonnet 5.5", pricing page prompt-caching
+    # section; its model table still shows 0.20); earlier turns keep the 2026-09-28 row.
+    ("sonnet-5-5", 59, "2026-10-07",  2.0,  2.50,  4.0, 0.10, 10.0, "new", "1m"),
     ("sonnet-5",   60, "2026-09-01",  2.0,  2.50,  4.0, 0.20, 10.0, "new", "1m"),
     ("sonnet-4-6", 70, "2026-09-01",  3.0,  3.75,  6.0, 0.30, 15.0, "old", None),
     ("sonnet",     80, "2026-09-01",  3.0,  3.75,  6.0, 0.30, 15.0, "old", None),
+    ("haiku-5-5",  85, "2026-10-07",  0.10, 0.125, 0.20, 0.01, 0.50, "new", "1m"),   # <= 100k prompt
     ("haiku-4-5",  90, "2026-09-01",  1.0,  1.25,  2.0, 0.10,  5.0, "old", None),
     ("haiku",     100, "2026-09-01",  1.0,  1.25,  2.0, 0.10,  5.0, "old", None),
 ]
+
+# 3.22: rates ($/MTok) of a request whose prompt exceeds the threshold (pricing page 2026-10-07,
+# "prompts over 100,000 tokens"); the row above holds the "up to 100,000" rates.
+PROMPT_TIERS = {
+    "haiku-5-5": (100000, {"input": 0.50, "write_5m": 0.625, "write_1h": 1.00, "read": 0.05,
+                           "output": 2.50}),
+}
+_RATE_KEYS = ("input", "write_5m", "write_1h", "read", "output")
 
 _FIELDS = ("model_key", "priority", "effective_from",
            "input", "write_5m", "write_1h", "read", "output", "tokenizer", "window")
@@ -142,6 +146,26 @@ def price_for(model, at=None):
     return dict(chosen)
 
 
+def prompt_tier(model):
+    """``(threshold, rates)`` of a model priced by prompt length (``PROMPT_TIERS``), or None.
+
+    ``model`` is a model id or a ``PRICES`` key."""
+    key = model if model in PROMPT_TIERS else model_key(model)
+    return PROMPT_TIERS.get(key) if key else None
+
+
+def rates_for(row, ctx=0):
+    """``(rates, tier)``: the five $/MTok rates price row ``row`` bills one request at.
+
+    ``tier`` is ``"prompt"`` when ``row`` has a prompt tier and ``ctx`` exceeds its
+    threshold (its rates replace the row's), else None (the base rates)."""
+    base = {k: row[k] for k in _RATE_KEYS}
+    pt = PROMPT_TIERS.get(row.get("model_key"))
+    if pt and (ctx or 0) > pt[0]:
+        return dict(pt[1]), "prompt"
+    return base, None
+
+
 def tokenizer_for(model, at=None):
     """``"old"`` (pre-4.7) or ``"new"`` (4.7+) tokenizer generation, or None."""
     p = price_for(model, at)
@@ -194,7 +218,7 @@ def usage_fields(usage):
             "cache_read": read, "output": out, "thinking": think, "split": split}
 
 
-def cost_of(usage, model, ttl_default="1h", at=None, long_context=False):
+def cost_of(usage, model, ttl_default="1h", at=None, ctx=None):
     """Cost of one request in USD (spec 3.9(1)).
 
     ``cost = input*P_in + cw5*P_w5 + cw1*P_w1 + cr*P_r + output*P_out`` at the
@@ -202,20 +226,13 @@ def cost_of(usage, model, ttl_default="1h", at=None, long_context=False):
     whole cache-write is priced by ``ttl_default`` ("1h" for main/expert/coder,
     "5m" for retriever/critic/other -- see ``config.ttl_for_role``).
 
-    ``long_context`` (T8): when true *and* the model's price row is a 1M-window
-    model (``window="1m"``), every bucket is priced at the long-context tier
-    (``LONG_CONTEXT_MULT``) instead of the base rate.  ``cost_of`` never infers
-    this itself from ``usage`` -- ``usage`` may be one real request or a pooled
-    multi-request total (a cost-state ``modelUsage`` entry), and only the caller
-    knows which; a real per-request caller passes ``long_context = ctx >
-    LONG_CONTEXT_TOKENS`` for *that* request's own context (``pa.transcript.
-    request_cost`` does this).  Default ``False`` keeps every existing caller
-    (including a pooled cost-state total, whose summed context is meaningless)
-    priced exactly as before.
+    ``ctx`` (3.22): the request's prompt size for a prompt-length tier
+    (``PROMPT_TIERS``); None infers it from ``usage`` (input + cache write +
+    cache read), right for one request; a pooled total passes ``ctx=0``.
 
     Returns ``(cost_usd, parts)``; ``parts`` carries the per-bucket dollars plus
-    ``ttl`` (the TTL actually used), ``model_key``, ``long_context`` (whether the
-    tier was actually applied) and the token counts.  ``cost_usd`` is 0.0 and
+    ``ttl`` (the TTL actually used), ``model_key``, ``prompt_tier`` (whether the prompt-length tier
+    was) and the token counts.  ``cost_usd`` is 0.0 and
     ``parts["priced"]`` is False for an unknown model.
     """
     f = usage_fields(usage)
@@ -228,18 +245,21 @@ def cost_of(usage, model, ttl_default="1h", at=None, long_context=False):
     else:
         w5, w1, ttl_used = f["cache_write"], 0, "5m"
 
-    applied = bool(long_context) and bool(p) and p.get("window") == "1m"
     parts = {"input": 0.0, "write_5m": 0.0, "write_1h": 0.0, "read": 0.0, "output": 0.0,
              "ttl": ttl_used, "model_key": p["model_key"] if p else None,
-             "priced": bool(p), "long_context": applied, "tokens": dict(f)}
+             "priced": bool(p), "prompt_tier": False,
+             "tokens": dict(f)}
     if not p:
         return 0.0, parts
-    mult = LONG_CONTEXT_MULT if applied else {}
-    parts["input"] = f["input"] * p["input"] * mult.get("input", 1.0) / 1e6
-    parts["write_5m"] = w5 * p["write_5m"] * mult.get("write_5m", 1.0) / 1e6
-    parts["write_1h"] = w1 * p["write_1h"] * mult.get("write_1h", 1.0) / 1e6
-    parts["read"] = f["cache_read"] * p["read"] * mult.get("read", 1.0) / 1e6
-    parts["output"] = f["output"] * p["output"] * mult.get("output", 1.0) / 1e6
+    if ctx is None:
+        ctx = f["input"] + f["cache_write"] + f["cache_read"]
+    r, tier = rates_for(p, ctx)
+    parts["prompt_tier"] = tier == "prompt"
+    parts["input"] = f["input"] * r["input"] / 1e6
+    parts["write_5m"] = w5 * r["write_5m"] / 1e6
+    parts["write_1h"] = w1 * r["write_1h"] / 1e6
+    parts["read"] = f["cache_read"] * r["read"] / 1e6
+    parts["output"] = f["output"] * r["output"] / 1e6
     cost = parts["input"] + parts["write_5m"] + parts["write_1h"] + parts["read"] + parts["output"]
     parts["total"] = cost
     return cost, parts

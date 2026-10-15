@@ -5,6 +5,7 @@ overrides: the real ``~/.claude`` and ``~/.claude/usage-ledger`` are never touch
 (``SafetyTest`` asserts that explicitly).
 """
 
+import hashlib
 import io
 import json
 import os
@@ -178,6 +179,11 @@ class RootWindowsTest(unittest.TestCase):
     def test_cleanup_period_days_not_lowered(self):
         self.assertEqual(self.merged["cleanupPeriodDays"], 3650)
 
+    def test_prompt_suggestions_default_off(self):
+        """3.22 T2d: the user-level default turns prompt suggestions off."""
+        self.assertNotIn("promptSuggestionEnabled", self.fixture)
+        self.assertIs(self.merged["promptSuggestionEnabled"], False)
+
     def test_model_and_model_settings_are_byte_identical(self):
         self.assertEqual(json.dumps(self.merged["model"]),
                          json.dumps(self.fixture["model"]))
@@ -206,7 +212,7 @@ class RootWindowsTest(unittest.TestCase):
 
     def test_pre_tool_use_and_notification_matchers(self):
         self.assertEqual(hook_entries(self.merged, "PreToolUse")[0][0],
-                         "Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell|SubagentHandback")
+                         "Read|Edit|Write|MultiEdit|NotebookEdit|Bash|PowerShell")
         self.assertEqual(hook_entries(self.merged, "Notification")[0][0],
                          "idle_prompt|permission_prompt|agent_needs_input|elicitation_dialog")
 
@@ -276,11 +282,11 @@ class RootWindowsTest(unittest.TestCase):
             text = fh.read()
         from pa import __version__
         self.assertIn("version: %s" % __version__, text)
-        self.assertEqual(text.splitlines()[0], "version: 3.15.3")  # I11
+        self.assertEqual(text.splitlines()[0], "version: 3.28")  # I11
         self.assertRegex(text, r"git: [0-9a-f]{6,40}")
 
     def test_version_parse_forms_and_fallback(self):
-        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.15.3``."""
+        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.28``."""
         import pa
         self.assertEqual(pa.parse_version("3.11\n"), "3.11")
         self.assertEqual(pa.parse_version("version: 3.12\ngit: abc\n"), "3.12")
@@ -303,8 +309,8 @@ class RootWindowsTest(unittest.TestCase):
                                   text=True, check=True).stdout.strip()
         self.assertEqual(ver("3.12\n"), "3.12")
         self.assertEqual(ver("version: 3.15.3\ngit: abc\n"), "3.15.3")
-        self.assertEqual(ver(None), "3.15.3")
-        self.assertEqual(ver("garbage: x\n"), "3.15.3")
+        self.assertEqual(ver(None), "3.28")
+        self.assertEqual(ver("garbage: x\n"), "3.28")
 
     def test_ledger_has_every_table(self):
         conn = db.connect(os.path.join(self.ledger, "ledger.sqlite"), create=False)
@@ -396,6 +402,199 @@ class RootTodoEnvTest(unittest.TestCase):
     def test_falsy_value_stays_without_note(self):
         self.assertEqual(self.merged0["env"][self.TODO], "0")
         self.assertNotIn(self.TODO, self.out0)
+
+
+class PluginConfigsPruneTest(unittest.TestCase):
+    """3.23 T13d.c11: saved options the PA plugins no longer declare are pruned from pluginConfigs."""
+
+    SAVED = {
+        "pa@inline": {"options": {"card_style": "boxed", "reply_fallback": "notice"}},
+        "pa-watch@inline": {"options": {"level": "verbose", "colors": "on"}},
+        "pa-watch@market": {"options": {"level": "quiet"}, "enabled": True},
+        "other@inline": {"options": {"level": "x"}},
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        tmp, cfg, pa3, ledger = make_root(None)
+        cls.tmp = tmp
+        fixture = read_json(WIN_FIXTURE)
+        fixture["pluginConfigs"] = json.loads(json.dumps(cls.SAVED))
+        cls.path = os.path.join(cfg, "settings.json")
+        with open(cls.path, "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(fixture, fh, indent=2)
+        _rc, cls.out = run_install(["--root", "--config-dir", cfg, "--pa3-dir", pa3, "--yes"], ledger)
+        cls.merged = read_json(cls.path)
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def test_declared_options_are_read_from_the_manifests(self):
+        declared = install.plugin_options(install.package_root())
+        self.assertEqual(declared, {"pa": {"card_style"}, "pa-watch": set()})
+
+    def test_dead_options_pruned_live_and_foreign_kept(self):
+        self.assertEqual(self.merged["pluginConfigs"], {
+            "pa@inline": {"options": {"card_style": "boxed"}},
+            "pa@pa3": {"options": {"card_style": "boxed"}},          # 3.24 T4: copied to the new key
+            "pa-watch@market": {"enabled": True},
+            "other@inline": {"options": {"level": "x"}},
+        })
+
+    def test_removal_is_announced(self):
+        self.assertIn("pluginConfigs.pa@inline.options.reply_fallback", self.out)
+        self.assertIn("pluginConfigs.pa-watch@inline.options.level", self.out)
+
+    def test_pure_prune(self):
+        report = sm.new_report()
+        saved = {"pluginConfigs": {"pa-watch@x": {"options": {"level": "q"}}}, "k": 1}
+        out = sm.prune_plugin_configs(saved, {"pa-watch": set()}, report)
+        self.assertEqual(out, {"k": 1})
+        self.assertEqual(saved["pluginConfigs"]["pa-watch@x"]["options"], {"level": "q"})
+        self.assertEqual([c[0] for c in report["changed"]],
+                         ["pluginConfigs.pa-watch@x.options.level", "pluginConfigs.pa-watch@x"])
+        # A plugin whose manifest was not read keeps its options; no pluginConfigs: unchanged.
+        self.assertEqual(sm.prune_plugin_configs(saved, {}, sm.new_report()), saved)
+        self.assertEqual(sm.prune_plugin_configs({"k": 1}, {"pa": set()}, sm.new_report()), {"k": 1})
+
+
+class RootModTest(unittest.TestCase):
+    """3.24 T4: R2 copies mod/ (no tests), agents/ and CHANGES.md, prunes mod/, writes MANIFEST.json then
+    VERSION; R4 registers the mod as a user-scope plugin."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp, cls.cfg, cls.pa3, cls.ledger = make_root(WIN_FIXTURE)
+        cls.argv = ["--root", "--config-dir", cls.cfg, "--pa3-dir", cls.pa3, "--yes"]
+        real = install.fsutil.atomic_write_text
+        cls.writes = []
+
+        def spy(path, text):
+            cls.writes.append(os.path.basename(path))
+            return real(path, text)
+
+        with mock.patch.object(install.fsutil, "atomic_write_text", spy):
+            cls.rc, cls.out = run_install(cls.argv, cls.ledger)
+        cls.merged = read_json(os.path.join(cls.cfg, "settings.json"))
+        cls.manifest = read_json(os.path.join(cls.pa3, install.MANIFEST))
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.tmp, ignore_errors=True)
+
+    def _rels(self, top):
+        out = set()
+        for dirpath, _d, names in os.walk(os.path.join(self.pa3, top)):
+            for name in names:
+                out.add(os.path.relpath(os.path.join(dirpath, name), self.pa3).replace("\\", "/"))
+        return out
+
+    def test_mod_agents_and_changes_copied_without_tests(self):
+        self.assertEqual(self.rc, 0, self.out)
+        mod = self._rels("mod")
+        for rel in ("mod/.claude-plugin/marketplace.json", "mod/pa/.claude-plugin/plugin.json",
+                    "mod/pa/hooks/activation.ts", "mod/pa/hooks/register.tsx", "mod/pa/types/index.d.ts",
+                    "mod/pa/feed/pa_feed.sh", "mod/pa/feed/pa_feed.py", "mod/pa-watch/hooks/hooks.json"):
+            self.assertIn(rel, mod)
+        self.assertFalse([r for r in mod if r.endswith((".test.ts", ".vectors.ts")) or "__pycache__" in r], mod)
+        agents = sorted(n for n in os.listdir(os.path.join(PKG, "agents")) if n.endswith(".md"))
+        self.assertEqual(sorted(os.listdir(os.path.join(self.pa3, "agents"))), agents)
+        self.assertTrue(os.path.isfile(os.path.join(self.pa3, "CHANGES.md")))
+
+    def test_manifest_lists_every_placed_file_and_its_version(self):
+        files = self.manifest["files"]
+        self.assertEqual(set(files), set(r for r, _s in install.package_files(PKG)))
+        for rel in ("mod/pa/hooks/activation.ts", "agents/pa-claude.md", "CHANGES.md", "pa/hooks/session_start.py"):
+            with open(os.path.join(self.pa3, rel), "rb") as fh:
+                self.assertEqual(files[rel], hashlib.sha256(fh.read()).hexdigest(), rel)
+        with open(os.path.join(self.pa3, "VERSION"), "r", encoding="utf-8") as fh:
+            self.assertEqual(self.manifest["version"], fh.read())
+
+    def test_version_is_written_last(self):
+        self.assertIn("VERSION", self.writes)
+        self.assertLess(self.writes.index(install.MANIFEST), self.writes.index("VERSION"), self.writes)
+
+    def test_registration_keys(self):
+        self.assertEqual(self.merged["extraKnownMarketplaces"]["pa3"],
+                         {"source": {"source": "directory", "path": sm.abs_fwd(os.path.join(self.pa3, "mod"))}})
+        self.assertEqual(self.merged["enabledPlugins"], {"pa@pa3": True, "pa-watch@pa3": True})
+        self.assertIn("+ extraKnownMarketplaces.pa3", self.out)
+
+    def test_rerun_prunes_mod_only(self):
+        stray_mod = os.path.join(self.pa3, "mod", "pa", "hooks", "gone.ts")
+        stray_dir = os.path.join(self.pa3, "mod", "old-plugin", "hooks")
+        stray_pa = os.path.join(self.pa3, "pa", "stray.py")
+        os.makedirs(stray_dir)
+        for path in (stray_mod, os.path.join(stray_dir, "x.ts"), stray_pa):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("//\n")
+        rc, out = run_install(self.argv, self.ledger)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("2 removed from mod/", out)
+        self.assertFalse(os.path.exists(stray_mod))
+        self.assertFalse(os.path.exists(os.path.join(self.pa3, "mod", "old-plugin")))
+        self.assertTrue(os.path.isfile(stray_pa))                 # outside mod/: never deleted
+        rc, out = run_install(self.argv, self.ledger)
+        self.assertEqual(steps(out).get("R2"), "SKIP", out)
+
+
+class FloorTest(unittest.TestCase):
+    """3.24 T4: the mod's Claude Code floor, one source (activation.ts), checked before anything is written."""
+
+    def test_floor_is_the_mods_constant(self):
+        floor = install.mod_floor(PKG)
+        self.assertRegex(floor or "", r"^\d+\.\d+\.\d+$")
+        with open(os.path.join(PKG, "mod", "pa-watch", "hooks", "activation.ts"), encoding="utf-8") as fh:
+            self.assertIn("VERSION_FLOOR = '%s'" % floor, fh.read())   # the watcher's copy agrees
+
+    def test_floor_check(self):
+        floor = install._version_tuple(install.mod_floor(PKG))
+        below = "%d.%d.%d" % (floor[0], floor[1], floor[2] - 1)
+        ok, line = install.floor_check(PKG, below)
+        self.assertFalse(ok)
+        self.assertIn("update Claude Code first", line)
+        self.assertEqual(install.floor_check(PKG, install.mod_floor(PKG)), (True, None))
+        self.assertEqual(install.floor_check(PKG, "not a version"), (True, None))
+
+    def test_root_install_stops_below_the_floor_and_writes_nothing(self):
+        tmp, cfg, pa3, ledger = make_root(WIN_FIXTURE)
+        self.addCleanup(shutil.rmtree, tmp, True)
+        before = snapshot(tmp)
+        with mock.patch.object(install, "claude_version", lambda: "2.0.1"):
+            rc, out = run_install(["--root", "--config-dir", cfg, "--pa3-dir", pa3, "--yes"], ledger)
+        self.assertEqual(rc, 2, out)
+        self.assertIn("Claude Code 2.0.1 is older than", out)
+        self.assertEqual(snapshot(tmp), before)
+
+
+class RegisterModTest(unittest.TestCase):
+    """3.24 T4: sm.register_mod, pure."""
+
+    def test_merge_keeps_others_moves_options_and_is_a_fixed_point(self):
+        cur = {"extraKnownMarketplaces": {"pa3": {"source": {"source": "directory", "path": "C:/old/mod"}},
+                                          "other": {"source": {"source": "github", "repo": "a/b"}}},
+               "enabledPlugins": {"x@other": True, "pa-watch@pa3": False},
+               "pluginConfigs": {"pa@inline": {"options": {"card_style": "bar"}}}}
+        report = sm.new_report()
+        out = sm.register_mod(cur, "C:/new", report)
+        self.assertEqual(out["extraKnownMarketplaces"]["pa3"]["source"]["path"], "C:/new/mod")
+        self.assertIn("other", out["extraKnownMarketplaces"])
+        self.assertEqual(out["enabledPlugins"], {"x@other": True, "pa@pa3": True, "pa-watch@pa3": True})
+        self.assertEqual(out["pluginConfigs"], {"pa@inline": {"options": {"card_style": "bar"}},
+                                                "pa@pa3": {"options": {"card_style": "bar"}}})
+        self.assertEqual(sorted(k for k, _o, _n in report["changed"]),
+                         ["enabledPlugins.pa-watch@pa3", "extraKnownMarketplaces.pa3"])
+        self.assertEqual(cur["enabledPlugins"]["pa-watch@pa3"], False)       # input untouched
+        again = sm.new_report()
+        self.assertEqual(sm.register_mod(out, "C:/new", again), out)
+        self.assertEqual((again["added"], again["changed"]), ([], []))
+
+    def test_saved_options_under_the_new_key_win(self):
+        cur = {"pluginConfigs": {"pa@inline": {"options": {"card_style": "bar"}},
+                                 "pa@pa3": {"options": {"card_style": "plain"}}}}
+        out = sm.register_mod(cur, "/h/pa3", sm.new_report())
+        self.assertEqual(out["pluginConfigs"]["pa@pa3"], {"options": {"card_style": "plain"}})
 
 
 # --------------------------------------------------------------------------- idempotence
@@ -747,6 +946,10 @@ class SettingsMergeTest(unittest.TestCase):
         self.assertEqual(json.dumps(once, sort_keys=True), json.dumps(twice, sort_keys=True))
         self.assertEqual(report["hooks_added"], [])
         self.assertEqual(report["hooks_replaced"], [])
+
+    def test_prompt_suggestion_value_is_kept(self):
+        merged, _ = sm.merge({"promptSuggestionEnabled": True}, self.snippet)
+        self.assertIs(merged["promptSuggestionEnabled"], True)
 
     def test_cleanup_period_days_is_raise_only(self):
         merged, _ = sm.merge({"cleanupPeriodDays": 9999}, self.snippet)

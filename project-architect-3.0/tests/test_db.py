@@ -42,7 +42,7 @@ class SchemaTest(unittest.TestCase):
         self.assertTrue(db.get_meta(self.conn, "machine"))
         self.assertTrue(db.get_meta(self.conn, "created"))
         n = self.conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
-        self.assertEqual(n, 14)     # was 13; 3.11 T21 added the sonnet-5-5 row
+        self.assertEqual(n, 16)     # was 14; 3.22 added haiku-5-5 and sonnet-5-5 2026-10-07
         self.assertEqual(db.seed_prices(self.conn), 0)        # does not duplicate
 
     def test_pragmas_applied(self):
@@ -110,16 +110,16 @@ class MigrateV3Test(unittest.TestCase):
 
     def test_v2_to_v3(self):
         self.assertFalse(self._has_bench())
-        self.assertEqual(db.migrate(self.conn), 7)
-        self.assertEqual(db.SCHEMA_VERSION, 7)  # was 6
+        self.assertEqual(db.migrate(self.conn), 8)
+        self.assertEqual(db.SCHEMA_VERSION, 8)  # was 7
         self.assertTrue(self._has_bench())
         self.assertIn("attempt", [r[1] for r in self.conn.execute("PRAGMA table_info(bench)")])
-        self.assertEqual(db.schema_version(self.conn), 7)
+        self.assertEqual(db.schema_version(self.conn), 8)
         self.assertEqual(tuple(self.conn.execute("SELECT run_id, agent_type, turns FROM agent_runs")
                                .fetchall()[0]), ("r1", "coder", 7))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
-        self.assertEqual(db.migrate(self.conn), 7)                     # second migrate: no-op
-        self.assertEqual(db.schema_version(self.conn), 7)
+        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
+        self.assertEqual(db.schema_version(self.conn), 8)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
 
     def test_newer_stamp_stays(self):
@@ -163,8 +163,8 @@ class MigrateV4Test(unittest.TestCase):
 
     def test_v3_to_v4_in_place(self):
         self.assertNotIn("attempt", [r[1] for r in self.conn.execute("PRAGMA table_info(bench)")])
-        self.assertEqual(db.migrate(self.conn), 7)
-        self.assertEqual(db.schema_version(self.conn), 7)
+        self.assertEqual(db.migrate(self.conn), 8)
+        self.assertEqual(db.schema_version(self.conn), 8)
         want = [("r1", "k", "a", 1, 1, 0.25, 0.5, 3, None, None),
                 ("r1", "k", "b", 1, 0, 0.5, 0.5, 3, None, None),
                 ("r1", "k", "c", 1, None, None, 0.5, 3, None, None)]
@@ -175,14 +175,14 @@ class MigrateV4Test(unittest.TestCase):
                                        "passed": 0}, "replace")
         self.assertEqual(len(self._rows()), 4)                        # a second attempt is a new row
         self.conn.execute("DELETE FROM bench WHERE attempt=2")
-        self.assertEqual(db.migrate(self.conn), 7)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
         self.assertEqual(self._rows(), want)
         self.assertNotIn("bench_v4", [r[0] for r in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")])
 
     def test_init_schema_alone_upgrades_a_v3_bench(self):
         db.init_schema(self.conn)                  # the hooks' and the installer's path
-        self.assertEqual(db.schema_version(self.conn), 7)
+        self.assertEqual(db.schema_version(self.conn), 8)
         self.assertEqual([r[3] for r in self._rows()], [1, 1, 1])
 
 
@@ -206,13 +206,13 @@ class MigrateV5Test(unittest.TestCase):
 
     def test_v4_to_v5(self):
         self.assertNotIn("harness_cost_usd", self._cols())
-        self.assertEqual(db.migrate(self.conn), 7)
+        self.assertEqual(db.migrate(self.conn), 8)
         self.assertIn("harness_cost_usd", self._cols())
         db.upsert_session(self.conn, {"session_id": "s1", "harness_cost_usd": 2.0})
         self.assertEqual(tuple(self.conn.execute(
             "SELECT cost_usd, cost_source, harness_cost_usd FROM sessions").fetchone()),
             (1.5, "turns", 2.0))
-        self.assertEqual(db.migrate(self.conn), 7)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
 
     def test_init_schema_alone_adds_the_column(self):
         db.init_schema(self.conn)                  # the hooks' path
@@ -241,7 +241,7 @@ class MigrateV6Test(unittest.TestCase):
 
     def test_v5_to_v6(self):
         self.assertFalse(self._has_pool())
-        self.assertEqual(db.migrate(self.conn), 7)
+        self.assertEqual(db.migrate(self.conn), 8)
         self.assertTrue(self._has_pool())
         db.upsert_fit_pool(self.conn, {"tier": "max", "window": "seven_day", "family": "opus",
                                        "rate": 0.001, "se": 0.0001, "n": 60, "n_instances": 2})
@@ -249,7 +249,7 @@ class MigrateV6Test(unittest.TestCase):
                                        "rate": 0.002, "n": 90})
         self.assertEqual(tuple(self.conn.execute("SELECT rate, se, n FROM fit_pool").fetchone()),
                          (0.002, None, 90))                            # replace: the new fit wins
-        self.assertEqual(db.migrate(self.conn), 7)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
 
 
 class MigrateV7Test(unittest.TestCase):
@@ -273,14 +273,14 @@ class MigrateV7Test(unittest.TestCase):
 
     def test_v6_to_v7(self):
         self.assertNotIn("tier", self._cols())
-        self.assertEqual(db.migrate(self.conn), 7)
+        self.assertEqual(db.migrate(self.conn), 8)
         self.assertIn("tier", self._cols())
         self.assertIn("tier_source", self._cols())
         db.upsert_account(self.conn, {"email": "a@x.io", "tier": "max20", "tier_source": "credentials"})
         self.assertEqual(tuple(self.conn.execute(
             "SELECT label, first_seen, tier, tier_source FROM accounts").fetchone()),
             ("A", "t0", "max20", "credentials"))
-        self.assertEqual(db.migrate(self.conn), 7)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
 
     def test_init_schema_alone_adds_the_columns(self):
         db.init_schema(self.conn)                  # the hooks' path (open_db)

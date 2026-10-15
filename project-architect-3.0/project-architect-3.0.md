@@ -18,28 +18,22 @@ Once per project, from the project's own root:
 
     python pa_install.py --project . --yes
 
-After that you open a terminal in the project and type `claude`. The session reads a seed,
-determines where the project is (planning a generation, planning a phase, the work loop, a
-review pause) and starts. You interact at a few moments: approving a plan, answering a
-review's decisions, responding when the critic says the developer must decide, answering the
-close question, allowing a command outside the allow rules, and opening
-`/discuss [model] [effort]` when you want to think alongside the system (Opus 5.5 at medium unless you opt
-into Fable or Sonnet, or high or max effort; `/thoughts` stays an alias for one release). Everything else — spawning experts,
-briefing coders, running tests, committing, closing phases — happens without a keypress.
+After that you open a terminal in the project, type `claude` and talk with Claude. You
+interact at a few moments: approving a plan, answering a review's decisions, deciding when
+Claude says a change touches the milestone or the scope, answering the close question, and
+allowing a command outside the allow rules. Everything else — spawning experts, briefing
+coders, running tests, committing, closing phases — happens without a keypress.
 
-The roles in one paragraph: a planner drafts the plan you approve; a router spawns one expert
-per task and never does task work itself; the expert thinks, decides and briefs coders (which
-run the edit-build-test loops) and retrievers (which look things up); a critic judges every
-plan change an expert proposes; a review agent turns a
-review pause into numbered decisions for you.
+The roles in one paragraph: Claude drafts the plan you approve and is the one agent that talks
+with you; the mod runs the loop, one expert per task; the expert thinks, decides and briefs
+coders (which run the edit-build-test loops) and retrievers (which look things up); Claude
+judges every plan change an expert proposes and presents a review pause as numbered decisions.
 
-A day in the life: you launch with `claude`, the router reads the seed and picks the next
-task, spawns the expert in the background and waits. The expert reads the plan, spawns a
-coder, waits idle in the background until the coder's hand-back wakes it (a per-session warmer
-daemon pings idle agents with `.` before the cache TTL, at 285 s or 3,300 s, relayed by the
-router's Monitor; the agent answers `.`), writes the task log and summary, and returns done. The router marks the task done and moves to
-the next. When every task is done the closer verifies the milestone, writes the phase-end
-record and archives the phase. You relaunch for the next one.
+A day in the life: you launch with `claude` and talk with Claude while the mod picks the next
+task and spawns its expert in the background. The expert reads the plan, spawns a coder, waits
+idle until the coder's hand-back wakes it, writes the task log and summary, and returns done.
+The mod marks the task done and moves to the next. When every task is done Claude tells you what
+the phase did and asks whether the milestone is met; your yes closes and archives the phase.
 
 Where to look: `HOW_WE_WORK.md` for standing decisions, tools and environment;
 `phase-ends/current/PHASE_PLAN.md` for the live plan; `phase-ends/TASK_INDEX.md` for what
@@ -57,9 +51,9 @@ The creed, carried from 1.3.0 and amended by three generations of experience:
 - History is append-only. A rule is never deleted; it is superseded with a note. A phase
   record is never rewritten; a correction is a new record. A file is never removed from the
   repository; it moves to `docs/retired/`.
-- Rules are living. They are proposed at phase ends, adjudicated by the planner, and added
-  to `rules/` as individual files. The expert writes `Rule candidate:` in the task summary;
-  the phase planner adjudicates.
+- Rules are living. They are proposed at phase ends, adjudicated at the next plan approval,
+  and added to `rules/` as individual files. The expert writes `Rule candidate:` in the task
+  summary; the mod asks the developer for each verdict at the next plan approval.
 - Every phase milestone is an observable, machine-checkable outcome. The gate, not anyone's
   say-so, is the arbiter.
 - Generations are evolutionary leaps, not version bumps. A new generation only when a
@@ -84,9 +78,9 @@ where wording differs, the higher layer governs.
 1. `CLAUDE.md` (about 190 tokens): the roles line, pointers to the project-architect skill,
    `HOW_WE_WORK.md`, the live plan and the constitution. It is not the rules; it points at
    them. The rules themselves live in `.claude/skills/project-architect/SKILL.md` and each agent
-   file names that skill under `skills:`. Leaf agents (retrievers, the critic) carry
+   file names that skill under `skills:`. Leaf agents (the retrievers) carry
    `omitClaudeMd: true`, which drops `CLAUDE.md` and the auto-memory index from their
-   context; the critic keeps the skill because it must quote the rules.
+   context.
 2. The project-architect skill: eleven numbered sections (precedence, roles, output, proportionality,
    git, verification, hygiene, knowledge, the developer, long compute, house style) plus a
    project-rules section that holds project-specific additions. This is what governs every
@@ -103,8 +97,7 @@ where wording differs, the higher layer governs.
    agents that do the work. At phase close, `phaseend_index.py archive` moves `current/` to
    `phase-ends/phase-<N>/`.
 7. `PhaseEnd_Phase<N>.md` and `GenerationEnd_<G>.md`: the append-only build history.
-   Assembled by scripts from the phase's task logs and summaries, the milestone verification,
-   and the closer's recap.
+   Assembled by scripts from the phase's task logs and summaries and Claude's phase report.
 8. `rules/` (one file per rule), `cookbook/` (one file per technique), `docs/ops/` (environment
    and build references).
 
@@ -122,32 +115,29 @@ junction so a fresh machine restores it with `pa_install --project`.
 
 | Role | Agent | Model | Effort | Spawns | Tools |
 |---|---|---|---|---|---|
-| Planner (generation) | planner-gen | Opus 5.5 | medium | retrievers | — |
-| Planner (phase) | planner-phase | Opus 5.5 | medium | retrievers | — |
-| Router | pa-session | Sonnet 5.5 | medium | experts, planners, critic, review, discuss, curator | — |
-| Expert (default) | expert-opus55 | Opus 5.5 | medium | coders, retrievers | — |
-| Expert (hard, `effort: high`) | expert-fable | Fable 5.1 | medium | coders, retrievers | — |
-| Coder (default) | coder-opus55 | Opus 5.5 | medium | retriever-code | — |
+| Claude (the partner) | pa-claude | the session's (`/model`) | the session's (`/effort`) | coders, retrievers, thinkers | — |
+| Thinker | pa-thinker | Opus 5.5 | max | retrievers | Read |
+| Deep thinker | pa-thinker, `[effort deep]` | Fable 5.1 | max | retrievers | Read |
+| Expert (default) | pa-expert | Opus 5.5 | medium | coders, retrievers | — |
+| Expert (hard, `effort: high`) | pa-expert | Fable 5.1 (Max 20x) | medium | coders, retrievers | — |
+| Coder | pa-coder | Opus 5.5 | medium | retriever-code | — |
 | Retriever (code) | retriever-code | Sonnet 5.5 | medium | — | Read, Grep, Glob, Write |
 | Retriever (digest) | retriever-digest | Sonnet 5.5 | medium | — | Read, Grep, Glob, Write |
 | Retriever (web) | retriever-web | Sonnet 5.5 | medium | — | WebSearch, WebFetch, Write |
-| Critic | critic | Fable 5.1 | medium | — | — |
-| Review | review | Fable 5.1 | medium | retriever-code, retriever-digest | — |
-| Discussion | discuss, discuss-high, discuss-max | Opus 5.5 | medium, high, max | — | — |
-| Memory curator | memory-curator | Fable 5.1 | medium | — | — |
+| Auditor | auditor | Fable 5.1 | medium | pa-coder, retriever-code | — |
+| Memory curator | memory-curator | Opus 5.5 | medium | — | — |
 
-Models and efforts are pinned per agent file; the developer never touches `/effort` or
-`/model`. The cost structure follows from the pinning: Opus 5.5 is the default builder and
-expert (coders, the planners since 3.9.5 and the medium-effort expert), Fable 5.1 the thinker for hard tasks (
-the critic, the hard-tier expert), and
-Sonnet the middle ground (the router, all three retrievers). The router runs
-on Sonnet because it is purely mechanical: it reads a seed, picks the next task, spawns an
-expert and waits. Judgment lives in the subagents. The phase planner marks `effort: high` only
+Models and efforts are pinned per agent file; Claude follows the developer's `/model` and
+`/effort`. The cost structure follows from the pinning: Opus 5.5 is the default builder and
+expert (coders and the medium-effort expert), Fable 5.1 the thinker for hard tasks (the
+hard-tier expert, the deep thinker), and Sonnet the middle ground (all three retrievers). A
+plan marks `effort: high` only
 when a task's done-when rests on a judgment no test can arbitrate (a design decision, a harness
 probe, a proof read from evidence), never for size or importance; at most one task in five per
 phase plan, each high mark's judgment named in the plan's Rationale.
 
-The maximum spawn depth is three: router (0), expert (1), coder (2), retriever-code (3). The
+The maximum spawn depth is three: the main session (0), expert (1), coder (2), retriever-code
+(3). The
 depth is set explicitly in the environment (`CLAUDE_CODE_MAX_SUBAGENT_SPAWN_DEPTH=3`) so a
 harness default change cannot silently break it. A coder's retriever is a leaf by construction
 (no `Agent` tool) so the chain cannot grow further.
@@ -172,69 +162,62 @@ is adopted into `R<N>-<nnn>.md` by `tools/research_add.py adopt`, run at the exp
 
 ## Lifecycle
 
-The launcher (`tools/launch.py`) checks the project's state and determines the mode:
+The mod reads the project's state from `tools/launch.py --state-json`:
 
-- No `GENERATION_PLAN.md`, or all its phases closed: planner-gen mode.
-- Generation open, no approved phase plan: planner-phase mode.
-- `REPLAN.md` present: planner-phase in replan mode.
-- `REVIEW.md` present: review mode.
-- Otherwise: the router loop.
+- No `GENERATION_PLAN.md`, or all its phases closed: a generation plan is needed.
+- Generation open, no approved phase plan: a phase plan is needed.
+- `REPLAN.md` present: the phase plan is drafted again.
+- `REVIEW.md` present: a review pause.
+- Otherwise: the work loop.
 
-In planner mode the router spawns a planner (generation or phase) which explores only through
-retrievers, drafts into `.run/`, and returns a summary. The router puts the summary in front
-of the developer through the question picker: approve, show the full plan first, or send
-changes back. On approval the router writes the plan with `plan_edit.py from-draft`, stamps
-it with `plan_edit.py approve`, records ratified rules, and commits. From that point
+When a plan is needed, Claude drafts it with the `pa-planning` skill, exploring only through
+retrievers, into `.run/`, and the mod presents it in the plan-mode view: approve, or send
+changes back. On approval the mod installs the plan, stamps it with `plan_edit.py approve`,
+records ratified rules, and commits. From that point
 `plan_edit.py` is the only writer of the plan file; a `PreToolUse` hook denies any other
 write to it.
 
-In the router loop, at every task boundary the router consumes `INBOX.md` if the developer
-left notes, asks `plan_edit.py next` for the next runnable task, stamps the statusline and
-spawns the expert in the background. Then it ends its turn; the harness wakes it when the
-expert returns. While an expert runs, the statusline shows the task, the agent, the context
+In the work loop, at every task boundary the mod consumes `INBOX.md` if the developer left
+notes, asks `plan_edit.py next` for the next runnable task and spawns the expert in the
+background, while the developer goes on talking with Claude. While an expert runs, the statusline shows the task, the agent, the context
 and the time elapsed. The expert reads the plan's Context, Interfaces and Cookbook sections,
 its own task entry, and only the summaries the entry names. It works, spawns coders and
-retrievers as needed, and returns its contract.
+retrievers as needed, and returns its report.
 
-When an expert returns `done`, the router marks the task done
-and goes to the next task. When it returns `question` or `blocked`, the router sends the
-question to the critic. A `handoff` (context crossed the 350,000-token threshold) triggers
-a respawn: the expert writes `TASK_PROGRESS.md`, commits and returns; the router respawns
-the same agent with the progress file in its brief. The respawn archives the file to
+When an expert returns `done`, the mod marks the task done and goes to the next task. When
+it returns `question` or `blocked`, Claude judges it (see Replan tiers). A `handoff` (context
+crossed the 350,000-token threshold) triggers a respawn: the expert writes `TASK_PROGRESS.md`,
+commits and returns; the mod respawns the same agent with the progress file in its brief. The respawn archives the file to
 `logs/T<n>.progress<k>.md` when done.
 
-When `plan_edit.py next` prints `NONE`, the router asks the developer once whether anything
-else should come first, then spawns the phase closer (`expert-opus55`).
-The closer runs `phaseend_index.py verify`, which executes every `verified by:` clause of the
-milestone and prints GREEN or RED per clause. It writes `RECAP.md`, promotes techniques from
-`generalizable:` lines to the cookbook, commits, and returns `MILESTONE: green` or `red`. On
-green the router assembles, lints and archives the phase, commits, and gives the developer
-the recap with the agent-runs table. The session ends with `Relaunch: /clear then go`.
+When `plan_edit.py next` prints `NONE`, Claude tells the developer what the phase did and asks
+the close question. After the developer's yes, Claude calls `release({hold: "close", note: "<its
+phase report>"})`; the mod writes the note to `phase-ends/current/RECAP.md` (`## Recap`, plus
+`## Generation Recap` at a generation end) and runs the close with no agent: recalc, assemble,
+commit, archive, the generation close, the archived commit and the closed line. The next phase
+starts from its own approved plan.
 
 The carry audit rides on the close. `phaseend_index.py assemble` runs `pa_ledger.py audit --phase`,
 which walks the phase's transcripts once (zero tokens, repeatable) and writes its tables into the
 PhaseEnd's Audit section: reads by file and role, writes by file, results by kind, whole-plan and
 tool-source reads, spilled results read whole, noise, carry per request against the previous phase,
 and candidates promised beside measured. Rows past the thresholds become `- flag:` lines; the seed
-then carries `Audit flag:` and the router spawns the auditor (Fable, medium effort) before the next
-planner. The auditor judges tables, never transcripts: one verdict per flagged row (tool, split,
+then carries `Audit flag:` and the auditor (Fable, medium effort) runs before the next plan is
+drafted. The auditor judges tables, never transcripts: one verdict per flagged row (tool, split,
 guard, script-fix, leave), project-level fixes applied through coders, harness-level ones written as
 `Tool candidate:` lines in `phase-ends/current/AUDIT.md` with what the tool does, what the model did
-instead, the occurrences, the saving on the credit formula and the build size. The planner copies them
-into its return; the developer ratifies each with one picker question at plan approval; a built tool
+instead, the occurrences, the saving on the credit formula and the build size. Claude carries them
+into the next plan; the developer ratifies each with one picker question at plan approval; a built tool
 earns the savings credit automatically and the next audit prints measured beside promised.
 
 At a generation boundary, `genend_index.py assemble` builds the `GenerationEnd` from the
-phase-end files. The next `claude` opens in planner-gen mode and the generation-start ceremony
-(the memory curator, then the auditor over the closing generation's last PhaseEnd) runs before the
-new planner drafts.
+phase-end files. A generation plan is then needed, and the generation-start ceremony (the memory
+curator, then the auditor over the closing generation's last PhaseEnd) runs before Claude drafts it.
 
-Every `/discuss [model] [effort]` session that proceeds writes a discussion record with a `Status:` tag
-(`open`, `executed`, `planned:<phase> T<k>`, `deferred:<phase>`, `dropped`, `failed`) and an
-index line; the phase's discussion lines fold into the PhaseEnd on archive, and cumulative
-history lives in `phase-ends/DISCUSSION_INDEX.md`. A record's `## Deferred` lines and an
-inbox's `later:` lines both flow into the PhaseEnd's `## Deferred` block, so a later planner
-either plans the item as a task or leaves it deferred with one line of reason.
+Inbox items and their triage are indexed in `discussions/INDEX.md`; the phase's lines fold
+into the PhaseEnd on archive, and cumulative history lives in `phase-ends/DISCUSSION_INDEX.md`.
+An inbox's `later:` lines flow into the PhaseEnd's `## Deferred` block, so a later plan either
+plans the item as a task or leaves it deferred with one line of reason.
 
 Every configured MCP server adds its instruction block to every session, whether or not the
 task at hand needs it; `doctor` lists the servers found in `~/.claude.json` and the project's
@@ -244,11 +227,11 @@ task at hand needs it; `doctor` lists the servers found in `~/.claude.json` and 
 
 ## Contracts
 
-Every role returns a fixed-format contract of at most 300 tokens. Nothing else. The contracts
-are the system's only inter-agent communication; they carry status, pointers and one-line
-recommendations, never pasted content.
+Briefs are fixed-format contracts of at most 300 tokens. A report starts with one plain word,
+`done`, `question` or `blocked` (`review` and `handoff` where they apply); the rest is free text.
+An old `STATUS:` line still reads. The mod reads commits from git.
 
-Expert brief (router to expert):
+Expert brief (the loop to the expert):
 ```
 TASK: T3 — <title>
 PLAN: phase-ends/current/PHASE_PLAN.md
@@ -256,20 +239,9 @@ HOW: HOW_WE_WORK.md
 LOGS TO READ: phase-ends/current/tasks/T1.md, tasks/T2.md
 CODER: opus55 | none              EFFORT: high | medium
 PROGRESS: <path>                   (respawn only)
-NOTE: <developer text or critic's WHY>   (only when present)
+NOTE: <developer text or Claude's correction>   (only when present)
 DONE WHEN: <from the task entry>
-RETURN: the expert contract, ≤300 tokens, nothing else.
-```
-
-Expert return:
-```
-STATUS: done | blocked | question | handoff | review
-LOG: phase-ends/current/tasks/T3.md
-CTX: 142k
-COMMIT: abc123 | none
-MILESTONE: green | red | n/a       (phase-end only)
-RECOMMENDED: <one line>
-QUESTION: <one paragraph; only if question>
+RETURN: a report starting with done, question or blocked.
 ```
 
 Coder brief (expert to coder):
@@ -281,19 +253,7 @@ CONSTRAINTS: <2–4 lines>
 BUILD/TEST: <exact commands; what green means>
 DONE WHEN: <machine-checkable>
 LOG: phase-ends/current/logs/T3.c1.md
-RETURN: the coder contract, ≤300 tokens.
-```
-
-Coder return:
-```
-STATUS: done | partial | blocked
-CHANGED: path:lines, …            (≤6 entries)
-VERIFIED: <command -- result>
-LOG: phase-ends/current/logs/T3.c1.md
-CTX: 96k
-COMMIT: def456 | none
-DEVIATIONS: <one line | none>
-BLOCKER: <one paragraph; only if partial/blocked>
+RETURN: a report starting with done, question or blocked.
 ```
 
 Retriever brief: `QUESTION · FOR · SCOPE · CAP · REPORT yes|auto · KNOWN`. Return: the
@@ -301,33 +261,26 @@ answer only, first line `REPORT: R24-007` when a report was written. Code retrie
 signatures with `file:line`, call sites one per line, shared state and nearby gotchas, up to
 40 lines.
 
-Critic brief: the plan sections, task index, named summaries, the question, the
-recommendation, and a tier guess. Return: `DECISION (continue | edit | needs-developer) ·
-TIER · EDITS (plan_edit.py lines) · WHY (3 lines) · BRIEF (needs-developer only, ends
-"Recommended: ...")`.
-
 ---
 
-## Replan tiers and the critic
+## Replan tiers
 
 Changes are graded by scope and routed to the agent with the right authority:
 
 - Approach within the task: the expert decides and notes it under Deviations.
-- A developer's inbox item that only adds within the milestone: the router applies the edit and
+- A developer's inbox item that only adds within the milestone: the loop applies the edit and
   adds a Changes entry.
-- Any plan change an expert proposes, additive or not: the critic decides. It returns `continue`
-  (carry on), `edit` (exact `plan_edit.py` commands the router runs and commits) or
-  `needs-developer` (a one-paragraph brief with a recommendation the router puts to the
-  developer in the question picker).
-- Structural (milestone or scope change): the developer, through `REPLAN.md`. The next
-  `launch.py --seed-only` starts a planner-phase pass that archives the old plan and writes a
-  new one for approval.
+- Any plan change an expert proposes, additive or not: Claude judges it. What stays inside the
+  milestone Claude applies itself (the loop applies the edits at a task boundary); a change to
+  the milestone or the scope Claude asks the developer about.
+- Structural (milestone or scope change): the developer, through `REPLAN.md`. Claude drafts the
+  phase plan again; its approval archives the old plan and writes the new one.
 
-The critic exists because the expert's context is deliberately narrow. An expert knows its own
+Claude judges because the expert's context is deliberately narrow. An expert knows its own
 task, not that another task tests the same thing from the other side. When an expert hits a
-wall it will sometimes recommend removing the wall. The critic sees the full task index, the
+wall it will sometimes recommend removing the wall. Claude sees the full task index, the
 milestone, and the plan's rationale, and can judge whether the recommendation protects the
-milestone or undermines it. Cost: about $0.50 per invocation.
+milestone or undermines it.
 
 ---
 
@@ -337,27 +290,21 @@ The developer is never interrogated. Agents give recommendations, not questions;
 decision is genuinely the developer's (risk appetite, product intent, money, scope), the
 recommendation states consequences and ends with a recommended answer.
 
-Three channels reach the developer:
+Only Claude speaks to the developer, through two channels:
 
-1. The question picker (plan approval, review decisions, the critic's `needs-developer`, a
-   planner's Developer-decides items): interactive, in the terminal.
-2. Plain text at the end of a turn (the close question, and anything the router must ask
-   outside the picker).
-3. `/discuss [model] [effort]` (the discuss agent): the developer opens a read-only thinking session with
-   Opus 5.5 at medium (opt-in: fable or sonnet, high or max; `/thoughts` an alias for one release)
-   in its own terminal view. `Edit` and `Write` are denied while the discussion
-   flag is set. When the developer says `proceed`, the agent writes the record under
-   `discussions/` and returns the decisions as exact plan edits for the router to apply.
+1. The plan-mode view and the question picker (plan approval, review decisions, a change that
+   touches the milestone or the scope): interactive, in the terminal.
+2. Plain text at the end of Claude's turn (the close question, and anything else Claude must
+   ask).
 
-A note for a running expert is typed into the expert's own view (its context stays); the
-router relays nothing and relaunches only on `stop:` or `relaunch:`. `INBOX.md` takes
-anything for the next task boundary.
+A correction for a running expert travels as a message, Claude → the expert → its coder;
+nothing is killed. `INBOX.md` takes anything for the next task boundary.
 
 Notifications: at the default `toast: waiting` level (`.claude/pa.json`; the others are `all`
 and `off`) a Windows toast fires only when something waits on the developer: a `Stop` that ends
 on a question (the toast carries its text), a permission prompt or a picker question (Claude
-Code reports both as `permission_prompt`), a new `REVIEW.md` or `REPLAN.md`, a finished
-discussion, and a turn stopped by an error. Phone pushes come from Claude Code itself: with
+Code reports both as `permission_prompt`), a new `REVIEW.md` or `REPLAN.md`, and a turn
+stopped by an error. Phone pushes come from Claude Code itself: with
 Remote Control on and its `/config` push switches set (the machine install turns them on
 unless you set them yourself), permission prompts and picker questions reach the Claude app.
 The toast child gets a console without a window (`CREATE_NO_WINDOW`) so there is no flash and
@@ -367,10 +314,10 @@ no focus theft.
 
 ## Mode 1 intake
 
-3.0 change: Gate 2 no longer prompts for `/effort max`. Generation happens in `planner-gen`
-at medium effort; the model and effort are pinned by the agent file.
+Gate 2 does not prompt for `/effort max`. Claude drafts the generation plan with the
+`pa-planning` skill, on the model and effort the developer runs it on.
 
-In 3.0 the intake and the constitution happen in a plain session (`claude --agent plain`) or
+In 3.0 the intake and the constitution happen in a conversation with Claude or
 in Claude Chat with the chat kit; that session writes the outputs of the next chapter itself.
 The governed loop starts at the first bare `claude` after `pa_install.py --project`; an
 intake agent is a later item.
@@ -400,9 +347,9 @@ considering, scope-creep warnings, methodology concerns, architecture suggestion
 reasoning, and risk flags. Then ask what to adjust.
 
 Gate 2, the generation confirmation (after they confirm the review): generation is Tier-1
-work. In 3.0 the planner-gen agent runs at medium effort by its agent file; the developer is
-not asked to toggle anything. The intake session writes everything listed in the next
-chapter; the first bare `claude` afterwards enters planner-gen mode.
+work. The developer is not asked to toggle anything. The intake session writes everything
+listed in the next chapter; at the first bare `claude` afterwards Claude drafts the generation
+plan and the mod presents it in the plan-mode view.
 
 ---
 
@@ -421,7 +368,7 @@ Phase design principles (you design the phases, not the developer):
 - Every phase produces something runnable and testable. No planning-only or models-only phases.
 - Every phase ends with an explicit Milestone line: an observable, machine-checkable outcome
   ("`make check` green", "the level loads and the character walks", "round-trips 100 files
-  byte-identical") — the gate that the closer will hold the phase to.
+  byte-identical"), which the developer confirms at the close question.
 - Validation is a dedicated phase, not an afterthought.
 - Enhancement layers are toggleable, feature-flagged modules added one at a time and measured
   before the next.
@@ -472,14 +419,14 @@ Generation outputs (the complete set):
    nothing is ever appended to it — a standing decision or an environment fact is routed to a rule, a product doc, a
    Tools-table row or `docs/ops/` instead.
 7. `HOW_WE_WORK.md ## Developer` filled from intake item 3 and the skill-level assessment
-   (no memory is written); it is one of the sections the `router` and `planner` slices carry beyond the shared ones.
+   (no memory is written); it is one of the sections the `claude` slice carries beyond the shared ones.
 
 ---
 
 ## Rule detection
 
-3.0 change: "propose at PhaseEnd" becomes "the expert writes `Rule candidate:` in the task
-summary; the phase planner adjudicates."
+"Propose at PhaseEnd" means "the expert writes `Rule candidate:` in the task summary; the
+verdict is approved with the next plan."
 
 | Signal | Example | Likely rule type |
 |---|---|---|
@@ -563,7 +510,7 @@ Every path follows the same runbook discipline:
 - `docs/retired/` for everything leaving the load order. Nothing is deleted.
 - Never push. The developer pushes when satisfied.
 - The migration's first planning step is the curator. When a project already has a memory
-  directory, the memory curator runs before the planner drafts the first phase, demoting
+  directory, the memory curator runs before Claude drafts the first phase, demoting
   generation-specific memories into a linked archive and keeping the index small.
 
 The resume pointer (`.run/install-state.json`) records the last completed step. A crash or
@@ -579,11 +526,11 @@ format and keeps the index current.
 
 Rules (`rules/INDEX.md`, one file per rule): `tools/rules_add.py add` writes the file and
 appends the index line. Rules are proposed at phase end (`Rule candidate:` in a task summary),
-adjudicated by the phase planner, and never added unilaterally. A superseded rule keeps its
+adjudicated at the next plan approval, and never added unilaterally. A superseded rule keeps its
 file with a `superseded-by:` line; the index marks it.
 
 Cookbook (`cookbook/INDEX.md`, one file per technique): `tools/cookbook_add.sh --title ... --tags
-... --file ...` writes the entry and appends the index. Planners and experts grep the index
+... --file ...` writes the entry and appends the index. Claude and the experts grep the index
 by tag before recurring work; they never read it whole (the index can grow past 400 lines in
 a large project). A technique that recurs across projects is stronger evidence that it is
 general.
@@ -598,13 +545,13 @@ into the system prompt of every agent that names them.
 
 The flywheel: every task ends with a full log (`logs/T<n>.md`) and a summary
 (`tasks/T<n>.md`, at most 150 lines). The next task reads summaries only. Gotchas are
-marked `generalizable:` (promoted to the cookbook at phase end) or `workflow:` (promoted to a
+marked `generalizable:` (the expert adds them to the cookbook during its task) or `workflow:` (promoted to a
 skill). Decisions are marked `binding:` (promoted to `HOW_WE_WORK.md` at phase end). The
 proportionality rule applies: no features, abstractions, options or tests beyond the change.
 A one-time fetch is a fetch, not a downloader.
 
 The generation-start ceremony: when a generation closes and the next one opens, a
-memory-curator agent (Fable 5.1 at medium effort) runs before the planner drafts. It reads
+memory-curator agent (Opus 5.5 at medium effort) runs before Claude drafts. It reads
 every memory file, the cookbook and rules indexes, and `HOW_WE_WORK.md`. It demotes
 generation-specific state into archive files: memories into `memory/gen<N>.md`, cookbook
 entries into `cookbook/gen<N>/`, rules into `rules/gen<N>/`, and superseded standing decisions
@@ -615,14 +562,14 @@ archive. Active demoted rules keep their main-index line, marked `demoted:gen<N>
 
 The four subcommands of `tools/curate.py` (`memory`, `cookbook`, `rules`, `how-we-work`) each
 support `--dry-run`. The `how-we-work --report` subcommand lists trim candidates by date and
-token budget; `--retire` moves them into the generation archive. The pa-session detects the
-ceremony via a `curate:` line in the seed (written by `launch.py` when a `GenerationEnd`
-exists) and spawns the curator in the foreground before the planner.
+token budget; `--retire` moves them into the generation archive. The mod detects the
+ceremony via the `curate:` line `launch.py` reports (when a `GenerationEnd` exists) and
+spawns the curator before Claude drafts the plan.
 
 The curator's pre-flight is `pa_ledger.py doctor --sizes`: the sizes of the governed files
 (`CLAUDE.md`, each skill, `HOW_WE_WORK.md`, the memory index, the cookbook and rules indexes)
 and the current expert seed against their targets. Over a target is a WARN the curator acts
-on; only a memory index past the harness's own cap fails. The closer's `## Audit` section in
+on; only a memory index past the harness's own cap fails. The `## Audit` section in
 every PhaseEnd records the expert seed per phase, its growth over the previous phase, and
 the same sizes.
 
@@ -648,7 +595,7 @@ Standing decisions of 3.1 through 3.3 that change how a project is run:
   them. Never delete a memory; demote it to a linked
   generation archive. Only the index costs context.
 - The generation-start ceremony (curator, demotions, trim, seed audit, `doctor --sizes`) runs
-  before the planner at every generation boundary.
+  before Claude plans at every generation boundary.
 
 ---
 
@@ -688,20 +635,19 @@ percentage, never hurry"). Long commit messages. Inline one-liners. "Present res
 |---|---|---|
 | Entry point | `SETUP.md` path A/B/C | `pa_install.py --root` + `--project` |
 | Rules store | One `RULES_REGISTRY.md` (recited every session) | `rules/` one file per rule; grep the index |
-| Session startup | Rule recitation + checkpoint restore | Seed file (`launch.py --seed-only`) |
+| Session startup | Rule recitation + checkpoint restore | The mod reads the state (`launch.py --state-json`) |
 | Effort and models | Developer toggles `/effort`; effort map per phase | Pinned per agent file; the developer never touches `/effort` |
 | Execution | One task, confirmation, plan-mode + Max | One task per fresh context; two gates per phase, autonomy between |
 | State recovery | `CURRENT_PHASE.md` (one large file, reloaded every turn) | `TASK_PROGRESS.md` (written at handoff, archived when done) |
 | Knowledge stores | One cookbook file, one registry, one ops file | `cookbook/`, `rules/`, `docs/ops/` with indexes and flywheel scripts |
 | Agent state | `.claude-state/` (repo-contained) | Same, plus the memory junction and the curator |
-| Phase close | PhaseEnd (append-only) + the developer closes | `phaseend_index.py verify` then `assemble`, `lint`, `archive` |
+| Phase close | PhaseEnd (append-only) + the developer closes | The developer's yes, then `assemble`, `archive` |
 | Cost visibility | None | Usage ledger, statusline with savings and pace, `pa_ledger.py report` |
 | Migration paths | Mode 4 (one protocol) | Three layout modules: stock 2.0, 1.x-shaped, overlay kit |
 
 What is measured (the acceptance metrics): average context per expert request at most 150k
-tokens; expert seed at most 40k; retriever seed at most 6k; router context at phase end at
-most 40k; zero prefix rewrites not at session start; zero Tasks-tool attachments; cost per
-request at most $0.10; developer interruptions limited to the critic's `needs-developer` plus
+tokens; expert seed at most 40k; retriever seed at most 6k; zero prefix rewrites not at session start; zero Tasks-tool attachments; cost per
+request at most $0.10; developer interruptions limited to Claude's milestone or scope questions plus
 the milestone gates.
 
 ---

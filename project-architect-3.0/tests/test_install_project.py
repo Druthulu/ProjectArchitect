@@ -57,6 +57,24 @@ def read(path):
         return fh.read()
 
 
+def past_agent(name):
+    """The last packaged bytes of a retired agent (3.24 T5: only an unedited copy is pruned)."""
+    top = git(PKG, "rev-parse", "--show-toplevel").stdout.strip()
+    path = os.path.relpath(os.path.join(PKG, "agents", name), top).replace(os.sep, "/")
+    c = git(top, "log", "-1", "--format=%H", "--", path).stdout.strip()
+    shown = subprocess.run(("git", "-C", top, "show", "%s^:%s" % (c, path)), capture_output=True)
+    if not c or shown.returncode:
+        raise unittest.SkipTest("needs ProjectArchitect's history (%s); not in a public checkout" % name)
+    return shown.stdout
+
+
+def write_bytes(path, data):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as fh:
+        fh.write(data)
+    return path
+
+
 def entries(root):
     """Every path under ``root`` except ``.git`` (directories included)."""
     out = set()
@@ -166,11 +184,16 @@ class TestFreshInstall(ProjectCase):
         for sid in ("P2", "P3", "P6", "P7"):
             self.assertEqual(got.get(sid), "DONE", out)
         self.assertEqual(got.get("P10"), "SKIP", out)        # --no-commit
-        self.assertIn("123 created", out)   # was 122: +tools/expert_ttl.py (3.15 T5); 122 was 120: +expert-opus55-5m.md, +expert-fable-5m.md (3.15 T4); 120 was 131: -11 tools/analysis/ (3.11 T27); 131 was 130: +tools/pa3_update.py (3.10 T20); 130 was 129: +tools/managed.py (3.9.7 T7); 129 was 128: +.claude/pa3-managed.json (3.9.7 T6); 128 was 127: +commands/bench.md (3.9.6 T7); 127 was 125: +tools/bench.py, +tools/_bench_grade.py (3.9.6 T4); 125 was 122: +commands/discuss.md, +discuss-high.md, +discuss-max.md (3.9.5 T13); 122 was 123: -expert-fable-high.md (3.9.5 T15); 123 was 124: -coder-sonnet.md (3.9.5 T9); 123: +.claude/agents/expert-fable.md (3.9 T1.c2); 120 before T3.c2
+        # 3.24 T3.1: derived, not pinned (was "124 created" before the Gen 3 loop left): every
+        # file the install leaves on disk is one "created" except the repo's own README.md.
+        made = 0
+        for _d, ds, fs in os.walk(self.repo):
+            ds[:] = [x for x in ds if x != ".git"]
+            made += len(fs)
+        self.assertIn("%d created" % (made - 1), out)
 
-        for rel in (".claude/pa.json", ".claude/agents/pa-session.md",
-                    ".claude/skills/project-architect/SKILL.md", ".claude/commands/thoughts.md",
-                    ".claude/commands/discuss.md",
+        for rel in (".claude/pa.json", ".claude/agents/pa-claude.md",   # 3.24 T3.1: was pa-session.md
+                    ".claude/skills/project-architect/SKILL.md",
                     ".claude/settings.json", "tools/plan_edit.py", "tools/run.sh",
                     "tools/outline.py", "templates/task.template.md",
                     "templates/TASK_PROGRESS.template.md", "templates/research.template.md",
@@ -190,7 +213,8 @@ class TestFreshInstall(ProjectCase):
         for sub in ("tasks", "logs", "research", "discussions"):
             self.assertTrue(os.path.isdir(self.path("phase-ends", "current", sub)), sub)
         self.assertTrue(os.path.isdir(self.path(".run")))
-        self.assertEqual(len(os.listdir(self.path(".claude", "agents"))), 19)  # was 17: +expert-opus55-5m.md, +expert-fable-5m.md (3.15 T4); 17 was 15: +discuss-high.md, +discuss-max.md (3.9.5 T13); 15 was 16: -expert-fable-high.md (3.9.5 T15); 16 was 17: -coder-sonnet.md (3.9.5 T9); 16: +expert-fable.md (3.9 T1)
+        self.assertEqual(len(os.listdir(self.path(".claude", "agents"))),        # 3.24 T3.1: the package's
+                         len(os.listdir(os.path.join(PKG, "agents"))))           # agents at max20 (was 19)
 
     def test_placeholders_are_filled(self):
         self.install()
@@ -199,31 +223,11 @@ class TestFreshInstall(ProjectCase):
         self.assertIn("add headlines with tools/rules_add.py promote", skill)
         self.assertIn(PY.replace("\\", "/"), skill)
 
-        thoughts = read(self.path(".claude", "commands", "thoughts.md"))
-        self.assertNotIn("{{", thoughts)
-        self.assertIn(PY.replace("\\", "/") + " tools/discussion.py", thoughts)
-
-        discuss = read(self.path(".claude", "commands", "discuss.md"))
-        self.assertNotIn("{{", discuss)
-        self.assertIn(PY.replace("\\", "/") + " tools/discussion.py", discuss)
-
         pa_json = json.loads(read(self.path(".claude", "pa.json")))
         self.assertEqual(pa_json["project"], "demo")
         self.assertEqual(pa_json["python"], PY.replace("\\", "/"))
         self.assertTrue(pa_json["pa_version"].startswith("3."))
         self.assertRegex(pa_json["installed_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
-
-    def test_discuss_effort_variants_match_discuss(self):
-        """3.9.5 T13: discuss-high/-max differ from discuss only in name, effort, description."""
-        agents = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "agents")
-
-        def lines(name, key):
-            text = read(os.path.join(agents, name))
-            return [ln for ln in text.splitlines() if ln.startswith(key + ":")]
-        for name, effort in (("discuss-high.md", "high"), ("discuss-max.md", "max")):
-            self.assertEqual(lines(name, "effort"), ["effort: " + effort])
-            for key in ("tools", "model"):
-                self.assertEqual(lines(name, key), lines("discuss.md", key), (name, key))
 
     def test_claude_md_is_small_and_names_the_project(self):
         self.install("--name", "Vantage", "--tagline", "a book-length thing")
@@ -299,9 +303,9 @@ class TestFreshInstall(ProjectCase):
         self.install()
         index = read(self.path("rules", "INDEX.md"))
         rules = [ln for ln in index.splitlines() if re.match(r"^[A-Z]+\d+ \| ", ln)]
-        self.assertEqual(len(rules), 32, index)
+        self.assertEqual(len(rules), 31, index)  # was 32 (3.25 T7: P7 removed)
         files = [n for n in os.listdir(self.path("rules")) if n != "INDEX.md"]
-        self.assertEqual(len(files), 32)
+        self.assertEqual(len(files), 31)  # was 32 (3.25 T7: P7 removed)
         self.assertNotIn("INDEX.seed.md", files)
 
     def test_settings_merge_has_no_hooks(self):
@@ -310,11 +314,10 @@ class TestFreshInstall(ProjectCase):
         self.assertIs(settings["todoFeatureEnabled"], False)
         self.assertNotIn("hooks", settings)
         self.assertNotIn("statusLine", settings)
-        self.assertEqual(settings["agent"], "pa-session")                     # 3.1 T9
-        self.assertEqual(settings["model"], "claude-sonnet-5-5[1m]")            # 3.12 T1: was sonnet-5
-        self.assertEqual(settings["modelSettings"]["claude-sonnet-5-5"]["effortLevel"], "medium")
-        self.assertNotIn("claude-sonnet-5", settings["modelSettings"])
-        self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"], "medium")
+        for key in ("agent", "modelSettings"):                                 # 3.24 T3.1: the pa-session
+            self.assertNotIn(key, settings)                                     # pins left
+        self.assertEqual(settings["model"], "claude-opus-5-5[1m]")              # was sonnet-5-5 (3.12 T1)
+        self.assertEqual(settings["effortLevel"], "medium")
         allow = settings["permissions"]["allow"]
         self.assertIn("Bash(%s tools/*)" % PY.replace("\\", "/"), allow)      # 3.11 T15: was tools/*:*,
         self.assertIn("Bash(bash tools/*)", allow)                              # a literal * in Claude Code
@@ -330,9 +333,8 @@ class TestFreshInstall(ProjectCase):
         self.install()
         settings = json.loads(read(self.path(".claude", "settings.json")))
         self.assertEqual(settings["model"], "claude-sonnet-5")                # hand-set: kept
-        self.assertEqual(settings["modelSettings"]["claude-sonnet-5"]["effortLevel"], "high")
-        self.assertEqual(settings["modelSettings"]["claude-sonnet-5-5"]["effortLevel"], "medium")
-        self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"], "medium")
+        self.assertEqual(settings["modelSettings"],                            # hand-set: kept; 3.24 T3.1:
+                         {"claude-sonnet-5": {"effortLevel": "high"}})          # nothing shipped adds to it
         self.assertIn("Bash(cargo test:*)", settings["permissions"]["allow"])
         self.assertEqual(settings["env"]["RUST_BACKTRACE"], "1")
         self.assertNotIn("CLAUDE_CODE_ENABLE_TODO_TOOLS", settings["env"])      # fix-6
@@ -345,20 +347,21 @@ class TestFreshInstall(ProjectCase):
         self.assertEqual(len(backups), 1, backups)
 
     def test_settings_old_default_model_migrates(self):
-        """3.12 T1: the old shipped Sonnet 5 defaults move to Sonnet 5.5; other keys stay."""
+        """3.24 T5: the shipped Sonnet 5 pins go, the 3.2 pins come; other keys stay. Was (3.12 T1):
+        moved to Sonnet 5.5."""
         write(self.path(".claude", "settings.json"), json.dumps(
             {"model": "claude-sonnet-5[1m]",
              "modelSettings": {"claude-sonnet-5": {"effortLevel": "medium"},
                                "claude-fable-5-1": {"effortLevel": "high"}}}, indent=2) + "\n")
         self.install()
         settings = json.loads(read(self.path(".claude", "settings.json")))
-        self.assertEqual(settings["model"], "claude-sonnet-5-5[1m]")
-        self.assertNotIn("claude-sonnet-5", settings["modelSettings"])
-        self.assertEqual(settings["modelSettings"]["claude-sonnet-5-5"], {"effortLevel": "medium"})
-        self.assertEqual(settings["modelSettings"]["claude-fable-5-1"]["effortLevel"], "high")
+        self.assertEqual(settings["model"], "claude-opus-5-5[1m]")            # was sonnet-5-5[1m]
+        self.assertEqual(settings["modelSettings"],                            # hand-set high: kept
+                         {"claude-fable-5-1": {"effortLevel": "high"}})
 
     def test_pa3_upgrade_migrates_only_the_old_model_defaults(self):
-        """3.12 T1: a pa3 re-install migrates model/modelSettings and touches nothing else."""
+        """3.24 T5: a pa3 re-install removes the shipped pins, sets the 3.2 ones where absent and
+        touches nothing else. Was (3.12 T1): Sonnet 5 -> Sonnet 5.5."""
         self.install()
         rel = self.path(".claude", "settings.json")
         settings = json.loads(read(rel))
@@ -368,9 +371,30 @@ class TestFreshInstall(ProjectCase):
         write(rel, json.dumps(settings, indent=2) + "\n")
         out = self.install()
         after = json.loads(read(rel))
-        self.assertEqual(after["model"], "claude-sonnet-5-5[1m]", out)
-        self.assertEqual(after["modelSettings"], {"claude-sonnet-5-5": {"effortLevel": "medium"}})
+        self.assertEqual(after["model"], "claude-opus-5-5[1m]", out)          # was sonnet-5-5[1m]
+        self.assertNotIn("modelSettings", after)                               # emptied: dropped
+        self.assertIn("restart: needed", out)                                  # a pin changed
         self.assertEqual(after["env"], {"MINE": "1"})                        # no merge on pa3
+        out = self.install()
+        self.assertEqual(json.loads(read(rel)), after)                        # idempotent
+        self.assertIn("left alone", out)
+
+    def test_pa3_upgrade_adds_absent_defaults_and_keeps_values(self):
+        """3.22 T2d: a pa3 upgrade adds promptSuggestionEnabled/idleCompaction only when absent."""
+        self.install()
+        rel = self.path(".claude", "settings.json")
+        settings = json.loads(read(rel))
+        del settings["promptSuggestionEnabled"]
+        settings["idleCompaction"] = True
+        write(rel, json.dumps(settings, indent=2) + "\n")
+        out = self.install()
+        after = json.loads(read(rel))
+        self.assertIs(after["promptSuggestionEnabled"], False, out)
+        self.assertIs(after["idleCompaction"], True)                         # project's value kept
+        self.assertIn("~ settings  promptSuggestionEnabled: null -> false", out)
+        self.assertNotIn("idleCompaction:", out)
+        self.assertEqual({k: v for k, v in after.items() if k != "promptSuggestionEnabled"},
+                         settings)                                            # nothing else moved
         out = self.install()
         self.assertEqual(json.loads(read(rel)), after)                        # idempotent
         self.assertIn("left alone", out)
@@ -434,7 +458,7 @@ class TestSecondRun(ProjectCase):
         self.install()
         write(self.path("HOW_WE_WORK.md"), "# hand written\n")
         write(self.path("rules", "M4.md"), "# edited rule\n")
-        agent = self.path(".claude", "agents", "pa-session.md")
+        agent = self.path(".claude", "agents", "pa-claude.md")              # 3.24 T3.1: was pa-session.md
         os.remove(agent)
         out = self.install()
         self.assertTrue(os.path.isfile(agent), out)
@@ -455,7 +479,7 @@ class TestSecondRun(ProjectCase):
     def test_upgrade_prunes_retired_agents(self):
         self.install()
         stale = self.path(".claude", "agents", "coder-opus46.md")
-        write(stale, "---\nname: coder-opus46\n---\n")
+        write_bytes(stale, past_agent("coder-opus46.md"))  # 3.24 T5: unedited
         self.assertTrue(os.path.isfile(stale))
         out = self.install()
         self.assertFalse(os.path.isfile(stale), out)
@@ -464,7 +488,7 @@ class TestSecondRun(ProjectCase):
     def test_upgrade_prunes_retired_coder_sonnet(self):
         self.install()
         stale = self.path(".claude", "agents", "coder-sonnet.md")
-        write(stale, "---\nname: coder-sonnet\n---\n")
+        write_bytes(stale, past_agent("coder-sonnet.md"))  # 3.24 T5: unedited
         out = self.install()
         self.assertFalse(os.path.isfile(stale), out)
         self.assertIn("removed retired agent coder-sonnet.md", out)
@@ -472,10 +496,23 @@ class TestSecondRun(ProjectCase):
     def test_upgrade_prunes_retired_expert_fable_high(self):
         self.install()
         stale = self.path(".claude", "agents", "expert-fable-high.md")
-        write(stale, "---\nname: expert-fable-high\n---\n")
+        write_bytes(stale, past_agent("expert-fable-high.md"))  # 3.24 T5: unedited
         out = self.install()
         self.assertFalse(os.path.isfile(stale), out)
         self.assertIn("removed retired agent expert-fable-high.md", out)
+
+    def test_upgrade_prunes_the_per_model_role_agents(self):
+        """3.25 T6a: pa-expert, pa-coder and pa-thinker replace five agents; an upgrade removes them."""
+        self.install()
+        old = ("expert-opus55.md", "expert-fable.md", "coder-opus55.md", "thinker.md", "deep-thinker.md")
+        for name in old:
+            write_bytes(self.path(".claude", "agents", name), past_agent(name))
+        out = self.install()
+        for name in old:
+            self.assertFalse(os.path.isfile(self.path(".claude", "agents", name)), out)
+            self.assertIn("removed retired agent %s" % name, out)
+        for name in ("pa-expert.md", "pa-coder.md", "pa-thinker.md"):
+            self.exists(".claude/agents/" + name, out)
 
     def test_upgrade_prunes_a_legacy_pa3_skill_only(self):
         self.install()
@@ -634,6 +671,111 @@ class TestTier(ProjectCase):
             self.assertEqual(json.loads(pj.pa_json_text(env))["tier"], "max5")
 
 
+class TestMod(ProjectCase):
+    """3.22: pa.json keys, the mod settings, pa-claude/thinker/deep-thinker. 3.24 T3.1: always (no
+    ``--mod off``); ``--mod on`` still parses, a no-op."""
+
+    MOD = (".claude/agents/pa-claude.md", ".claude/agents/pa-thinker.md")   # 3.22 T8g: was claude.md (T8f), partner.md;
+    # 3.25 T6a: pa-thinker was thinker and deep-thinker
+    PLANNING = ".claude/skills/pa-planning/SKILL.md"                   # 3.23 T2: mod on only
+
+    def _pa(self):
+        return json.loads(read(self.path(".claude", "pa.json")))
+
+    def _record(self):
+        return json.loads(read(self.path(".claude", "pa3-managed.json")))["files"]
+
+    def test_mod_on_adds_claude_and_thinkers(self):
+        out = self.install()                                                # 3.24 T3.1: was --mod on
+        self.assertEqual(len(os.listdir(self.path(".claude", "agents"))),   # 3.24 T3.1: the package's
+                         len(os.listdir(os.path.join(PKG, "agents"))))      # agents at max20 (was 22)
+        rec = self._record()
+        for rel in self.MOD:
+            self.exists(rel, out)
+            self.assertIsNone(rec[rel]["user"])
+        thinker = read(self.path(".claude", "agents", "pa-thinker.md"))
+        self.assertIn("\nmodel: claude-opus-5-5[1m]\neffort: max\n", thinker)   # 3.25 T6a: the base row
+        self.exists(self.PLANNING, out)                                  # 3.23 T2
+        self.assertIn(self.PLANNING, rec)
+        planning = read(self.path(*self.PLANNING.split("/")))
+        self.assertNotIn("{{PY}}", planning)
+        self.assertIn("tools/plan_edit.py lint", planning)
+
+    def test_mod_on_thinker_at_pro(self):
+        self.set_tier("pro")
+        self.install()
+        self.assertFalse(os.path.exists(self.path(".claude", "agents", "deep-thinker.md")))
+        thinker = read(self.path(".claude", "agents", "pa-thinker.md"))   # 3.27 T11: Pro's own row
+        self.assertIn("\nmodel: claude-opus-5-5[1m]\neffort: medium\n", thinker)
+
+    def test_mod_on_pa_json_and_settings(self):
+        self.install("--mod", "on")                                         # 3.24 T3.1: still parses
+        pa = self._pa()
+        self.assertEqual((pa["mod"], pa["upgrade"]), ("on", "auto"))         # 3.24 T5: was ask
+        self.assertNotIn("warmer", pa)                                      # 3.24 T3.1: retired
+        st = json.loads(read(self.path(".claude", "settings.json")))
+        for key in ("agent", "modelSettings"):
+            self.assertNotIn(key, st)
+        self.assertEqual(st["model"], "claude-opus-5-5[1m]")                # 3.23 T13d.c8
+        self.assertEqual(st["effortLevel"], "medium")
+        self.assertIs(st["showThinkingSummaries"], True)
+        self.assertIs(st["promptSuggestionEnabled"], False)
+        self.assertIs(st["precomputeCompactionEnabled"], False)
+        self.assertIs(st["autoContinueAtUsageLimit"], True)                  # 3.23 T2
+        self.assertTrue(pa["bash"])
+        if os.name == "nt" and not os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") and pa["bash"] != "bash":
+            self.assertTrue(pa["bash"].endswith("/bin/bash.exe"), pa["bash"])
+        self.assertEqual(st["permissions"]["defaultMode"], "auto")
+        for key in ("todoFeatureEnabled", "autoCompactEnabled", "awaySummaryEnabled",
+                    "idleCompaction"):
+            self.assertIs(st[key], False, key)
+        self.assertIn("BASH_MAX_TIMEOUT_MS", st["env"])
+
+    def test_reinstall_carries_mod_and_upgrade(self):
+        self.install()
+        doc = self._pa()
+        doc["upgrade"] = "auto"
+        doc["bash"] = "C:/custom/bash.exe"                                 # 3.23 T2: kept
+        write(self.path(".claude", "pa.json"), json.dumps(doc))
+        opts = build_parser().parse_args(
+            ["--project", self.repo, "--python", PY, "--pa3-dir", self.pa3, "--yes"])
+        env = pj.detect_project(opts)
+        got = json.loads(pj.pa_json_text(env))
+        self.assertEqual((got["mod"], got["upgrade"], got["bash"]), ("on", "auto", "C:/custom/bash.exe"))
+
+    def test_mod_snippet_leaves_the_shipped_snippet(self):
+        from pa.install import settings_merge as sm
+        snip = sm.load_snippet(name="project")
+        before = json.dumps(snip, sort_keys=True)
+        out = pj.mod_snippet(snip)
+        self.assertEqual(json.dumps(snip, sort_keys=True), before)
+        for key in ("agent", "model", "modelSettings", "effortLevel"):      # 3.24 T3.1: the shipped
+            self.assertNotIn(key, snip)                                     # snippet has no pins
+        self.assertEqual((out["model"], out["effortLevel"]), ("claude-opus-5-5[1m]", "medium"))
+
+    def test_pro_partner_pin(self):
+        """3.27 T11: Pro pins the partner to Sonnet 5.5; a shipped Opus pin moves; a hand-edited one stays."""
+        rel = self.path(".claude", "settings.json")
+        self.set_tier("pro")
+        self.install()
+        st = json.loads(read(rel))
+        self.assertEqual((st["model"], st["effortLevel"]), ("claude-sonnet-5-5[1m]", "medium"))
+        st["model"] = "claude-opus-5-5[1m]"                                 # another tier's shipped pin
+        write(rel, json.dumps(st, indent=2) + "\n")
+        self.install()
+        self.assertEqual(json.loads(read(rel))["model"], "claude-sonnet-5-5[1m]")
+        st["model"] = "claude-fable-5-1[1m]"                                # hand-edited: kept
+        write(rel, json.dumps(st, indent=2) + "\n")
+        self.install()
+        self.assertEqual(json.loads(read(rel))["model"], "claude-fable-5-1[1m]")
+
+    def test_max20_partner_pin(self):
+        self.set_tier("max20")
+        self.install()
+        st = json.loads(read(self.path(".claude", "settings.json")))
+        self.assertEqual((st["model"], st["effortLevel"]), ("claude-opus-5-5[1m]", "medium"))
+
+
 class TestRetireAndDryRun(ProjectCase):
 
     def test_pre_pa3_claude_md_is_retired(self):
@@ -658,12 +800,12 @@ class TestRetireAndDryRun(ProjectCase):
         self.assertEqual(entries(self.repo), before, out)
         self.assertIn("dry run -- nothing was written", out)
         self.assertIn("would write", out)
-        self.assertIn(".claude/agents/pa-session.md", out)
+        self.assertIn(".claude/agents/pa-claude.md", out)                  # 3.24 T3.1: was pa-session.md
 
     def test_dry_run_keeps_a_retired_agent(self):
         self.install()
         stale = self.path(".claude", "agents", "coder-opus46.md")
-        write(stale, "---\nname: coder-opus46\n---\n")
+        write_bytes(stale, past_agent("coder-opus46.md"))  # 3.24 T5: unedited
         rc, out = self.run_install("--dry-run")
         self.assertEqual(rc, 0, out)
         self.assertTrue(os.path.isfile(stale), out)
@@ -1239,6 +1381,39 @@ class TestGitChecks(ProjectCase):
                               capture_output=True, text=True, timeout=10)
         self.assertEqual(proc.stdout.strip(), "false")
 
+
+
+class TestBashPath(unittest.TestCase):
+    """3.23 T10: pa.json ``bash`` finds Git Bash from either git location, never a bare ``bash`` on Windows."""
+
+    def _git_tree(self, root):
+        for rel in ("Git/bin/bash.exe", "Git/cmd/git.exe", "Git/mingw64/bin/git.exe"):
+            path = os.path.join(root, *rel.split("/"))
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            open(path, "w").close()
+        return os.path.join(root, "Git", "bin", "bash.exe").replace("\\", "/")
+
+    def _with(self, which, name="nt", env=None):
+        from unittest import mock
+        with mock.patch.object(pj.os, "name", name),                 mock.patch.object(pj.shutil, "which", return_value=which),                 mock.patch.dict(pj.os.environ, env or {}, clear=False):
+            if not env:
+                pj.os.environ.pop("CLAUDE_CODE_GIT_BASH_PATH", None)
+            return pj._bash_path()
+
+    def test_cmd_and_mingw64_git_both_find_bin_bash(self):
+        with tempfile.TemporaryDirectory() as root:
+            want = self._git_tree(root)
+            self.assertEqual(self._with(os.path.join(root, "Git", "cmd", "git.exe")), want)
+            self.assertEqual(self._with(os.path.join(root, "Git", "mingw64", "bin", "git.exe")), want)
+
+    def test_no_git_bash_is_empty_not_bare(self):
+        with tempfile.TemporaryDirectory() as root:
+            self.assertEqual(self._with(os.path.join(root, "nowhere", "git.exe")), "")
+            self.assertEqual(self._with(None), "")
+
+    def test_env_wins_and_posix_is_bash(self):
+        self.assertEqual(self._with(None, env={"CLAUDE_CODE_GIT_BASH_PATH": "D:/G/bin/bash.exe"}), "D:/G/bin/bash.exe")
+        self.assertEqual(self._with(None, name="posix"), "bash")
 
 if __name__ == "__main__":                                   # pragma: no cover
     unittest.main()

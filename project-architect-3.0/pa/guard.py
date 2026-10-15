@@ -1,4 +1,4 @@
-"""PreToolUse rules: PHASE_PLAN protection and discussion-mode read-only (design A C.3).
+"""PreToolUse rules: PHASE_PLAN protection and the role guards (design A C.3).
 
 Public:
     READ_ONLY_CMDS, GIT_READ_ONLY, MUTATION_MARKERS
@@ -8,25 +8,24 @@ Public:
     is_read_only(cmd, cfg=None, shell=None)      -> bool
     is_mutating_bash(cmd)                        -> bool   (mutation indicator present)
     phase_plan_deny(tool_name, tool_input)       -> reason | None
-    discussion_deny(tool_name, tool_input, cfg)  -> reason | None
-    decide(tool_name, tool_input, discussion=False, cfg=None) -> reason | None
+    root_search_deny(tool_name, tool_input)      -> reason | None  (find / grep -r from a disk root)
+    decide(tool_name, tool_input, cfg=None, agent_type=None) -> reason | None
     bash_read_deny(cmd, role, cfg, root=None)    -> reason | None  (whole shell reads)
-    handback_deny(tool_name, tool_input, agent_type, root) -> reason | None  (discuss hand-back w/o record)
     reread_deny(inp, sid, run_id, cfg, root)     -> reason | None  (unchanged whole re-Read)
     reread_forget(inp, sid, run_id, root)        drop an edited path from the read set
     deny(reason)                                 -> PreToolUse hook payload
 
 Everything here is pure: no filesystem access, no config writes, no imports
-beyond ``os``/``re`` (``pa.config`` is imported lazily, only when a ``python``
-invocation has to be matched against ``discussion_allow_scripts``).  The hook
-module owns the ``.run/DISCUSSION`` stat and the ``.claude/pa.json`` gate.
+beyond ``os``/``re``.  The hook module owns the ``.claude/pa.json`` gate.
+3.24 T3.2: the discussion guard (``.run/DISCUSSION``, ``discussion_deny``,
+``handback_deny``) left with the Gen 3 loop; ``is_read_only`` stays a pure predicate.
 
 Rule of the allowlist: *unknown means deny*.  A segment is read-only when its
 first real token is in :data:`READ_ONLY_CMDS` (after stripping ``env``,
 ``VAR=x``, ``sudo``, ``time``, ``nice``, ``command``), the segment redirects
 nowhere but ``/dev/null``/``NUL``/``&1``/``&2``, and the per-command extra rules
 hold (``sed`` without ``-i``, ``git`` read-only subcommands, ``python`` only for
-``discussion_allow_scripts``, ``curl``/``wget`` without ``-o``/``-O``).  An
+:data:`READ_ONLY_SCRIPTS` or ``cfg["discussion_allow_scripts"]``, ``curl``/``wget`` without ``-o``/``-O``).  An
 allow-list entry ``"<glob> <a|b>"`` (e.g. ``"tools/card.py slice|check"``) also
 requires the first positional argument after the script to be ``a`` or ``b``;
 an entry without a space matches the script alone.
@@ -163,14 +162,14 @@ def _glob_to_re(pattern):
     return re.compile("".join(out) + r"$")
 
 
-def _allow_scripts(cfg):
-    if cfg is None:
-        from . import config as _config
+READ_ONLY_SCRIPTS = ("tools/analysis/*.py", "tools/plan_show.py", "tools/discussion.py",
+                     "tools/card.py slice|check", "tools/plan_edit.py show|grammar")
 
-        cfg = _config.load()
+
+def _allow_scripts(cfg):
+    # 3.24 T3.2: the config.json default "discussion_allow_scripts" retired; a caller's cfg may still name it
     pats = cfg.get("discussion_allow_scripts") if isinstance(cfg, dict) else None
-    return list(pats or ["tools/analysis/*.py", "tools/plan_show.py", "tools/discussion.py",
-                         "tools/card.py slice|check", "tools/plan_edit.py show|grammar"])
+    return list(pats or READ_ONLY_SCRIPTS)
 
 
 def _script_allowed(path, cfg, rest=()):
@@ -438,12 +437,6 @@ def mutation_targets(cmd, name):
 _EDIT_TOOLS = ("edit", "write", "multiedit", "notebookedit", "update")
 PHASE_PLAN_REASON = ("PHASE_PLAN.md is frozen at approval; use "
                      "`python tools/plan_edit.py` (set-status / add-task / note).")
-DISCUSSION_REASON = ("discussion mode (/discuss): read-only tools only until /proceed. "
-                     "Record decisions in the discussion note, then run /proceed.")
-HANDBACK_REASON = ("SubagentHandback ends your run and goes to the router, never to the developer. "
-                   "Your reply is plain text in your own view: write it as your answer and end the turn; "
-                   "the developer's next message resumes you. Call SubagentHandback only after /proceed, "
-                   "once the record exists, with the DECISIONS/EDITS/RECORD block.")
 
 
 def _paths_of(tool_input):
@@ -509,28 +502,6 @@ def agent_bash_deny(agent_type, tool_name, tool_input):
     return None
 
 
-_DISCUSS_AGENTS = ("discuss", "discuss-high", "discuss-max")
-_RECORD_LINE_RE = re.compile(r"^[ \t]*RECORD:[ \t]*(\S.*?)[ \t]*$", re.M)
-
-
-def handback_deny(tool_name, tool_input, agent_type, root):
-    """Deny reason when a discuss agent calls SubagentHandback without a written record (3.15 T18):
-    a reply handed back ends its run and reaches the router, never the developer."""
-    if str(tool_name or "").strip() != "SubagentHandback":
-        return None
-    agent = str(agent_type or "").strip().lower().rsplit(":", 1)[-1]
-    if agent not in _DISCUSS_AGENTS:
-        return None
-    ti = tool_input if isinstance(tool_input, dict) else {}
-    m = _RECORD_LINE_RE.search(str(ti.get("message") or ""))
-    if m:
-        path = m.group(1)
-        full = path if os.path.isabs(path) else os.path.join(str(root or ""), path)
-        if os.path.isfile(full):
-            return None
-    return HANDBACK_REASON
-
-
 def phase_plan_deny(tool_name, tool_input):
     """Deny reason when this call would edit ``PHASE_PLAN.md`` outside plan_edit.py."""
     name = str(tool_name or "").strip().lower()
@@ -548,29 +519,66 @@ def phase_plan_deny(tool_name, tool_input):
     return None
 
 
-def discussion_deny(tool_name, tool_input, cfg=None):
-    """Deny reason while ``.run/DISCUSSION`` exists (the caller stats the flag)."""
-    name = str(tool_name or "").strip().lower()
-    if name in _EDIT_TOOLS:
-        return DISCUSSION_REASON
-    if name in ("bash", "powershell", "shell"):
-        shell = "powershell" if name == "powershell" else None
-        if not is_read_only(_command_of(tool_input), cfg=cfg, shell=shell):
-            return DISCUSSION_REASON
+ROOT_SEARCH_REASON = ("A search from a filesystem root walks the whole disk and outlives the Bash time limit. "
+                      "Search inside the project: start at `.` or a folder under it.")
+# 3.24 T13D: `/`, `\`, `C:/`, `C:\`, `/c`, `/c/`, `/mnt/c`, `/cygdrive/c` (quotes stripped, `\` read as `/`)
+_ROOT_RE = re.compile(r"^(?:/+|[A-Za-z]:/+|/[A-Za-z]/*|/mnt/[A-Za-z]/*|/cygdrive/[A-Za-z]/*)$")
+_PS_LISTERS = frozenset(["get-childitem", "gci"])
+_GREPS = frozenset(["grep", "egrep", "fgrep", "rg"])
+
+
+def _is_root(arg):
+    return bool(_ROOT_RE.match(arg.replace("\\", "/")))
+
+
+def _root_search_paths(name, args):
+    """Path arguments of a recursive search (``find``, ``ls -R``/``dir /s``, ``grep -r``), else []."""
+    if name == "find":
+        out = []
+        for a in args:
+            if a in ("-H", "-L", "-P"):
+                continue
+            if a[:1] in ("-", "(", "!"):
+                break
+            out.append(a)
+        return out
+    if name in ("ls", "dir") or name in _PS_LISTERS:
+        recursive = any(a == "--recursive" or a.lower() == "/s" or a.lower().startswith("-rec")
+                        or (a[:1] == "-" and a[1:2] != "-" and "R" in a)
+                        or (name in _PS_LISTERS and a.lower() == "-r") for a in args)
+        if not recursive:
+            return []
+        return [a for a in args if a[:1] != "-" and not (name == "dir" and re.match(r"^/[A-Za-z?-]+$", a))]
+    if name in _GREPS:
+        if name != "rg" and not any(a in ("--recursive", "--dereference-recursive")
+                                    or (a[:1] == "-" and a[1:2] != "-" and ("r" in a or "R" in a))
+                                    for a in args):
+            return []
+        rest = [a for a in args if a[:1] != "-"]
+        has_pattern = not any(a in ("-e", "-f", "--files") or a.startswith(("--regexp", "--file="))
+                              for a in args)
+        return rest[1:] if has_pattern else rest
+    return []
+
+
+def root_search_deny(tool_name, tool_input):
+    """Deny reason when a ``find``, recursive ``ls``/``dir``/``Get-ChildItem`` or ``grep -r``/``rg``
+    starts at a filesystem root (3.24 T13D: round 2's curator ran ``find /`` past the 600 s limit)."""
+    if str(tool_name or "").strip().lower() not in ("bash", "powershell", "shell"):
+        return None
+    for seg in segments(_strip_heredocs(_command_of(tool_input))):
+        name, args = _stage_head(tokenize(seg))
+        if any(_is_root(p) for p in _root_search_paths(name, args)):
+            return ROOT_SEARCH_REASON
     return None
 
 
-def decide(tool_name, tool_input, discussion=False, cfg=None, agent_type=None):
+def decide(tool_name, tool_input, cfg=None, agent_type=None):
     """Deny reason for this PreToolUse call, or None to stay silent."""
     reason = agent_bash_deny(agent_type, tool_name, tool_input)
     if reason:
         return reason
-    reason = phase_plan_deny(tool_name, tool_input)
-    if reason:
-        return reason
-    if discussion:
-        return discussion_deny(tool_name, tool_input, cfg=cfg)
-    return None
+    return phase_plan_deny(tool_name, tool_input) or root_search_deny(tool_name, tool_input)
 
 
 def deny(reason):
@@ -582,7 +590,8 @@ def deny(reason):
 
 # --------------------------------------------------------------------------- role-based guards
 
-_SPILL_PATH_RE = re.compile(r"tool-results/[a-z0-9]+\.txt$")
+# Bash spills are ``<id>.txt``; tool spills are ``toolu_<base62>.txt`` (3.24 T12f: T12d found 150 of 676 missed)
+_SPILL_PATH_RE = re.compile(r"tool-results/(?:toolu_[A-Za-z0-9]+|[a-z0-9]+)\.txt$")
 _PLAN_SHOW_RE = re.compile(r"plan_edit\.py\s+show\b")
 _PLAN_SCOPE_RE = re.compile(r"--(?:section|task(?:s)?|next)\b")
 
@@ -941,6 +950,11 @@ def tool_source_deny(inp, role, cfg, root):
     """Deny reading tool/framework source for roles in ``guard.tool_source_roles``.
 
     Skipped when the project is PA itself (:func:`is_project_pa`).
+    3.24 T12f: tool source is only what PA ships (:func:`_pa_shipped`): the paths in the
+    project's ``.claude/pa3-managed.json`` and anything under the install dir; a project's
+    own ``tools/`` or ``.claude/skills/`` file is never tool source. Ranged reads stay denied.
+    3.24 T12g: tool source is PA's executable code only (``.py .sh .ps1 .cmd .ts .tsx .js``);
+    PA-shipped templates, docs, skills and agents stay readable.
     """
     roles = (cfg or {}).get("guard", {}).get("tool_source_roles") or []
     if role not in roles:
@@ -948,25 +962,67 @@ def tool_source_deny(inp, role, cfg, root):
     if is_project_pa(root):
         return None
     ti = inp if isinstance(inp, dict) else {}
-    from . import paths as _paths
-    install = _paths.install_dir().replace("\\", "/")
-    prefixes = ("tools/", ".claude/", install + "/", "project-architect-3.0/pa/")
-    # Read: file_path matches a source path (skip tool-results: transient output)
+    is_src = _pa_shipped(root)
+    # Read: file_path is PA-shipped (skip tool-results: transient output)
     fp = (ti.get("file_path") or ti.get("path") or "").replace("\\", "/")
-    if fp and "tool-results/" not in fp:
-        for pfx in prefixes:
-            if pfx in fp:
-                return TOOL_SOURCE_REASON
+    if fp and "tool-results/" not in fp and is_src(fp):
+        return TOOL_SOURCE_REASON
     # Bash: cat/sed -n/head of a source file
     cmd = ti.get("command") or ""
     if cmd:
         for seg in segments(cmd):
-            if _seg_reads_source(seg, prefixes):
+            if _seg_reads_source(seg, is_src):
                 return TOOL_SOURCE_REASON
     return None
 
 
-def _seg_reads_source(seg, prefixes):
+_PA_CODE_EXTS = (".py", ".sh", ".ps1", ".cmd", ".ts", ".tsx", ".js")
+
+
+def _pa_shipped(root):
+    """Predicate ``path -> bool``: PA-shipped executable code (3.24 T12f, T12g).
+
+    True only for a path whose extension is one of ``_PA_CODE_EXTS`` (case-insensitive) and that
+    is under the install dir or the package source (``project-architect-3.0/pa/``), or whose
+    root-relative form is a ``files`` key of ``<root>/.claude/pa3-managed.json``.
+    Templates, docs, skills, agents, rules, settings and every other non-code file never count.
+    No or unreadable record: only the install dir and package source count.
+    """
+    import json
+    from . import paths as _paths
+    fold = (lambda s: s.lower()) if os.name == "nt" else (lambda s: s)
+    install = fold(_paths.install_dir().replace("\\", "/").rstrip("/") + "/")
+    managed = set()
+    root_n = (root or "").replace("\\", "/").rstrip("/")
+    if root_n:
+        try:
+            with open(os.path.join(root_n, ".claude", "pa3-managed.json"), "r", encoding="utf-8") as fh:
+                files = json.load(fh).get("files")
+            if isinstance(files, dict):
+                managed = {fold(k.replace("\\", "/")) for k in files}
+        except (OSError, ValueError, AttributeError):
+            pass
+    root_f = fold(root_n) + "/" if root_n else None
+
+    def is_src(path):
+        p = fold(path.replace("\\", "/"))
+        if not p.lower().endswith(_PA_CODE_EXTS):
+            return False
+        if p.startswith(install) or "project-architect-3.0/pa/" in p:
+            return True
+        if not managed:
+            return False
+        if root_f and p.startswith(root_f):
+            p = p[len(root_f):]
+        elif os.path.isabs(path) or p.startswith("/"):
+            return False
+        while p.startswith("./"):
+            p = p[2:]
+        return p in managed
+    return is_src
+
+
+def _seg_reads_source(seg, is_src):
     """True when a segment is ``cat``/``sed -n``/``head`` targeting a source file."""
     toks = tokenize(seg)
     if not toks:
@@ -998,8 +1054,4 @@ def _seg_reads_source(seg, prefixes):
             return False
     file_args = [_unquote(a).replace("\\", "/") for a in args
                  if not _unquote(a).startswith("-")]
-    for fa in file_args:
-        for pfx in prefixes:
-            if pfx in fa:
-                return True
-    return False
+    return any(is_src(fa) for fa in file_args)

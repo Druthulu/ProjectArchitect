@@ -27,17 +27,17 @@ from pa import ledger_cli  # noqa: E402
 from pa.ledger_cli import PRICE_TOLERANCE  # noqa: E402
 from pa import paths  # noqa: E402
 
-SID = "11111111-0000-4000-8000-000000000003"
+SID = "11111111-0000-4000-8000-000000000016"
 SLUG = "Z--Test-Proj"
-AGENT = "a1b2c3d4000000004"
-TOOL_USE_ID = "toolu_01SYNTH00000000000000011"
+AGENT = "a1b2c3d4000000007"
+TOOL_USE_ID = "toolu_01SYNTH00000000000000159"
 PENDING_AGENT = "b9c8d7e6f5a403121"
 CWD = "Z:/Test/Proj"
 TOTAL_COST_USD = 5.0
 
 VANTAGE = ("C:/Users/you/.claude/projects/Z--Storage-git-Vantage/"
-           "e2eed858-0000-4000-8000-000000000015.jsonl")
-VANTAGE_SID = "e2eed858-0000-4000-8000-000000000015"
+           "e2eed858-0000-4000-8000-000000000160.jsonl")
+VANTAGE_SID = "e2eed858-0000-4000-8000-000000000160"
 SNIPPET = os.path.join(ROOT, "settings", "user.snippet.json")
 HOOK_PROBE = os.path.join(os.path.dirname(ROOT), "tools", "analysis", "hook_probe.py")  # 3.11 T27: dev repo
 _HAS_GIT = shutil.which("git") is not None
@@ -285,7 +285,7 @@ class RecalcTest(CliTestCase):
         self.assertEqual(counts["sessions"], 1)
         self.assertEqual(counts["runs"], 4)                # main + retriever + 2 workflow agents
         self.assertEqual(counts["api"], 12)                # 3 main + 3 retriever + 2*3 workflow
-        self.assertEqual(counts["residual"], 1)
+        self.assertEqual(counts["residual"], 2)            # T13l: one per cost-state model
         self.assertEqual(counts["retrievals"], 3)          # retriever + 2 workflow agents
 
         conn = self.conn()
@@ -308,7 +308,7 @@ class RecalcTest(CliTestCase):
             self.assertEqual(sub["turns"], 3)
             self.assertEqual(sub["session_id"], SID)
             self.assertEqual(sub["cache_write_5m"], 10000)    # retriever TTL default is 5m
-            self.assertEqual(sub["model_pinned"], "claude-sonnet-5-5")
+            self.assertEqual(sub["model_pinned"], "claude-haiku-5-5")   # 3.27 T11
 
             self.assertEqual(conn.execute(
                 "SELECT COUNT(*) FROM turns WHERE run_id=? AND kind='api'", (SID,)).fetchone()[0], 3)
@@ -333,11 +333,17 @@ class RecalcTest(CliTestCase):
             self.assertEqual(session["account_source"], "unknown")
             self.assertEqual(session["cwd"], CWD)
 
-            residual = conn.execute("SELECT * FROM turns WHERE kind='residual'").fetchone()
+            # T13l: one unattributed residual row per cost-state model, never the main run
+            residuals = conn.execute("SELECT * FROM turns WHERE kind='residual'"
+                                     " ORDER BY msg_id").fetchall()
             api_sum = conn.execute("SELECT SUM(cost_usd) FROM turns WHERE kind='api'").fetchone()[0]
-            self.assertAlmostEqual(residual["cost_usd"], TOTAL_COST_USD - api_sum)
-            self.assertGreater(residual["cost_usd"], 0)
-            self.assertEqual(residual["msg_id"], "residual:%s" % SID)
+            self.assertAlmostEqual(sum(r["cost_usd"] for r in residuals),
+                                   TOTAL_COST_USD - api_sum)
+            self.assertEqual([r["msg_id"] for r in residuals],
+                             ["residual:%s:claude-fable-5-1" % SID,
+                              "residual:%s:claude-haiku-4-5" % SID])
+            self.assertEqual({r["run_id"] for r in residuals}, {"unattributed:%s" % SID})
+            self.assertGreater(residuals[0]["cost_usd"], 0)
 
             # T1.1: workflow agents carry wf: prefix and parent = session
             wf_rows = conn.execute(
@@ -398,7 +404,7 @@ class RecalcTest(CliTestCase):
         future relative to the check's t0, in a session that has not ended) must not
         show up as a diff (T5.c2). A closed session never receives new turns."""
         run_cli("recalc", "--root", self.projects, "--account", "dev@example.com")
-        live = "99999999-0000-4000-8000-00000000000c"
+        live = "99999999-0000-4000-8000-0000000000e8"
         conn = self.conn()
         try:
             db.upsert_session(conn, {"session_id": live, "account": "dev@example.com",
@@ -418,7 +424,7 @@ class RecalcTest(CliTestCase):
     def test_recalc_tool_use_stop_is_interrupted(self):
         """A subagent transcript ending on tool_use -> recalc writes status='interrupted'."""
         # create a subagent whose last stop_reason is tool_use
-        agent_id = "aaa11111000000013"
+        agent_id = "aaa1111100000001e"
         sub_path = os.path.join(self.projects, SLUG, SID, "subagents",
                                 "agent-%s.jsonl" % agent_id)
         records = [
@@ -474,7 +480,7 @@ class RecalcTest(CliTestCase):
             self.assertEqual(row["account"], "dev@example.com")
             self.assertEqual(row["account_source"], "assumed")
             self.assertEqual(conn.execute(
-                "SELECT COUNT(*) FROM turns WHERE account='dev@example.com'").fetchone()[0], 13)
+                "SELECT COUNT(*) FROM turns WHERE account='dev@example.com'").fetchone()[0], 14)
         finally:
             db.close(conn)
 
@@ -556,12 +562,72 @@ class RecalcTest(CliTestCase):
         self.assertAlmostEqual(doc["sessions"][SID]["cost_usd"], turns_sum)    # T30: turns sum
 
 
+class RecalcSeveralSessionsTest(CliTestCase):
+    """3.24 T10: ``recalc --session`` repeats; one refit pass and one summary rebuild for all;
+    each stage's duration logged."""
+
+    def test_repeated_session_one_refit_one_rebuild(self):
+        from unittest import mock
+
+        from pa import fit, log, summary
+
+        sid2, sid3 = "22222222-0000-4000-8000-00000000002f", "33333333-0000-4000-8000-000000000049"
+        build_dated_session(self.projects, sid2, "b2c3d4e5f6071829a", "toolu_02PaTest02", "2026-09-15")
+        build_dated_session(self.projects, sid3, "c3d4e5f60718293ab", "toolu_03PaTest03", "2026-09-16")
+        with mock.patch.object(fit, "refit_all") as rf, \
+                mock.patch.object(summary, "rebuild", return_value={}) as rb, \
+                mock.patch.object(log, "log", wraps=log.log) as lg:
+            rc, _text, errs = run_cli("recalc", "--root", self.projects,
+                                      "--session", SID, "--session", sid3)
+        self.assertEqual(rc, 0, errs)
+        self.assertEqual((rf.call_count, rb.call_count), (1, 1))
+        conn = self.conn()
+        try:
+            got = sorted(r[0] for r in conn.execute("SELECT session_id FROM sessions"))
+        finally:
+            db.close(conn)
+        self.assertEqual(got, sorted([SID, sid3]))
+        timing = [c.kwargs for c in lg.call_args_list if c.args[:1] == ("recalc_timing",)]
+        self.assertEqual(len(timing), 1)
+        self.assertEqual(timing[0]["sessions"], [SID, sid3])
+        for k in ("rows_s", "refit_s", "rebuild_s"):
+            self.assertIsInstance(timing[0][k], float)
+
+    def test_rows_only_done_file_and_detach(self):
+        """3.24 T10b: --rows-only skips the refit and the rebuild; --done-file records the end;
+        --detach removes the done-file and relaunches the same argv without --detach."""
+        from unittest import mock
+
+        from pa import fit, ledger_cli, summary
+
+        done = os.path.join(self.dir, "recalc.done")
+        with mock.patch.object(fit, "refit_all") as rf, \
+                mock.patch.object(summary, "rebuild", return_value={}) as rb:
+            rc, _text, errs = run_cli("recalc", "--root", self.projects, "--session", SID,
+                                      "--rows-only", "--done-file", done)
+        self.assertEqual(rc, 0, errs)
+        self.assertEqual((rf.call_count, rb.call_count), (0, 0))
+        with open(done, encoding="utf-8") as f:
+            rec = json.load(f)
+        self.assertEqual((rec["exit"], rec["sessions"]), (0, [SID]))
+        spawned = []
+        with mock.patch.object(ledger_cli, "_SPAWNER", spawned.append):
+            rc, _text, errs = run_cli("recalc", "--detach", "--rows-only", "--from", "turns",
+                                      "--session", SID, "--done-file", done)
+        self.assertEqual(rc, 0, errs)
+        self.assertFalse(os.path.exists(done))
+        self.assertEqual(len(spawned), 1)
+        self.assertTrue(spawned[0][1].endswith("pa_ledger.py"))
+        self.assertEqual(spawned[0][2:], ["recalc", "--rows-only", "--from", "turns",
+                                          "--session", SID, "--done-file", done])
+
+
 class PreInstallTest(CliTestCase):
     """T10: sessions started before the ledger's installed_at are cost only."""
 
-    SID2 = "22222222-0000-4000-8000-000000000005"
+    SID2 = "22222222-0000-4000-8000-00000000002f"
     AGENT2 = "b2c3d4e5f6071829a"
-    TOOL_USE_ID2 = "toolu_01SYNTH00000000000000013"
+    TOOL_USE_ID2 = "toolu_01SYNTH00000000000000221"
 
     def setUp(self):
         super(PreInstallTest, self).setUp()
@@ -706,7 +772,7 @@ class GovernedRecalcTest(CliTestCase):
     """T11: recalc voids retrievals of sessions whose cwd has no .claude/pa.json and books
     the ones whose cwd has."""
 
-    UNGOV_SID = "33333333-0000-4000-8000-000000000006"
+    UNGOV_SID = "33333333-0000-4000-8000-00000000004a"
     UNGOV_AGENT = "c3d4e5f6a7b807291"
     UNGOV_TOOL = "toolu_03PaTestUngov"
 
@@ -897,10 +963,10 @@ class ReportTest(CliTestCase):
 
     def test_report_cost_basis_api_only_by_default(self):
         """T10.c2: default report excludes residual rows; --all-kinds includes them."""
-        # the fixture has 12 api turns + 1 residual row (from cost-state reconciliation)
+        # the fixture has 12 api turns + 2 residual rows (cost-state reconciliation, per model)
         counts = self.counts()
         self.assertEqual(counts["api"], 12)
-        self.assertEqual(counts["residual"], 1)
+        self.assertEqual(counts["residual"], 2)
 
         # default: api-only cost
         rc, text, errs = run_cli("report", "--json")
@@ -918,7 +984,7 @@ class ReportTest(CliTestCase):
         self.assertEqual(doc_all["cost_basis"], "all turn kinds")
         all_cost = doc_all["accounts"][0]["cost_used"]
         all_requests = doc_all["accounts"][0]["requests"]
-        self.assertEqual(all_requests, 13)          # 12 api + 1 residual
+        self.assertEqual(all_requests, 14)          # 12 api + 2 residual (T13l: per model)
         self.assertGreater(all_cost, api_cost)
 
     def test_report_cost_basis_header_in_text(self):
@@ -974,7 +1040,7 @@ class ReportTest(CliTestCase):
 class PreEraReportTest(CliTestCase):
     """T11: report shows a pre-PA3 row for accounts with pre-era history."""
 
-    SID2 = "44444444-0000-4000-8000-000000000008"
+    SID2 = "44444444-0000-4000-8000-000000000065"
     AGENT2 = "d4e5f6a7b8c907381"
     TOOL2 = "toolu_04PaTestReport"
 
@@ -1025,7 +1091,7 @@ class Line3Test(CliTestCase):
         with open(cfg_path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump({"fit": {"n_min": 1}}, fh)
         account = "acct@example.com"
-        sid = "22222222-0000-4000-8000-000000000004"
+        sid = "22222222-0000-4000-8000-00000000002e"
         now = time.time()
         resets_at = int(now) + 3 * 3600
         resets_7d = int(now) + 5 * 86400
@@ -1075,7 +1141,7 @@ class Line3Test(CliTestCase):
 class UnionReportTest(CliTestCase):
     """report unions extra_roots; a NULL-account row there takes the root's configured account."""
 
-    WSL_SID = "66666666-0000-4000-8000-00000000000a"
+    WSL_SID = "66666666-0000-4000-8000-000000000099"
 
     def setUp(self):
         super(UnionReportTest, self).setUp()
@@ -1311,13 +1377,13 @@ class SqlGuardTest(CliTestCase):
     def test_select_works(self):
         rc, text, errs = run_cli("sql", "SELECT COUNT(*) AS n FROM turns")
         self.assertEqual(rc, 0, errs)
-        self.assertIn("13", text)
+        self.assertIn("14", text)                           # 12 api + 2 residual (T13l)
 
     def test_delete_is_refused(self):
         rc, text, errs = run_cli("sql", "DELETE FROM turns")
         self.assertEqual(rc, 2)
         self.assertIn("refused", errs)
-        self.assertEqual(self.counts()["turns"], 13)
+        self.assertEqual(self.counts()["turns"], 14)
 
     def test_other_write_statements_are_refused(self):
         for bad in ("delete from turns",
@@ -1330,7 +1396,7 @@ class SqlGuardTest(CliTestCase):
             rc, _t, errs = run_cli("sql", bad)
             self.assertEqual(rc, 2, bad)
             self.assertIn("refused", errs)
-        self.assertEqual(self.counts()["turns"], 13)
+        self.assertEqual(self.counts()["turns"], 14)
 
     def test_with_and_explain_are_allowed(self):
         rc, _t, errs = run_cli("sql", "WITH x AS (SELECT 1 AS a) SELECT a FROM x")
@@ -1359,7 +1425,8 @@ class PricesTest(CliTestCase):
         self.assertEqual(rows[0]["read"], 0.30)
 
     def test_apply_writes_rows(self):
-        table = "| Fable 5.1 | $11 | $13.75 | $22 | $0.28 | $55 |\n"
+        table = ("| Model | Input | 5m writes | 1h writes | Cache hits | Output |\n"
+                 "| Fable 5.1 | $11 | $13.75 | $22 | $0.28 | $55 |\n")
         old_stdin = sys.stdin
         sys.stdin = io.StringIO(table)
         try:
@@ -1376,6 +1443,73 @@ class PricesTest(CliTestCase):
             self.assertEqual(row["read"], 0.28)
         finally:
             db.close(conn)
+
+
+class PriceTableParseTest(CliTestCase):
+    """3.22: the refresh parser maps columns by header text, never by position."""
+
+    WANT = {                       # input, write_5m, write_1h, read, output
+        "opus-5-5": (4.0, 5.0, 8.0, 0.20, 20.0),
+        "sonnet-5-5": (2.0, 2.5, 4.0, 0.20, 10.0),
+        "fable-5-1": (10.0, 12.5, 20.0, 0.25, 50.0),
+        "haiku-5-5": (0.10, 0.125, 0.20, 0.01, 0.50),
+        "haiku-4-5": (1.0, 1.25, 2.0, 0.10, 5.0),
+    }
+
+    def _parse(self, name):
+        with open(os.path.join(ROOT, "tests", "fixtures", name), encoding="utf-8") as fh:
+            text = fh.read()
+        skipped = []
+        rows = {r["model_key"]: r for r in ledger_cli.parse_price_table(text, skipped)}
+        return text, rows, skipped
+
+    def _check(self, rows, skipped):
+        for key, want in self.WANT.items():
+            with self.subTest(key=key):
+                r = rows[key]
+                self.assertEqual((r["input"], r["write_5m"], r["write_1h"], r["read"], r["output"]),
+                                 want)
+        self.assertEqual(rows["haiku-5-5"]["tier"],
+                         {"over": 100000, "input": 0.50, "write_5m": 0.625, "write_1h": 1.0,
+                          "read": 0.05, "output": 2.50})
+        self.assertNotIn("tier", rows["haiku-4-5"])
+        self.assertIn("Claude Opus 4.5", [n.strip() for n in skipped])  # never priced as "opus"
+        self.assertNotIn("opus", rows)
+
+    def test_markdown_header_order_of_2026_10_07(self):
+        _text, rows, skipped = self._parse("pricing_table_2026-10-07.md")
+        self._check(rows, skipped)
+
+    def test_live_html_with_rowspan_and_grouped_header(self):
+        _text, rows, skipped = self._parse("pricing_page_2026-10-07.html")
+        self._check(rows, skipped)
+        self.assertTrue(any("Mythos" in n for n in skipped))
+
+    def test_a_table_without_all_five_headers_is_not_read(self):
+        table = ("| Model | Batch input | Batch output |\n|---|---|---|\n"
+                 "| Claude Opus 5.5 | $2 / MTok | $10 / MTok |\n")
+        self.assertEqual(ledger_cli.parse_price_table(table), [])
+
+    def test_refresh_diff_against_the_fixture_shifts_no_field(self):
+        text, _rows, _skipped = self._parse("pricing_page_2026-10-07.html")
+        old_stdin = sys.stdin
+        sys.stdin = io.StringIO(text)
+        try:
+            rc, out, errs = run_cli("prices", "--paste")
+        finally:
+            sys.stdin = old_stdin
+        self.assertEqual(rc, 0, errs)
+        diffs = {}
+        for line in out.splitlines():
+            if line.startswith(("opus", "sonnet", "fable", "haiku")):
+                label, rest = line.split("  ", 1)
+                diffs[label.strip()] = rest.rstrip().rsplit("  ", 1)[-1].strip()
+        self.assertEqual(diffs.pop("sonnet-5-5"), "read 0.10->0.20")   # the page's table lags its text
+        self.assertIn("haiku-5-5 >100000", diffs)
+        self.assertGreaterEqual(len(diffs), 11)
+        for key, diff in diffs.items():
+            with self.subTest(key=key):
+                self.assertEqual(diff, "(same)")
 
 
 class DoctorTest(CliTestCase):
@@ -1749,8 +1883,8 @@ class ProjectShareTest(CliTestCase):
         now = time.time()
         resets_at = int(now) + 3 * 3600
         t1, t2 = now - 1800, now - 600
-        sids = {"Z:/Test/A": ("aaaaaaaa-0000-4000-8000-000000000010", 3.0),
-                "Z:/Test/B": ("bbbbbbbb-0000-4000-8000-000000000013", 1.0)}
+        sids = {"Z:/Test/A": ("aaaaaaaa-0000-4000-8000-000000000105", 3.0),
+                "Z:/Test/B": ("bbbbbbbb-0000-4000-8000-000000000118", 1.0)}
         conn = ledger_cli.open_db()
         try:
             db.set_meta(conn, "created", _iso(now - 7200))  # era before fixture sessions
@@ -2042,8 +2176,8 @@ class DoctorInstallRowsTest(CliTestCase):
         lines = [ln for ln in text.splitlines() if "update check" in ln]
         self.assertTrue(lines, text)
         self.assertIn("offline", lines[0])
-        # older than 2x install.update_check_hours (default 24h) -> WARN
-        self.assertTrue(lines[0].strip().startswith("WARN"), lines)
+        # 3.28 T5: no hours-based stale test; only behind warns (was: older than 2x 24h -> WARN)
+        self.assertTrue(lines[0].strip().startswith("OK"), lines)
 
     # -- card ---------------------------------------------------------------
 

@@ -1,0 +1,18 @@
+{
+  "id": "p02",
+  "arm": "partner",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: one turn of the partner in the shelf project (a small Python library-loans package in this repository). The mod is absent here: its mcp__pa-watch__ tools and SubagentHandback do not exist, so end your turn with your reply as plain text. An Agent call is recorded, not run. Make only the move this turn calls for.\n\nThe developer says: quick one, how many days is a student's loan period in shelf?",
+  "expect": {
+    "no_agent": true,
+    "end_text_any": [
+      "14"
+    ]
+  },
+  "hidden": "—",
+  "settings": "settings/deny-agent.json",
+  "overlay": "overlay/partner"
+}

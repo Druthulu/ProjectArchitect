@@ -1,0 +1,17 @@
+{
+  "files": {
+    "repo/README.md": "7470ff6000ba66f9ca0ceba1b3a3eed53e8364a93445b40f4f557e2f6cde13b3",
+    "settings/allow.json": "3bc4ced47278a4fbd28cefacaae61619ef79355a219ce39e801f3b1eedfbcb65",
+    "tasks/retriever/KEYS.md": "d3c45ccdec650b961a3132e13861d8f80755d042d4c62013e97fe0fc2790af71",
+    "tasks/retriever/w01.json": "124e5dd1ea5e7ce7b777553980be081448477d84c23a9b522260cf498c66f7e3",
+    "tasks/retriever/w02.json": "9e67cfd30009b9c35b6d7348682fe641acee1579e85fa805d7120913a7b77c2e",
+    "tasks/retriever/w03.json": "8bee540a6bf0ea9c2f532f553496f49bb58185c33e5e6d11a7c058d1736f843d",
+    "tasks/retriever/w04.json": "85567841bb374346ab049f3f0d0e4393ae432cfd39c5dbb912cc20345c0bd978",
+    "tasks/retriever/w05.json": "b54ad0a97f5286e018278788a9e2318a1dbb2d895ecabcb2c340481c364a7f80",
+    "tasks/retriever/w06.json": "7be86f44d37b661c12f91468857a47b0b9e7144af409c3acc4a2d52a17fef2e9",
+    "tasks/retriever/w07.json": "bbdbf49c8ef26a91e9a20c2fc09cf0a7d68e388dc3b7906312ce62e09da31bca",
+    "tasks/retriever/w08.json": "1487b0e009288a9186c9bd17f05fd5ddca9f67150edaa2402fc3cd6473af730f"
+  },
+  "hash": "05c6ac72b183e46c6a530a32753413f68a0ca00fbcad047ed3056b7bff849f33",
+  "version": 1
+}

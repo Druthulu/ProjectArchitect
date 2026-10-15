@@ -32,7 +32,7 @@ KINDS = ("harness", "generalizable", "workflow", "binding")
 _TAG_RE = re.compile(r"^\s*(?:-\s*)?(?:[A-Za-z][A-Za-z ]*:\s*)?"
                      r"(harness|generalizable|workflow|binding):\s*(.+?)\s*$")
 EXPECTED = ("Decisions:", "Deviations:", "Findings:", "Gotchas:", "Research:",
-            "Next task needs:", "Verified:", "Full log:")
+            "Next task needs:", "Full log:")  # 3.25 T4: "Verified:" dropped (no warning; still parsed)
 MARKER = "<!-- assembled by task_log.py -->"
 
 
@@ -269,31 +269,47 @@ def _extract_authored(text, key):
     return result if result else "{{AUTHORED:%s}}" % key
 
 
+_REVIEW_KEYS = ("ran", "results", "seen", "decisions", "edits")
+# 3.24 T8: the block's header in its variants: `Review:`, `## Review`, `**Review:**`, `**Review**:`, `### Review:`.
+_B = r"(?:\*\*|__)?"  # optional bold markup
+_REVIEW_HEAD = re.compile(r"^\s*(?:#{1,6}\s*)?" + _B + r"Review" + _B + r"\s*:?\s*" + _B + r"\s*(.*)$", re.I)
+_KEY_LINE = re.compile(r"^(?:[-*]\s+)?" + _B + r"(%s)" % "|".join(_REVIEW_KEYS) + _B + r"\s*:\s*" + _B + r"\s*(.*)$", re.I)
+_LABEL_LINE = re.compile(r"^" + _B + r"[A-Za-z][\w /()-]*" + _B + r"\s*:")
+_ITEM = re.compile(r"^(?:[-*]|\d+[.)])\s+")
+
+
 def _parse_review_block(lines):
-    """Parse Review: block from summary lines into {ran, results, seen, decisions, edits}."""
+    """Parse the Review: block from summary lines into {ran, results, seen, decisions, edits}.
+
+    The plain form is a flush-left `Review:` line with indented sub-keys, ended by the first flush-left line. A heading or
+    bold header (`## Review`, `**Review:**`; 3.24 T8) may have its sub-keys flush-left, bold or as list items; it ends at
+    the next heading or at a flush-left label that is not a sub-key (`Done:`, `**Gotchas:**`).
+    """
     result = {}
-    in_review = False
+    form = None  # 'plain' or 'marked' once the header is seen
     current_sub = None
     for line in lines:
         stripped = line.strip()
-        if not in_review:
-            if stripped.startswith("Review:"):
-                in_review = True
+        if form is None:
+            m = _REVIEW_HEAD.match(line)
+            if m and m.group(1).strip() == "":
+                form = "plain" if stripped == "Review:" else "marked"
+            elif m and stripped.startswith("Review:"):
+                form = "plain"
             continue
-        # End of indented block: a non-indented non-empty line
-        if stripped and not line[0].isspace():
-            break
         if not stripped:
             continue
-        found = False
-        for key in ("ran:", "results:", "seen:", "decisions:", "edits:"):
-            if stripped.startswith(key):
-                current_sub = key[:-1]
-                rest = stripped[len(key):].strip()
-                result[current_sub] = rest
-                found = True
-                break
-        if not found and current_sub and stripped.startswith("- "):
+        flush = not line[0].isspace()
+        if stripped.startswith("#"):
+            break
+        km = _KEY_LINE.match(stripped)
+        if km and (not flush or form == "marked"):
+            current_sub = km.group(1).lower()
+            result[current_sub] = km.group(2).strip()
+            continue
+        if flush and (form == "plain" or _LABEL_LINE.match(stripped)):
+            break
+        if current_sub and _ITEM.match(stripped):
             prev = result.get(current_sub, "")
             result[current_sub] = (prev + "\n" + stripped).lstrip("\n")
     return result
@@ -484,8 +500,6 @@ def lint_summary(root, tid):
 
 def report(root, tid, errs, warns, facts):
     out = ["ERROR %s" % e for e in errs] + ["WARN  %s" % w for w in warns]
-    if not facts.get("verified") and not any("Verified" in w for w in warns):
-        out.append("WARN  no 'Verified:' line")
     if errs:
         out.append("FAILED: %d problem(s)" % len(errs))
         emit(out)
@@ -548,8 +562,6 @@ def cmd_finish(a, root):
     _cnote(index, script="task_log.py", sub="finish",
            removed=len(_old_idx), added=len(line), root=root)
     out = ["WARN  %s" % w for w in warns]
-    if not facts.get("verified"):
-        out.append("WARN  no 'Verified:' line -- plan_edit.py set-status done will refuse")
     out.append(line)
     emit(out)
     return 0

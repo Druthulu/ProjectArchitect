@@ -75,6 +75,63 @@ class Pa3UpdateTest(unittest.TestCase):
         self.assertEqual(rc, 2)
         self.assertIn("no package clone at ", out)
 
+    def _write(self, rel, text):
+        path = os.path.join(self.dir, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_refusals_i48(self):
+        """3.24 T4: step 2 refuses a clone below the installed root; step 3 one below the record."""
+        clone = os.path.join(self.cfg, "pa3-src")
+        pa3 = os.path.join(self.dir, "pa3")
+        self._write("cfg/pa3-src/project-architect-3.0/VERSION", "3.23\n")
+        self._write("pa3/VERSION", "version: 3.24\ngit: abc\n")
+        why = upd.refusal(2, self.root, clone, pa3)
+        self.assertEqual(why, "pa3_update: refused: the clone holds PA3 3.23, below the installed PA3 (%s) at "
+                              "3.24; PA3 never installs older code" % fwd(pa3))
+        self._write("pa3/VERSION", "version: 3.23\ngit: abc\n")          # equal versions are fine
+        self.assertIsNone(upd.refusal(2, self.root, clone, pa3))
+        self._write("proj/.claude/pa3-managed.json", json.dumps({"upstream_version": "3.23.1"}))
+        self.assertIn("below this project's record at 3.23.1", upd.refusal(3, self.root, clone, pa3))
+        self._write("proj/.claude/pa3-managed.json", json.dumps({"upstream_version": "3.22"}))
+        self.assertIsNone(upd.refusal(3, self.root, clone, pa3))
+
+    def test_main_stops_before_the_root_step(self):
+        """The refusal runs after the pull and before step 2; nothing after it runs."""
+        from unittest import mock
+        self._write("cfg/pa3-src/project-architect-3.0/VERSION", "3.23\n")
+        self._write("pa3/VERSION", "version: 3.24\n")
+        ran = []
+        with mock.patch.object(upd.subprocess, "run",
+                               lambda cmd, cwd=None, **kw: ran.append(cmd) or mock.Mock(returncode=0, stdout="",
+                                                                                        stderr="")):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                rc = upd.main([], root=self.root, config_dir=self.cfg, pa3_dir=os.path.join(self.dir, "pa3"))
+        self.assertEqual(rc, 2, buf.getvalue())
+        self.assertEqual([c[3] for c in ran], ["pull"])
+        self.assertIn("pa3_update: refused:", buf.getvalue())
+
+    def test_detach(self):
+        """3.24 T7b: --detach writes the running marker, starts the same run detached, exits 0; 3 while locked."""
+        started = []
+        upd._SPAWNER = lambda argv, cwd: started.append((argv, cwd))
+        try:
+            rc, out = self.run_main("--detach")
+            self.assertEqual(rc, 0, out)
+            self.assertEqual(started, [([sys.executable, os.path.abspath(upd.__file__)], self.root)])
+            with open(os.path.join(self.root, ".run", "mod", "update.json"), encoding="utf-8") as fh:
+                m = json.load(fh)
+            self.assertEqual((m["state"], m["mode"], m["by"]), ("running", "update", "detach"))
+            self._write("proj/.run/mod/update.lock", "1\n")
+            rc, out = self.run_main("--detach")
+            self.assertEqual(rc, 3, out)
+            self.assertIn("another update is running", out)
+            self.assertEqual(len(started), 1)
+        finally:
+            upd._SPAWNER = None
+
     def test_clone_matches_package_clone_dir(self):
         old = os.environ.get("CLAUDE_CONFIG_DIR")
         os.environ["CLAUDE_CONFIG_DIR"] = self.cfg

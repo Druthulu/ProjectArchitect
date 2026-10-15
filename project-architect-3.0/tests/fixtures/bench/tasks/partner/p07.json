@@ -1,0 +1,19 @@
+{
+  "id": "p07",
+  "arm": "partner",
+  "tier": 2,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: one turn of the partner in the shelf project (a small Python library-loans package in this repository). The mod is absent here: its mcp__pa-watch__ tools and SubagentHandback do not exist, so end your turn with your reply as plain text. An Agent call is recorded, not run. Make only the move this turn calls for.\n\nThe developer says: ask the deep-thinker: is a per-day fee with a cap the right model for shelf at all, or should fees be event-based?",
+  "expect": {
+    "subagent_type": "pa-thinker",
+    "effort": [
+      "deep"
+    ]
+  },
+  "hidden": "—",
+  "settings": "settings/deny-agent.json",
+  "overlay": "overlay/partner"
+}

@@ -28,6 +28,10 @@ def _bootstrap():
 
 def main(argv=None):
     _bootstrap()
+    args = list(sys.argv[1:] if argv is None else argv)
+    if args[:1] == ["ladder-row"]:      # 3.24 T17: the spawn-time resolver, without ledger_cli's imports
+        from pa.ladder_row import main as row_main
+        return row_main(args[1:])
     from pa.ledger_cli import main as cli_main
 
     return cli_main(argv)

@@ -26,12 +26,14 @@ except Exception:
 STATUSES = ("done", "next", "queued", "blocked", "superseded")
 KNOWN_KEYS = ("coder", "effort", "title", "files", "done-when", "verify",
               "reads", "deps", "est-ctx", "review", "wait-for", "note")
-REQUIRED_KEYS = ("coder", "effort", "files", "done-when", "verify", "deps")
+REQUIRED_KEYS = ("done-when",)  # was ("coder", "effort", "files", "done-when", "verify", "deps"); 3.25 T4
 CODERS = ("opus55", "none")  # was ("opus55", "sonnet", "none")
 _LEGACY_CODERS = ("opus46", "sonnet")  # accepted by lint on existing plans, not offered by add-task
 DASH = "—"          # em dash, the "empty" marker in task lines
 TASK_RE = re.compile(r"^\s*-\s+(T[0-9]+(?:\.[0-9]+)*)\s*\|")
 SPLIT_RE = re.compile(r"\s+\|\s+")
+KEY_RE = re.compile(r"^[A-Za-z][\w-]*\s*:")   # a `key: value` part, never the status or the agent column
+DEFAULT_STATUS = "queued"                       # a task line without a status column (3.25 T4)
 
 
 # --------------------------------------------------------------------------- #
@@ -181,11 +183,12 @@ def parse_task_line(raw):
     body = re.sub(r"^-\s+", "", body)
     parts = SPLIT_RE.split(body)
     parts = [p.strip() for p in parts]
-    while len(parts) < 3:
-        parts.append("")
-    tid, status, agent = parts[0], parts[1], parts[2]
+    tid, rest = parts[0], parts[1:]
+    pos = []                                  # the optional status and agent columns, before any key
+    while rest and len(pos) < 2 and not KEY_RE.match(rest[0]):
+        pos.append(rest.pop(0))
     fields = {}
-    for p in parts[3:]:
+    for p in rest:
         if not p:
             continue
         if ":" in p:
@@ -193,6 +196,10 @@ def parse_task_line(raw):
             fields[k.strip()] = v.strip()
         else:
             fields[p.strip()] = ""
+    status = pos[0] if pos and pos[0] else DEFAULT_STATUS
+    agent = pos[1] if len(pos) > 1 and pos[1] else _agent_for()
+    if agent.startswith("expert-fable") and not fields.get("effort"):
+        fields["effort"] = "high"             # 3.25 T6a: the old hard-tier agent reads as pa-expert at high
     return tid, status, agent, fields
 
 
@@ -253,6 +260,9 @@ def load(path):
 # --------------------------------------------------------------------------- #
 def set_status_in_line(raw, new):
     body, eol = split_eol(raw)
+    m = re.match(r"^(\s*-\s+)(\S+)(\s*\|\s*)(.*)$", body)
+    if m and KEY_RE.match(m.group(4)):        # no status column: insert one after the id
+        return m.group(1) + m.group(2) + m.group(3) + new + " | " + m.group(4) + eol
     m = re.match(r"^(\s*-\s+)(\S+)(\s*\|\s*)([^|]*?)(\s*\|)", body)
     if not m:
         return None
@@ -352,7 +362,7 @@ def check_lock(root, path, text, explicit):
         return None
     if rec["header"] != header_hash(text):
         return ("the header above ## Tasks changed since Approved: "
-                "structural changes go through REPLAN.md -> planner-phase")
+                "structural changes go through REPLAN.md and a new plan")
     return None
 
 
@@ -436,8 +446,38 @@ def brief_line(task):
     title = task.get("title", "-")[:100]
     return "%s | %s | %s | coder: %s | effort: %s | review: %s | wait-for: %s | title: %s" % (
         task.id, task.status, _run_agent(task.agent),
-        task.get("coder", "-"), task.get("effort", "-"),
+        task.get("coder", "opus55"), task.get("effort", "medium"),
         rv, wf or DASH, title)
+
+
+def _list_field(raw):
+    """A comma-separated field as a list; the empty markers give []."""
+    if not raw or raw.strip() in ("-", DASH, "none"):
+        return []
+    return [x.strip() for x in raw.split(",") if x.strip() and x.strip() not in ("-", DASH)]
+
+
+def task_json(task):
+    """The ``--json`` object for one task (``show --task --json``, ``next --brief --json``)."""
+    def val(key):
+        v = task.get(key, "").strip()
+        return None if v in ("", "-", DASH) else v
+    wf = task.get("wait-for", "").strip()
+    return {
+        "id": task.id, "status": task.status, "agent": _run_agent(task.agent),
+        "coder": val("coder") if "coder" in task.fields else "opus55",
+        "effort": val("effort") if "effort" in task.fields else "medium",
+        "review": task.get("review", "no").strip().lower() in ("yes", "y"),
+        "wait_for": None if wf in ("", "-", DASH, "none", "no") else wf,
+        "title": val("title"), "done_when": val("done-when"), "verify": val("verify"),
+        "reads": _list_field(task.get("reads", "")), "files": _list_field(task.get("files", "")),
+        "deps": dep_ids(task), "est_ctx": val("est-ctx"),
+    }
+
+
+def emit_json(obj):
+    """One line, so the 40-line cap of ``emit`` never cuts it."""
+    sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
 
 
 # --------------------------------------------------------------------------- #
@@ -486,7 +526,10 @@ def cmd_show(a, root, path, text, explicit):
     if a.task:
         for t in tasks:
             if t.id == a.task:
-                emit(show_entry(t, lines))
+                if getattr(a, "json", False):
+                    emit_json(task_json(t))
+                else:
+                    emit(show_entry(t, lines))
                 return 0
         die("no task %s" % a.task)
     if a.tasks:
@@ -520,9 +563,12 @@ def cmd_next(a, root, path, text, explicit):
     by_id = dict((t.id, t) for t in tasks)
     order = sorted(tasks, key=lambda t: (t.key(), t.index))
     brief = getattr(a, "brief", False)
+    as_json = brief and getattr(a, "json", False)
     for t in order:
         if t.status == "next" and deps_done(t, by_id):
-            if brief:
+            if as_json:
+                emit_json({"kind": "task", "task": task_json(t), "promoted": None})
+            elif brief:
                 emit([brief_line(t)] + wait_for_lines(t))
             else:
                 emit(show_entry(t, lines))
@@ -539,13 +585,19 @@ def cmd_next(a, root, path, text, explicit):
             _cnote(path, script="plan_edit.py", sub="next",
                    removed=len(_old_tl), added=len(new), anchor=_anch, root=root)
             t.status = "next"
-            if brief:
+            if as_json:
+                emit_json({"kind": "task", "task": task_json(t), "promoted": t.id})
+            elif brief:
                 emit([brief_line(t)] + wait_for_lines(t)
                      + ["PROMOTED: %s queued -> next" % t.id])
             else:
                 emit(show_entry(t, lines) + ["PROMOTED: %s queued -> next" % t.id])
             return 0
     left = [t for t in tasks if t.status not in ("done", "superseded")]
+    if as_json:
+        emit_json({"kind": "none", "reason": "waiting" if left else "done",
+                   "waiting_on": ["%s(%s)" % (t.id, t.status) for t in left[:6]]})
+        return 0
     if not left:
         sys.stdout.write("NONE -- every task is done or superseded\n")
     else:
@@ -575,14 +627,6 @@ def cmd_set_status(a, root, path, text, explicit):
         summary = os.path.join(tasks_dir, "%s.md" % t.id)
         if not os.path.isfile(summary):
             die("%s has no summary at %s" % (t.id, rel(root, summary)))
-        ok = False
-        for line in read_text(summary).split("\n"):
-            if split_eol(line)[0].lstrip().startswith("Verified:"):
-                ok = True
-                break
-        if not ok:
-            die("%s has no 'Verified:' line (run the task's verify: command first)"
-                % rel(root, summary))
     old = t.status
     if old == a.status:
         sys.stdout.write("%s already %s\n" % (t.id, a.status))
@@ -614,39 +658,17 @@ def cmd_append_change(a, root, path, text, explicit):
     return 0
 
 
-# presets without a hard rung: mirrors pa/install/ladder.PRESETS where expert-fable (and its -5m twin) is None
-# (tools ship alone, no import from pa/)
-_NO_HARD_RUNG = ("max5", "pro")
+# 3.25 T6a: one expert agent; the task's effort picks its ladder row (every tier has a high row), so the
+# preset refusal of `effort: high` (_NO_HARD_RUNG, _preset_refusal) and the effort/agent check
+# (_AGENTS_FOR_EFFORT) left; was expert-fable for `effort: high` on max20, else expert-opus55
+def _agent_for():
+    return "pa-expert"
 
 
-def _preset(root):
-    return cfg(root).get("preset") or "max20"
-
-
-def _agent_for(effort, preset=None):
-    if preset in _NO_HARD_RUNG:
-        return "expert-opus55"
-    return "expert-fable" if (effort or "").strip() == "high" else "expert-opus55"  # was expert-fable-high
-
-
-def _preset_refusal(preset, tid, effort, agent):
-    """One line when a task line needs the hard rung the preset lacks, else None."""
-    if preset not in _NO_HARD_RUNG:
-        return None
-    if (effort or "").strip() == "high":
-        what = "effort: high"
-    elif agent in ("expert-fable", "expert-fable-5m", "expert-fable-high"):
-        what = "agent %s" % agent
-    else:
-        return None
-    return "preset %s has no hard rung: %s carries %s; mark it medium or split it" % (preset, tid, what)
-
-
-# effort -> the agents that may carry it; expert-fable-high was the opt-in a task line named (retired 3.9.5 T15);
-# the -5m twins (3.15 T4) carry the same effort as their 1h parent
-_AGENTS_FOR_EFFORT = {"high": ("expert-fable", "expert-fable-5m", "expert-fable-high")}
-# retired agent -> the agent that runs a line naming it (lint accepts it with a note)
-_RETIRED_AGENTS = {"expert-fable-high": "expert-fable"}
+# retired agent -> the agent that runs a line naming it (lint accepts it with a note); an `expert-fable...`
+# line with no `effort:` reads as `effort: high` (parse_task_line). Was {"expert-fable-high": "expert-fable"}
+_RETIRED_AGENTS = dict((a, "pa-expert") for a in (
+    "expert-fable-high", "expert-fable", "expert-fable-5m", "expert-opus55", "expert-opus55-5m"))
 
 
 def _run_agent(agent):
@@ -691,11 +713,7 @@ def cmd_reopen(a, root, path, text, explicit):
     if a.verify:
         fields["verify"] = a.verify
     fields["deps"] = fields.get("deps", DASH)
-    preset = _preset(root)
-    agent = _agent_for(fields.get("effort"), preset)
-    refusal = _preset_refusal(preset, new_id, fields.get("effort"), agent)
-    if refusal:
-        die(refusal)
+    agent = _agent_for()
     tl = render_task(new_id, "next", agent, fields)
     at = task_block_end(lines, tasks, parent)
     lines.insert(at + 1, tl)
@@ -742,11 +760,7 @@ def cmd_add_task(a, root, path, text, explicit):
         "review": a.review or "no",
         "wait-for": a.wait_for or DASH,
     }
-    preset = _preset(root)
-    refusal = _preset_refusal(preset, new_id, fields["effort"], None)
-    if refusal:
-        die(refusal)
-    line = render_task(new_id, "queued", _agent_for(fields["effort"], preset), fields)
+    line = render_task(new_id, "queued", _agent_for(), fields)
     at = None
     if a.after:
         for t in tasks:
@@ -843,11 +857,6 @@ def cmd_approve(a, root, path, text, explicit):
     if is_approved(text):
         die("already approved (a new plan replaces it via REPLAN.md)")
     lines, tasks, headings = parse(text)
-    preset = _preset(root)
-    for t in tasks:
-        refusal = _preset_refusal(preset, t.id, t.get("effort"), t.agent)
-        if refusal:
-            die(refusal)
     # ## Triage: every deferred item due for this phase needs one line; decisions go to the index
     m1 = re.match(r"^#\s*Phase\s+(\d+(?:\.\d+)*)", split_eol(lines[0])[0] if lines else "")
     phase = m1.group(1) if m1 else None
@@ -920,20 +929,14 @@ def cmd_lint(a, root, path, text, explicit):
             problems.append("line %d: triage line not '- <id>: T<n>|postpone: <phase>|drop "
                             "[-- reason]' or '- (none)'" % (i + 1))
     seen = {}
-    preset = _preset(root)
     for t in tasks:
         n = t.index + 1
-        refusal = _preset_refusal(preset, t.id, t.get("effort"), t.agent)
-        if refusal:
-            problems.append("line %d: %s" % (n, refusal))
         if t.id in seen:
             problems.append("line %d: duplicate id %s (ids are immutable)" % (n, t.id))
         seen[t.id] = t
         if t.status not in STATUSES:
             problems.append("line %d: %s bad status '%s' (%s)"
                             % (n, t.id, t.status, "|".join(STATUSES)))
-        if not t.agent:
-            problems.append("line %d: %s no agent field" % (n, t.id))
         for k in REQUIRED_KEYS:
             if k not in t.fields:
                 problems.append("line %d: %s missing '%s:'" % (n, t.id, k))
@@ -944,14 +947,6 @@ def cmd_lint(a, root, path, text, explicit):
         if coder and coder not in CODERS and coder not in _LEGACY_CODERS:
             problems.append("line %d: %s coder '%s' not in %s"
                             % (n, t.id, coder, "|".join(CODERS)))
-        eff = t.get("effort")
-        # agent/effort consistency: high -> expert-fable (or the retired expert-fable-high), else expert-opus55;
-        # either one's -5m twin is valid where its parent is (3.15 T4)
-        default = _agent_for(eff, preset)
-        if eff and (
-                t.agent.startswith("expert-fable") or t.agent.startswith("expert-opus")
-        ) and t.agent not in _AGENTS_FOR_EFFORT.get(eff, (default, default + "-5m")):
-            warns.append("line %d: %s effort '%s' but agent '%s'" % (n, t.id, eff, t.agent))
         if t.agent in _RETIRED_AGENTS:
             notes.append("note: %s names the retired %s; it runs %s"
                          % (t.id, t.agent, _RETIRED_AGENTS[t.agent]))
@@ -962,6 +957,12 @@ def cmd_lint(a, root, path, text, explicit):
         for d in dep_ids(t):
             if d not in seen:
                 problems.append("line %d: %s dangling dep '%s'" % (t.index + 1, t.id, d))
+    # 3.24 T13F: the plan-mode dialog withholds approval past 4096 chars on a line; the mod wraps its copy, but a
+    # draft line that long is a warning (never a failure: `Milestone:` is read as one header line).
+    for i, raw in enumerate(lines):
+        if len(split_eol(raw)[0]) > 4000:
+            warns.append("line %d: %d chars (over 4000; the plan view needs it wrapped)"
+                         % (i + 1, len(split_eol(raw)[0])))
     locked = check_lock(root, path, text, explicit)
     if locked:
         problems.append("header: " + locked)
@@ -1019,17 +1020,20 @@ SECTIONS = ("Context", "Rationale", "Interfaces", "Cookbook", "Research",
             "Developer decides", "Triage", "Tasks", "Risks", "Changes")
 
 
+GRAMMAR = """Task-line grammar (3.25: the loose line):
+  - T<n> | title: <a few words> | done-when: <observable>
+Everything else is optional at its default; parts are separated by ` | `:
+  status (positional, after the id): done|next|queued|blocked|superseded (default queued)
+  agent (positional, after the status): pa-expert (default; an old expert-* name reads as pa-expert)
+  coder: opus55|none (default opus55) | effort: medium|high (default medium)
+  files, verify, reads, deps, est-ctx, wait-for: <value or -> (default none) | review: yes|no (default no)
+A `key: value` part is a key, never the status or the agent.
+IDs are immutable; a reopened T3 becomes T3.1. Indented continuation lines belong to the task above."""
+
+
 def cmd_grammar(a, root, path, text, explicit):
-    """The template's task-line grammar comment block, then the plan's section list."""
-    tpath = os.path.join(root, "templates", "PHASE_PLAN.template.md")
-    if not os.path.isfile(tpath):
-        die("no templates/PHASE_PLAN.template.md at the project root")
-    ttext = read_text(tpath)
-    _cnote(tpath, script="plan_edit.py", sub="grammar", root=root)
-    m = re.search(r"(?s)<!--\s*Task-line grammar.*?-->", ttext)
-    if not m:
-        die("no Task-line grammar comment in templates/PHASE_PLAN.template.md")
-    out = m.group(0).split("\n")
+    """The task-line grammar, then the plan's section list."""
+    out = GRAMMAR.split("\n")
     out += ["", "Sections: " + ", ".join(SECTIONS)]
     sys.stdout.write("\n".join(out) + "\n")
     return 0
@@ -1050,7 +1054,7 @@ def cmd_from_draft(a, root, path, text, explicit):
     if os.path.isfile(path) and is_approved(read_text(path)):
         if not os.path.isfile(os.path.join(cur, "REPLAN.md")):
             die("an approved plan exists and no REPLAN.md is present; "
-                "structural changes go through REPLAN.md -> planner-phase")
+                "structural changes go through REPLAN.md and a new plan")
         k = 1
         while os.path.isfile(os.path.join(cur, "PHASE_PLAN.v%d.md" % k)):
             k += 1
@@ -1079,6 +1083,7 @@ def build_parser():
     s.add_argument("--titles", action="store_true", help="with --tasks: show title instead of done-when")
     s.add_argument("--next", action="store_true")
     s.add_argument("--task")
+    s.add_argument("--json", action="store_true", help="with --task: one JSON object on one line")
     s.add_argument("--section",
                    help="a '## <name>' section; Milestone or Approved print that header line")
     s.add_argument("--gen-phase", dest="gen_phase", nargs="?", const="",
@@ -1087,13 +1092,15 @@ def build_parser():
     s = sub.add_parser("next", help="first runnable task (promotes a queued one)")
     s.add_argument("--brief", action="store_true",
                    help="one-line summary: id | status | agent | coder | effort | review | wait-for | title")
+    s.add_argument("--json", action="store_true",
+                   help="with --brief: {kind: task|none, task|reason, promoted|waiting_on} on one line")
 
     s = sub.add_parser("set-status", help="change one task's status",
-                       description="done needs tasks/<id>.md with a 'Verified:' line; a --file plan "
+                       description="done needs tasks/<id>.md; a --file plan "
                                    "other than the live one uses <its dir>/tasks/, no gate if that dir is absent.")
     s.add_argument("task")
     s.add_argument("status")
-    s.add_argument("--by", default="router")
+    s.add_argument("--by", default="router")   # "router": the mod's router plugin since 3.24 (it runs these)
     s.add_argument("--why")
 
     s = sub.add_parser("append-change", help="append a ## Changes line")

@@ -1,4 +1,4 @@
-"""Unit tests for the two closer scripts, tools/phaseend_index.py and tools/genend_index.py.
+"""Unit tests for the two phase-end scripts, tools/phaseend_index.py and tools/genend_index.py.
 
 Same throw-away project tree as test_tools.py (ToolCase: .claude/pa.json, phase-ends/current/,
 the PHASE_PLAN fixture, a two-phase GENERATION_PLAN).
@@ -7,7 +7,6 @@ the PHASE_PLAN fixture, a two-phase GENERATION_PLAN).
 """
 
 import os
-import re
 import shutil
 import sys
 import unittest
@@ -21,7 +20,6 @@ if PKG not in sys.path:
     sys.path.insert(0, PKG)
 
 GIT = shutil.which("git")
-BASH = shutil.which("bash")
 RECAP = ("# Phase 24 recap\n\n## Recap\nFour biomes now build.\nThe bake is next.\n"
          "\n## Decisions that still bind\n- the gate is the milestone\n")
 GEN_RECAP = RECAP + "\n## Generation Recap\nThe generation shipped four biomes.\n"
@@ -75,13 +73,14 @@ class TestPhaseEnd(ClosedPhaseCase):
     def test_assemble_then_fill_from_recap(self):
         self.close_the_phase()
         out = self.ok(self.tool("phaseend_index.py", "assemble", "24"),
-                      "phase-ends/PhaseEnd_Phase24.md", "placeholders left")
+                      "phase-ends/PhaseEnd_Phase24.md")
         self.assertLessEqual(len(out.rstrip().split("\n")), 40)
         text = read(self.phase_end)
         self.assertIn("# PhaseEnd — Phase 24: Ground-Texture Expansion "
                       "(implements Gen 3.4)", text)
         self.assertIn("Tasks: 2 done, 4 superseded", text)
-        self.assertIn("Verified: MILESTONE: green", text)
+        self.assertIn("Confirmed by the developer at the close.", text)     # 3.25 T4: no closer
+        self.assertIn("- phase-end — Phase 24 close | Done: gate re-run", text)
         self.assertIn("- T1 — mask builder for four biomes | Done: the thing works "
                       "| commit: abc1234 | tasks/T1.md | logs/T1.md", text)
         self.assertIn("- phase-end — the gate is the milestone; no manual checks.", text)   # a bulleted binding line
@@ -92,12 +91,12 @@ class TestPhaseEnd(ClosedPhaseCase):
         self.assertNotIn("C0188", text)                    # other phase
         self.assertIn("R24-001 | T1 | mask seam classes", text)
         self.assertIn("- T3 | superseded", text)
-        self.assertIn("{{AUTHORED:recap}}", text)
-        self.assertIn("{{AUTHORED:binding}}", text)
+        self.assertNotIn("{{AUTHORED:", text)                # 3.25 T4: `-`, never a placeholder
+        self.assertIn("## Plain-English Recap\n-\n", text)
         self.assertIn("2026-09-12 planner: plan approved", text)   # Changes copied
         again = read(self.phase_end)
         self.ok(self.tool("phaseend_index.py", "assemble", "24"))
-        self.assertEqual(again, read(self.phase_end))      # idempotent with placeholders
+        self.assertEqual(again, read(self.phase_end))      # idempotent
 
         write(self.recap, RECAP)
         self.ok(self.tool("phaseend_index.py", "assemble", "24"))
@@ -105,7 +104,6 @@ class TestPhaseEnd(ClosedPhaseCase):
         self.assertNotIn("{{AUTHORED:", text)
         self.assertIn("Four biomes now build.", text)
         self.assertIn("- the gate is the milestone", text)
-        self.ok(self.tool("phaseend_index.py", "lint"), "OK")
 
         os.remove(self.recap)                              # a later run keeps the filled blocks
         self.ok(self.tool("phaseend_index.py", "assemble", "24"))
@@ -113,41 +111,6 @@ class TestPhaseEnd(ClosedPhaseCase):
         self.assertNotIn("{{AUTHORED:", text)
         self.assertIn("Four biomes now build.", text)
         self.assertIn("- the gate is the milestone", text)
-
-    def test_lint_wants_the_verdict_on_a_verified_line(self):
-        """A mention of MILESTONE: green in a gotcha or a recap sentence is not a verdict."""
-        self.close_the_phase()
-        write(self.recap, RECAP)
-        self.ok(self.tool("phaseend_index.py", "assemble", "24"))
-        path = os.path.join(self.cur, "tasks", "phase-end.md")
-        write(path, read(path).replace("Verified: MILESTONE: green — python -m unittest discover tests -> OK",
-                                       "Verified: MILESTONE: red — one clause failed"))
-        p = self.tool("phaseend_index.py", "lint")
-        self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("verdict", p.out)
-        write(self.recap, RECAP + "\nMILESTONE: green — re-run by the closer\n")
-        self.ok(self.tool("phaseend_index.py", "lint"), "OK")
-
-    def test_lint_fails_on_an_open_task(self):
-        self.close_the_phase()
-        self.tool("plan_edit.py", "set-status", "T5", "queued")
-        p = self.tool("phaseend_index.py", "lint")
-        self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("T5 is queued", p.out)
-
-    def test_lint_fails_until_the_placeholders_are_filled(self):
-        self.close_the_phase()
-        p = self.tool("phaseend_index.py", "lint")
-        self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("run assemble 24 first", p.out)
-        self.ok(self.tool("phaseend_index.py", "assemble", "24"))
-        p = self.tool("phaseend_index.py", "lint")
-        self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("{{AUTHORED:recap}}", p.out)
-        self.assertIn("{{AUTHORED:binding}}", p.out)
-        write(self.recap, RECAP)
-        self.ok(self.tool("phaseend_index.py", "assemble", "24"))
-        self.ok(self.tool("phaseend_index.py", "lint"), "OK")
 
     @unittest.skipUnless(GIT, "git not on PATH")
     def test_archive_moves_current_and_extends_the_indexes(self):
@@ -179,19 +142,15 @@ class TestPhaseEnd(ClosedPhaseCase):
         self.refused(self.tool("phaseend_index.py", "--archive"), "nothing to archive")
 
     @unittest.skipUnless(GIT, "git not on PATH")
-    def test_archive_refuses_until_the_recap_is_authored(self):
+    def test_archive_refuses_until_assembled_and_needs_no_recap(self):
+        """3.25 T4: the placeholder refusal is gone; archive with no RECAP.md archives."""
         self.close_the_phase()
         self.git_init()
         self.refused(self.tool("phaseend_index.py", "--archive"), "assemble 24 first")
-        self.ok(self.tool("phaseend_index.py", "assemble", "24"))
-        out = self.refused(self.tool("phaseend_index.py", "--archive"),
-                           "{{AUTHORED:recap}}", "re-run assemble 24 before archive")
-        self.assertIn("{{AUTHORED:binding}}", out)
         self.assertTrue(os.path.isfile(self.plan))          # nothing moved
-        self.assertFalse(os.path.isdir(os.path.join(self.root, "phase-ends", "phase-24")))
-        write(self.recap, RECAP)
         self.ok(self.tool("phaseend_index.py", "assemble", "24"))
         self.ok(self.tool("phaseend_index.py", "--archive"), "archived:")
+        self.assertTrue(os.path.isdir(os.path.join(self.root, "phase-ends", "phase-24")))
 
     def test_agent_runs_section_is_generated_from_the_ledger(self):
         """3.1 T11: one line per ledger run stamped with this phase; never a crash without a ledger."""
@@ -201,6 +160,9 @@ class TestPhaseEnd(ClosedPhaseCase):
         os.makedirs(ledger)
         conn = db.connect(os.path.join(ledger, "ledger.sqlite"))
         db.init_schema(conn)
+        # 3.24 T17i: only this project's runs are picked (by the session's project)
+        db.upsert_session(conn, {"session_id": "s1", "project": self.root})
+        db.upsert_session(conn, {"session_id": "s2", "project": self.root})
         db.upsert_agent_run(conn, {
             "run_id": "a1", "session_id": "s1", "kind": "expert", "agent_type": "expert-fable",
             "task_id": "T1", "phase": "24", "model_seen": "claude-fable-5-1", "effort": "medium",
@@ -235,47 +197,6 @@ class TestPhaseEnd(ClosedPhaseCase):
         self.ok(self.tool("phaseend_index.py", "assemble", "24",
                           env={"PA_LEDGER_DIR": os.path.join(self.root, "nowhere")}))
         self.assertIn("- (no ledger at", read(self.phase_end))
-
-    @unittest.skipUnless(BASH, "bash not on PATH")
-    def test_verify_runs_every_milestone_clause(self):
-        """3.1 T17: each verified-by clause runs through run.sh; GREEN/RED per clause and overall."""
-        write(os.path.join(self.root, ".claude", "pa.json"),
-              read(os.path.join(self.root, ".claude", "pa.json")).replace(
-                  '"python": "python"', '"python": %s' % __import__("json").dumps(sys.executable)))
-
-        def set_milestone(clauses):
-            plan = re.sub(r"^Milestone:.*$", "Milestone: the gate is green — verified by: " + clauses,
-                          read(self.plan), count=1, flags=re.M)
-            write(self.plan, plan)
-
-        set_milestone("`echo green-one` prints `green-one`; `test -f README-missing.md`")
-        p = self.tool("phaseend_index.py", "verify")
-        self.assertEqual(p.returncode, 1, p.out)
-        # default: only RED clauses + summary
-        self.assertNotIn("GREEN 1:", p.out)
-        self.assertIn("RED 2:", p.out)
-        self.assertIn("VERIFY: RED (1/2)", p.out)
-        self.assertTrue(os.path.isfile(os.path.join(self.root, ".run", "logs", "verify1.log")))
-        # --verbose: every clause shown
-        p2 = self.tool("phaseend_index.py", "verify", "--verbose")
-        self.assertEqual(p2.returncode, 1, p2.out)
-        self.assertIn("GREEN 1: `echo green-one` prints `green-one` (.run/logs/verify1.log)", p2.out)
-        self.assertIn("RED 2:", p2.out)
-        self.assertIn("VERIFY: RED (1/2)", p2.out)
-        set_milestone("`echo one`; `PY -c \"print(2)\"` prints 2")
-        self.ok(self.tool("phaseend_index.py", "verify"), "VERIFY: GREEN (2/2)")
-        # a prose milestone: the first command runs, the "with `…`" fragment is expected output,
-        # a code-looking fragment elsewhere in the sentence is ignored
-        set_milestone("`echo Ran 32 tests` exits 0 with `Ran 32 tests` and the suite asserts "
-                      "`LEGAL_COUNT = 121` through `main([\"--stdin\"])`")
-        self.ok(self.tool("phaseend_index.py", "verify"), "VERIFY: GREEN (1/1)")
-        set_milestone("`echo one` prints `two`")
-        p = self.tool("phaseend_index.py", "verify")
-        self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("expected in the output: `two`", p.out)
-        write(self.plan, re.sub(r"^Milestone:.*$", "Milestone: the gate is green, checked by hand",
-                                read(self.plan), count=1, flags=re.M))
-        self.refused(self.tool("phaseend_index.py", "verify"), "no 'verified by:' clauses")
 
     def test_gotchas_lists_tagged_lines_with_file_and_line(self):
         """3.1 T17: task_log.py gotchas gathers every tagged line; --kind narrows."""
@@ -332,10 +253,6 @@ class TestGenEnd(ClosedPhaseCase):
         self.assertIn("- masks are per biome", text)
         self.assertIn("- T5 | blocked — bake report", text)
         self.assertIn("{{AUTHORED:recap}}", text)
-        p = self.tool("genend_index.py", "lint", "3")
-        self.assertEqual(p.returncode, 1, p.out)
-        self.assertIn("{{AUTHORED:recap}}", p.out)
-        self.assertIn("is open", p.out)
 
         write(self.recap, "## Generation Recap\nThe generation shipped four biomes.\n")
         self.ok(self.tool("genend_index.py", "assemble", "3"))
@@ -345,15 +262,13 @@ class TestGenEnd(ClosedPhaseCase):
         self.ok(self.tool("plan_edit.py", "gen-close", "3.4"))
         self.ok(self.tool("plan_edit.py", "gen-close", "3.5"))
         self.ok(self.tool("genend_index.py", "assemble", "3"))
-        self.ok(self.tool("genend_index.py", "lint", "3"), "OK")
 
     @unittest.skipUnless(GIT, "git not on PATH")
     def test_generation_recap_survives_the_archive(self):
-        """The order the router runs: assemble, lint, archive, gen-close, genend assemble."""
+        """The order the router runs: assemble, archive, gen-close, genend assemble."""
         self.close_the_phase()
         write(self.recap, GEN_RECAP)
         self.ok(self.tool("phaseend_index.py", "assemble", "24"))
-        self.ok(self.tool("phaseend_index.py", "lint"), "OK")
         self.git_init()
         self.ok(self.tool("phaseend_index.py", "--archive"), "archived:")
         self.assertFalse(os.path.isfile(self.recap))

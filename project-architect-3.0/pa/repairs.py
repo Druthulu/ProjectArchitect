@@ -13,7 +13,8 @@ Steps: ``3.15/account-fallback`` (T12: re-file A-B-A fallback sessions to A);
 real gap / cold / rewrite, from a recalc of the transcript or else from the previous ledger turn);
 ``3.15.2/savings-account`` (T20: a switch event re-filed to A whose detail still says B gets its
 session's B rows up to the next switch re-filed to A; the fallback step now also rewrites the
-switch details and the savings).
+switch details and the savings);
+``3.24/residual-off-main`` (T13q: pre-T13l residual rows on the main run move to ``unattributed:<sid>``).
 
 A step is stamped in meta ``repair.<id>`` (``fresh`` on a new ledger, else ``{ts, result|counts}``)
 and never runs again; a failing step logs ``repair_step_failed`` and stays unstamped, but
@@ -32,6 +33,7 @@ import time
 STEP_ACCOUNT_FALLBACK = "3.15/account-fallback"
 STEP_BATCH_GAP = "3.15.1/batch-gap"
 STEP_SAVINGS_ACCOUNT = "3.15.2/savings-account"
+STEP_RESIDUAL_OFF_MAIN = "3.24/residual-off-main"
 _LOCK_STALE_S = 1800           # any lock older than 30 min is stale
 _START_GRACE_S = 30            # a requester's lock outlives the requester while the child starts
 
@@ -396,16 +398,40 @@ def apply_savings_account(conn, cfg, plan):
     return counts
 
 
+# --------------------------------------------------------------------------- step: 3.24/residual-off-main
+#
+# Before 3.24 T13l a session's residual row (``kind='residual'``) was booked on the main run
+# (``run_id`` = the session id), so it read as main-loop cost.  T13l books residuals on
+# ``unattributed:<sid>`` (``runs.unattributed_run``); this step moves the old rows there too.
+# ``agent_runs`` sums only ``kind='api'`` turns, so no run total changes.  The per-model split and
+# the output scaling stay with ``pa ledger recalc --session <sid>``.
+
+def detect_residual_off_main(conn, cfg):
+    n = conn.execute("SELECT COUNT(*) FROM turns WHERE kind='residual' AND run_id=session_id").fetchone()[0]
+    return {"turns": n} if n else None
+
+
+def apply_residual_off_main(conn, cfg, plan):
+    """Move every old residual row from its session's main run to ``unattributed:<sid>``."""
+    from .runs import UNATTRIBUTED
+
+    n = conn.execute("UPDATE turns SET run_id=? || ':' || session_id WHERE kind='residual' "
+                     "AND run_id=session_id", (UNATTRIBUTED,)).rowcount
+    return {"turns": n}
+
+
 STEPS = [
     (STEP_ACCOUNT_FALLBACK, detect_account_fallback, apply_account_fallback),
     (STEP_BATCH_GAP, detect_batch_gap, apply_batch_gap),
     (STEP_SAVINGS_ACCOUNT, detect_savings_account, apply_savings_account),
+    (STEP_RESIDUAL_OFF_MAIN, detect_residual_off_main, apply_residual_off_main),
 ]
 
 
 _NOTICE_TEXT = {STEP_ACCOUNT_FALLBACK: "re-filed or cleared",
                 STEP_BATCH_GAP: "(turns' gaps recomputed)",
-                STEP_SAVINGS_ACCOUNT: "re-filed to the switch's account, savings rewritten"}
+                STEP_SAVINGS_ACCOUNT: "re-filed to the switch's account, savings rewritten",
+                STEP_RESIDUAL_OFF_MAIN: "(residual rows moved off the main run to unattributed)"}
 
 
 def step_ids():
@@ -459,6 +485,12 @@ def pop_notice():
     return [str(x) for x in lines if x] if isinstance(lines, list) else []
 
 
+def _stamp(conn, key, value):
+    """Write a step's stamp only while it is absent (I47, 3.24): a racing run never
+    overwrites another's real counts with "nothing"."""
+    conn.execute("INSERT OR IGNORE INTO meta(key, value) VALUES (?, ?)", (key, value))
+
+
 def run(cfg=None, conn=None):
     """Run every unstamped step; returns ``{step id: counts | None (nothing) }`` of the steps run."""
     from . import __version__, config, db, log
@@ -478,13 +510,13 @@ def run(cfg=None, conn=None):
             try:
                 plan = detect(conn, cfg)
                 if plan is None:
-                    db.set_meta(conn, key, json.dumps({"ts": _now(), "result": "nothing"}))
+                    _stamp(conn, key, json.dumps({"ts": _now(), "result": "nothing"}))
                     log.log("repair_step", step=step_id, result="nothing")
                     results[step_id] = None
                     continue
                 backup = _backup(conn, step_id)
                 counts = apply(conn, cfg, plan)
-                db.set_meta(conn, key, json.dumps({"ts": _now(), "counts": counts}))
+                _stamp(conn, key, json.dumps({"ts": _now(), "counts": counts}))
                 log.log("repair_step", step=step_id, result="applied", backup=backup, **counts)
                 results[step_id] = counts
                 done = ", ".join("%s %d" % (k, v) for k, v in counts.items() if v)
@@ -517,9 +549,9 @@ def _lock_stale(lock):
         pid = int(parts[0])
     except (IndexError, ValueError):
         return True
-    from . import warmer
+    from . import fsutil
 
-    if warmer.pid_alive(pid):
+    if fsutil.pid_alive(pid):
         return False
     role = parts[1] if len(parts) > 1 else "repairs"
     return role != "requester" or age > _START_GRACE_S
@@ -553,6 +585,22 @@ def _write_lock(lock, role):
     fsutil.atomic_write_text(lock, "%d %s\n" % (os.getpid(), role))
 
 
+_REQUESTER_ENV = "PA_REPAIRS_REQUESTER"
+
+
+def _take_over(lock, requester):
+    """True (and the lock rewritten as ours) when ``lock`` is ``requester``'s requester lock."""
+    try:
+        with open(lock, encoding="utf-8") as fh:
+            parts = fh.read().split()
+    except OSError:
+        return False
+    if parts[:2] != [str(requester), "requester"]:
+        return False
+    _write_lock(lock, "repairs")
+    return True
+
+
 def request(cfg=None):
     """Spawn one detached ``python -m pa.repairs`` unless one holds the lock; True when spawned.
 
@@ -569,7 +617,8 @@ def request(cfg=None):
         pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         # -s -P, not -I: -I ignores PYTHONPATH, which is how the installed copy is found
         cmd = [sys.executable, "-s", "-P", "-X", "utf8", "-m", "pa.repairs"]
-        if notify.spawn_detached(cmd, {"PYTHONPATH": pkg}):
+        # I47 (3.24): the child takes over this requester's lock by its pid
+        if notify.spawn_detached(cmd, {"PYTHONPATH": pkg, _REQUESTER_ENV: str(os.getpid())}):
             return True
         try:
             os.remove(lock)
@@ -586,8 +635,15 @@ def request(cfg=None):
 
 
 def main(argv=None):
-    """``python -m pa.repairs``: run the steps, then release the lock; prints nothing."""
+    """``python -m pa.repairs``: run the steps, then release the lock; prints nothing.
+
+    I47 (3.24): a requested child takes over its requester's lock (pid handed over in
+    ``PA_REPAIRS_REQUESTER``); a hand run, or a child whose lock is gone, takes it with
+    :func:`_take_lock` and does nothing while another run holds it."""
     lock = _lock_path()
+    requester = os.environ.pop(_REQUESTER_ENV, "")
+    if not ((requester and _take_over(lock, requester)) or _take_lock(lock)):
+        return 0
     try:
         _write_lock(lock, "repairs")
         run()

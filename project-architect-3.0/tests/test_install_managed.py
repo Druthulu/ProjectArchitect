@@ -16,7 +16,7 @@ from pa.install import managed                              # noqa: E402
 from pa.install import project as pj                        # noqa: E402
 
 RECORD = ".claude/pa3-managed.json"
-GROUPS = (".claude/agents/", ".claude/skills/project-architect/", ".claude/commands/",
+GROUPS = (".claude/agents/", ".claude/skills/project-architect/", ".claude/skills/pa-planning/", ".claude/commands/",
           "tools/", "templates/", "docs/project-architect.md")      # 3.11 T25: the doc
 
 
@@ -67,7 +67,7 @@ class TestManagedRecord(ProjectCase):
             with open(self.path(*rel.split("/")), "rb") as fh:
                 self.assertEqual(entry["sha"], managed.sha(fh.read()), rel)
             self.assertIsNone(entry["user"], rel)
-        agent = ".claude/agents/critic.md"
+        agent = ".claude/agents/auditor.md"
         text = read(self.path(*agent.split("/")))
         version = [l for l in text.splitlines() if l.startswith("version:")][0]
         self.assertEqual(rec["files"][agent]["base"], version.split(":", 1)[1].strip())
@@ -88,7 +88,7 @@ class TestManagedRecord(ProjectCase):
     def test_pre_manifest_refresh_omits_an_edited_file(self):
         self.install()
         os.remove(self.path(*RECORD.split("/")))
-        agent = ".claude/agents/critic.md"
+        agent = ".claude/agents/auditor.md"
         apath = self.path(*agent.split("/"))
         write(apath, read(apath) + "\nmy own line\n")
         out, man = self.install_capturing()
@@ -104,17 +104,17 @@ class TestManagedRecord(ProjectCase):
 class TestLadderInstall(ProjectCase):
     """3.10.6 T2: agents placed through the ladder at the resolved plan tier."""
 
-    FABLE = ".claude/agents/expert-fable.md"
+    FABLE = ".claude/agents/pa-thinker.md"     # 3.25 T6a: plays the old expert-fable (made absent below)
     install_capturing = TestManagedRecord.install_capturing
     record = TestManagedRecord.record
 
     def agent(self, name):
         return read(self.path(".claude", "agents", name + ".md"))
 
-    def test_fresh_install_max5_and_pro_leave_expert_fable_out(self):
+    def test_fresh_install_max5_and_pro_leave_an_absent_agent_out(self):
         from pa.install import ladder
         for tier in ("max5", "pro"):
-            with self.subTest(tier=tier):
+            with self.subTest(tier=tier), mock.patch.dict(ladder.PRESETS[tier], {"pa-thinker": None}):
                 self.tearDown()
                 self.setUp()
                 self.set_tier(tier)
@@ -124,7 +124,7 @@ class TestLadderInstall(ProjectCase):
                 _raw, rec = self.record()
                 self.assertEqual(rec["files"][self.FABLE]["absent"], "tier")
                 self.assertIsNone(rec["files"][self.FABLE]["sha"])
-                for name in ("critic", "plain"):
+                for name in ("auditor", "memory-curator"):
                     r = ladder.row(name, tier)
                     self.assertIn("\nmodel: %s\neffort: %s\n" % (r["model"], r["effort"]),
                                   self.agent(name))

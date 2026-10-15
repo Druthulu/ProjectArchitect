@@ -1,6 +1,70 @@
 # PA3 changes
 
-One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, the router reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
+One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
+
+## 3.28 — The release
+
+- This is the release a project on 3.15 updates to. The update brings every change in the sections from 3.24 to 3.28; the 3.24 section describes the move to PA 3.2.
+- PA3 looks for a new release every time a session starts, and every time you resume a session in a project with the mod on. `pa_ledger.py doctor` warns about updates only when a newer release is out.
+- `pa_ledger.py report --since <date>` counts the savings of the sessions that started on or after the date.
+- The README and the wiki describe PA 3.2, and the wiki's savings cross-check is re-run on today's models.
+
+## 3.27 — The model studies and the benches
+
+- The retrievers run Haiku 5.5 at medium on every plan, instead of Sonnet 5.5. On the bench they passed about as often, at a small fraction of the cost.
+- Pro gets its own models: the expert runs Opus 5.5 at low, the coder Sonnet 5.5 at medium and the thinker Opus 5.5 at medium, and Claude starts on Sonnet 5.5 at medium. A `--project` run moves a starting model PA3 shipped for another plan; one you set yourself stays.
+- When you ask Claude to think hard, or ask a hard question, Claude runs its thinker at max effort.
+- The bench (`/bench`) runs on today's agents and on any model, and now also benches Claude itself and the web retriever.
+- The price table drops the long-context tier: Claude 4.6 and later bill the whole 1M window at standard rates. Stored costs never used it, so nothing is re-priced.
+
+## 3.26 — Verify and fix
+
+- A task that waits keeps its cache warm: the warming ping is answered with one `.`, and the resume clock counts from the last ping, so a held expert resumes warm after hours.
+- Claude can answer a warming ping itself without being refused.
+- The expert's brief asks for the plain report (done, question or blocked, then free text).
+- Claude says what is running now while it routes, and after a review is released.
+- A second waiting toast within a minute of the first is skipped.
+- The expert reads the research its own task names.
+- Claude picks the thinker's effort for each question (`[effort <level>]`).
+
+## 3.25 — Looser and smaller
+
+- The phase close needs no agent. When you say yes at the close question, Claude hands its phase report to the mod, which saves it as the phase recap (and the generation recap at a generation end) and closes the phase: it assembles the record, commits, archives and tells you to push. Nothing re-checks the milestone after your yes.
+- Experts and coders report in plain words. A report starts with done, question or blocked and the rest is free text; the mod reads the commits from git. Older reports still read.
+- A plan task needs only three parts: its id, a title and what done means. Everything else (files, a verify command, effort, review and the rest) is optional, and a task summary no longer needs a `Verified:` line. The milestone is a plain sentence, and a command can go with it.
+- One agent per role: `pa-expert`, `pa-coder` and `pa-thinker` replace the per-model agents. A task's effort picks the expert's model from your tier, and every tier now has a high-effort expert. The deep thinker is the thinker spawned at its deep row, still only when you ask for it by name. An upgrade removes the old agent files.
+- A generation plan's phase line may carry `planner-effort: <level>` to run that phase's planner at a lower effort.
+- Agents may write memories again; the rules, the card and the `CLAUDE.md` line no longer forbid it. Claude still keeps the project's memories in `.claude-state/memory/`.
+- The rules, templates and docs stop describing what is gone: the closing agent, the close lint and the milestone verifier, the strict report block, the required task fields and the old agent names. Seed rule P7 (the close verifier) is removed.
+
+## 3.24 — PA 3.2
+
+- PA 3.2 is now the only PA3. You work in one session and talk with one partner, Claude. When you approve a plan, its tasks run inside that same session: one expert per task, with its coders and retrievers, while you keep talking with Claude. There is no router session any more.
+- The installer now installs the mod, the plugin that runs the plan's tasks. The machine install registers it as a user-scope plugin from a local marketplace in `~/.claude/pa3/mod` (`pa@pa3` and `pa-watch@pa3`, in your user settings), so a bare `claude` loads it. It is active in PA3 projects only; in any other folder it does nothing.
+- Upgrading a project onto 3.2 is the same command as before (`pa_install.py --project <repo>`, or the update at session start). The upgrade:
+  - turns the mod on (`mod: on` in `.claude/pa.json`);
+  - removes the old loop's agents and commands, and saves a copy of any you had edited as `.claude/pa3-upgrade/<path>.yours`, with a note in `.claude/pa3-upgrade/UPGRADE.md`;
+  - replaces the model pins PA3 used to ship (the `pa-session` agent, the Sonnet model and its effort entries) with Claude's starting model and effort, Opus 5.5 at medium; any value you set yourself is kept and reported;
+  - refreshes the lines of `CLAUDE.md` and the seed rules you never edited;
+  - marks a project that has memories for the curator's first-run sort.
+- The first run in 3.2. When a project that already had memories enters 3.2 (from plain Claude Code, PA2 or PA3 3.15.x), the mod asks you once, together with your first message: the memory curator sorts those memories now, or you pause it. No plan is drafted or started until the sort is done or paused; a paused sort is asked again in a later session. The curator follows your policy, card first: your preferences go to the card's `## Developer` section and standing facts to its other sections, norms go to `rules/`, traps and techniques to the cookbook, and memory keeps only what fits none of these. Stale items and items that contradict the way PA3 works are archived. Nothing is deleted. Claude then tells you what was moved where.
+- Claude always sees the card. Every fresh Claude starts with its slice of `HOW_WE_WORK.md`, and every expert's brief carries the expert slice, so neither has to go and read it. When you state a preference, Claude writes it to the card first.
+- File edits show on screen. When Claude, an expert or a coder edits or creates a file, the session shows the change the way Claude Code itself does: `Updated <path> (+N -M)` or `Created <path> (N lines)`, then numbered lines, removed in red and added in green, in a note marked with the agent's name and color. Long diffs are cut at about 30 lines. Commands, reads and searches stay hidden. A coder's finish card lists the files its commit changed, with their counts, which also covers edits made by a script. The phone (Remote Control) shows the same diff.
+- The phase close no longer stalls. The ledger recalc at the close used to hold the session for minutes; it now runs in the background, and the close goes on at once.
+- At every session start in a PA3 project, the session-start hook checks the mod: the installed files, the plugin's registration, the Claude Code version, and whether the mod loaded last time. When something is broken it starts the repair at once: a reinstall of the release you have, or, under `upgrade: auto`, a newer release that fixes it. Its line says what broke and what was done, and Claude (or plain Claude Code, when the mod did not load) tells you in plain words. A repaired mod loads at the next start or at `/reload-plugins`. Below the Claude Code floor nothing is changed; the line says to update Claude Code.
+- Updates install released versions only. `upgrade: auto`, the default again, installs a new release at session start, before any task runs; `upgrade: ask` asks you first. Nothing ever installs older or unreleased code.
+- PA3 now needs Claude Code 2.1.292 or newer. Below that, the installer stops before changing anything and says to update Claude Code.
+- The status line draws within a fraction of a second. It used to rebuild its summary before printing, which on a big ledger left it blank for minutes; the slow work now runs in the background. It refreshes every 5 seconds, so a `/model` or `/effort` change shows within seconds.
+- The review picker no longer waits while Claude's thinker works. It used to treat any helper that was waiting as an open dialog.
+- Ledger fixes:
+  - each account's share of a project is now counted from that account's own figures;
+  - a usage window that has ended no longer counts spend past its end;
+  - a summary rebuild that cannot read the other machine's ledger now retries once and logs the failure, instead of showing this machine's numbers alone;
+  - two repairs running at once can no longer both stamp the same step.
+- Not supported any more:
+  - PA3 3.15.x projects: run the upgrade above to move them to 3.2;
+  - the `mod: off` mode: there is no fallback to the old loop.
+- The phase-end recap is one plain-English paragraph, as long as the phase needs: what it set out to do and why, what it found or built, what it cost, what did not change, and what comes next. The generation recap reads the same way.
 
 ## 3.15.3 — Long sessions keep their savings
 

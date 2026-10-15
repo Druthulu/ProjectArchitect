@@ -53,28 +53,25 @@ if arm == "expert" and tid.endswith(".c") and os.environ.get("FAKE_PASS"):   # 3
     subprocess.run(["git", "apply", str(patch)], cwd=clone, capture_output=True)
 if arm == "expert" and not tid.endswith(".c") and os.environ.get("FAKE_BRIEF"):
     answer = (fixtures / "tasks" / "expert" / f"{tid}.ref.md").read_text(encoding="utf-8")
-if arm == "_rubric":   # 3.9.7 T4: the rubric grader call, cwd <work>/_rubric/<arm>-<id>/
-    answer = os.environ.get("FAKE_RUBRIC", "S1 1 S2 1 P1 1 | total 11") + "\nstrongest\nworst"
-if arm == "planner":
-    (clone / ".run").mkdir(exist_ok=True)
-    (clone / ".run" / "PHASE_PLAN.draft.md").write_text("# fake draft\n", encoding="utf-8")
 sid = str(uuid.uuid4())
 proj = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / "fake"
 proj.mkdir(parents=True, exist_ok=True)
 with open(proj / f"{sid}.jsonl", "w", encoding="utf-8") as fh:
-    for mid in ("m1", "m1", "m2"):
-        fh.write(json.dumps({"type": "assistant", "message": {"id": mid, "content": []}}) + "\n")
+    for mid in ("m1", "m1", "m2"):   # 3.27 T6: the partner's last message carries FAKE_PARTNER (content blocks)
+        content = json.loads(os.environ.get("FAKE_PARTNER", "[]")) if arm == "partner" and mid == "m2" else []
+        fh.write(json.dumps({"type": "assistant", "message": {"id": mid, "content": content}}) + "\n")
 # one file per call: concurrent "a"-mode appends from parallel fakes lose rows on Windows (T8.c3)
 Path(log).mkdir(parents=True, exist_ok=True)
 with open(Path(log) / f"{sid}.json", "w", encoding="utf-8") as fh:
     fh.write(json.dumps({"arm": arm, "id": tid, "attempt": attempt, "start": t0, "end": time.time(), "hidden": hidden_seen,
                          "prompt": bool(prompt), "stdin": prompt, "argv": sys.argv[1:],
                          "api_key": "ANTHROPIC_API_KEY" in os.environ,
-                         "hooks_off": os.environ.get("PA_HOOKS_OFF")}) + "\n")
+                         "hooks_off": os.environ.get("PA_HOOKS_OFF"), "ledger": os.environ.get("PA_LEDGER_DIR"),
+                         "pa_json": (clone / ".claude" / "pa.json").exists()}) + "\n")
 denials = [{"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {}}] if os.environ.get("FAKE_DENY") == tid else []
 print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": answer,
                   "session_id": sid, "num_turns": 5,
-                  "total_cost_usd": 0.07 if tid.endswith(".c") else 0.02 if arm == "_rubric" else 0.05,
+                  "total_cost_usd": 0.07 if tid.endswith(".c") else 0.05,
                   "permission_denials": denials,
                   "usage": {"input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 30,
                             "cache_creation_input_tokens": 40},
@@ -124,12 +121,11 @@ class BenchRun(unittest.TestCase):
             rc = bench.main(["run", *args, "--out", str(self.out), "--work-dir", str(SCRATCH / "work")])
         return rc, buf.getvalue()
 
-    def calls(self, rubric=False):
-        """The fake's calls; the rubric grader calls (arm _rubric) only with rubric=True."""
+    def calls(self):
+        """The fake's calls."""
         if not self.log.exists():
             return []
-        calls = [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.log.glob("*.json"))]
-        return [c for c in calls if (c["arm"] == "_rubric") == rubric]
+        return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(self.log.glob("*.json"))]
 
     def doc(self):
         return json.loads(self.out.read_text(encoding="utf-8"))
@@ -143,7 +139,7 @@ class BenchRun(unittest.TestCase):
         self.assertEqual((doc["format"], doc["repeat"]), (2, 1))   # 3.9.7 T5: format 2 always
         self.assertTrue(all(t["attempt"] == 1 for a in doc["arms"] for t in a["tasks"]))
         self.assertFalse(list((SCRATCH / "work").glob("*/*/*/a1")))   # repeat 1: today's paths
-        self.assertEqual([a["role"] for a in doc["arms"]], ["coder", "expert", "planner"])
+        self.assertEqual([a["role"] for a in doc["arms"]], ["coder", "expert", "partner"])   # 3.24: was + planner; 3.27 T6: + partner
         self.assertTrue(all(a["stopped"] == 0 for a in doc["arms"]))
         self.assertTrue(all(t["passed"] is not None for a in doc["arms"] for t in a["tasks"]))
         coder = doc["arms"][0]
@@ -152,52 +148,111 @@ class BenchRun(unittest.TestCase):
         self.assertEqual((t["turns"], t["turns_source"], t["cache_write"]), (2, "transcript", 40))
         self.assertEqual((coder["model"], coder["effort"], coder["w5h_before"]), ("claude-opus-5-5", "medium", 10.0))
         self.assertEqual(doc["claude_code"], "2.1.282")
-        self.assertEqual(doc["harness_version"], "3.15.3")        # I11: the package VERSION
-        self.assertIn("coder coder-opus55 claude-opus-5-5/medium pass 4/4", text)
-        self.assertTrue(list((SCRATCH / "work").glob("*/planner/p01.rubric.txt")))
-        p01 = doc["arms"][2]["tasks"][0]   # 3.9.7 T4: rubric side score, grader cost added
-        self.assertEqual(p01["rubric"], {"score": 11.0, "max": 3 + 8, "model": "claude-opus-5-5"})
-        self.assertAlmostEqual(p01["cost_usd"], 0.07)
-        self.assertIn("rubric 11/11 $0.02", p01["detail"])
-        self.assertEqual(len(self.calls(rubric=True)), 1)
+        self.assertEqual(doc["harness_version"], "3.28")        # I11: the package VERSION
+        self.assertIn("coder pa-coder claude-opus-5-5/medium pass 4/4", text)   # 3.25 T6a: was coder-opus55
         readme = (SCRATCH / "README.md").read_text(encoding="utf-8")
-        self.assertIn("| canary | max20 | coder | coder-opus55 |", readme)   # 3.10.6 T6: preset column
+        self.assertIn("| canary | max20 | coder | pa-coder |", readme)   # 3.10.6 T6: preset column
         self.assertEqual(doc["preset"], "max20")
         calls = self.calls()
-        self.assertEqual(len(calls), 7)
+        self.assertEqual(len(calls), 7)   # 3.24: was 7 (+ planner p01); 3.27 T6: 6 + partner p04
         self.assertFalse(any(c["hidden"] or c["api_key"] or not c["prompt"] for c in calls))
-        self.assertTrue(all(c["hooks_off"] == "1" for c in calls))
-        self.assertTrue(all(c["argv"][c["argv"].index("--settings") + 1].endswith("allow.json") for c in calls))
+        self.assertTrue(all(c["hooks_off"] == "1" and not c["pa_json"] for c in calls))   # 3.27 T6: ungoverned
+        self.assertEqual(doc["hooks"], "off")
+        self.assertTrue(all(c["argv"][c["argv"].index("--settings") + 1].endswith(   # 3.27 T6: partner denies Agent
+            "deny-agent.json" if c["arm"] == "partner" else "allow.json") for c in calls))
         con = sqlite3.connect(SCRATCH / "ledger" / "ledger.sqlite")
         cols = ("role", "agent", "model", "effort", "body_hash", "fixture_hash", "harness_version",
                 "price_version", "suite", "tier", "source")
         rows = con.execute(f"SELECT {', '.join(cols)} FROM bench").fetchall()
         con.close()
         self.assertEqual(len(rows), 7)
-        for row in rows:
+        for row in rows:   # 3.28 T4d: pa-claude's effort is the partner pin's (was null: no effort line, 3.27 T6)
             self.assertTrue(all(v is not None for v in row), dict(zip(cols, row)))
 
-    def test_preset_pro_renders_and_skips(self):
-        """3.10.6 T6: --preset pro runs the ladder-rendered critic copy, records the preset; expert-fable is skipped."""
+    def partner_run(self, content, suite):
+        """3.27 T6: pa-claude on <suite>, the fake's last message carrying <content>; {id: (passed, detail)}."""
         self.pct(10.0)
-        rc, text = self.run_bench("critic", "--suite", "full", "--preset", "pro", "--no-rubric")
+        os.environ["FAKE_PARTNER"] = json.dumps(content)
+        rc, text = self.run_bench("pa-claude", "--suite", suite)
+        self.assertEqual(rc, 0, text)
+        (arm,) = self.doc()["arms"]
+        self.assertEqual(arm["role"], "partner")
+        return {t["id"]: (t["passed"], t["detail"]) for t in arm["tasks"]}
+
+    def test_partner_graded_spawn(self):
+        """3.27 T6: the first Agent call's subagent_type and effort hint grade the decision."""
+        got = self.partner_run([{"type": "tool_use", "name": "Agent", "id": "t1",
+                                 "input": {"subagent_type": "pa-planner", "description": "plan 1.5 [effort max]"}}],
+                               "canary")
+        self.assertEqual(list(got), ["p04"])
+        self.assertTrue(got["p04"][0], got)
+        self.assertIn("first Agent call pa-planner [effort max]", got["p04"][1])
+
+    def test_partner_graded_no_spawn(self):
+        """3.27 T6: no Agent call and the reply's text grade an answer-it-yourself task; a spawn task then fails."""
+        got = self.partner_run([{"type": "text", "text": "T3 is running; the coder is committing."}], "light")
+        self.assertTrue(got["p01"][0], got)
+        self.assertIn("no Agent call", got["p01"][1])
+        self.assertFalse(got["p04"][0], got)
+        self.assertIn("no Agent call", got["p04"][1])
+
+    def test_partner_runs_with_pin(self):
+        """3.28 T4d: the inherit partner runs with the preset's shipped pin; a CLI --model still wins."""
+        bench._pa()
+        from pa.install import project
+        self.pct(10.0)
+        for preset, extra, want_model in (("max20", [], None), ("pro", [], None), ("pro", ["--model", "m-cli"], "m-cli")):
+            with self.subTest(preset=preset, extra=extra):
+                shutil.rmtree(self.log, ignore_errors=True)
+                pins = dict(project.mod_pins(preset))
+                want_model = want_model or pins["model"]
+                rc, text = self.run_bench("pa-claude", "--suite", "canary", "--preset", preset, *extra)
+                self.assertEqual(rc, 0, text)
+                (call,) = self.calls()
+                argv = call["argv"]
+                self.assertEqual(argv[argv.index("--model") + 1], want_model)
+                self.assertEqual(argv[argv.index("--effort") + 1], pins["effortLevel"])
+                (arm,) = self.doc()["arms"]
+                self.assertEqual(arm["effort"], pins["effortLevel"])
+        self.assertEqual(dict(project.mod_pins("pro"))["model"], "claude-sonnet-5-5[1m]")
+
+    def test_hooks_on_read_guards_off(self):
+        """3.27 T6 (I28): --hooks-on leaves hooks on in governed clones; --read-guards off writes the guard switches
+        into the run's own ledger config; --read-guards alone is refused."""
+        self.pct(10.0)
+        rc, text = self.run_bench("pa-coder", "--suite", "canary", "--hooks-on", "--read-guards", "off")
+        self.assertEqual(rc, 0, text)
+        calls = self.calls()
+        self.assertTrue(calls)
+        self.assertTrue(all(c["hooks_off"] is None and c["pa_json"] for c in calls), calls)
+        led = {c["ledger"] for c in calls}
+        self.assertEqual(len(led), 1)
+        (led,) = led
+        self.assertEqual(Path(led).name, "_ledger")
+        guard = json.loads((Path(led) / "config.json").read_text(encoding="utf-8"))["guard"]
+        self.assertEqual((guard["whole_read_chars"], guard["reread_deny"]), (10 ** 9, False))
+        self.assertEqual(self.doc()["hooks"], "on, read guards off")
+        rc, text = self.run_bench("pa-coder", "--suite", "canary", "--read-guards", "off")
+        self.assertEqual((rc, text.strip()), (2, "--read-guards needs --hooks-on"))
+
+    def test_preset_pro_renders_and_skips(self):
+        """3.10.6 T6: --preset pro runs the ladder-rendered copy, records the preset.
+        3.24: was the critic (fable rendered to opus at pro); no remaining arm's agent changes model at pro.
+        3.25 T6a: pa-expert has a row on every tier; the expert-fable skip left."""
+        self.pct(10.0)
+        rc, text = self.run_bench("pa-expert", "--suite", "canary", "--preset", "pro")
         self.assertEqual(rc, 0, text)
         doc = self.doc()
         self.assertEqual(doc["preset"], "pro")
         arm = doc["arms"][0]
-        self.assertEqual((arm["role"], arm["effort"]), ("critic", "medium"))
+        self.assertEqual((arm["role"], arm["effort"]), ("expert", "low"))    # 3.27 T11: Pro's expert row
         self.assertFalse(any("!= file" in t["detail"] for t in arm["tasks"]), arm["tasks"][0]["detail"])
-        copy = next((SCRATCH / "work").glob("*/_agents/critic.md")).read_text(encoding="utf-8")
+        copy = next((SCRATCH / "work").glob("*/_agents/pa-expert.md")).read_text(encoding="utf-8")
         self.assertIn("model: claude-opus-5-5[1m]\n", copy)
-        self.assertIn("effort: medium\n", copy)
-        clone = next((SCRATCH / "work").glob("*/critic/k01/.claude/agents/critic.md")).read_text(encoding="utf-8")
-        self.assertEqual(clone, copy)
-        self.assertIn("claude-fable-5-1", (bench.HERE.parent / "agents" / "critic.md").read_text(encoding="utf-8"))
-        self.assertIn("| full | pro | critic | critic |", (SCRATCH / "README.md").read_text(encoding="utf-8"))
-        self.out.unlink()
-        rc, text = self.run_bench("expert-fable", "--suite", "full", "--preset", "pro")
-        self.assertEqual((rc, text.strip()), (0, "skipped expert-fable: preset pro has no hard rung"))
-        self.assertFalse(self.out.exists())
+        tid = arm["tasks"][0]["id"]
+        clone = next((SCRATCH / "work").glob(f"*/expert/{tid}/.claude/agents/pa-expert.md"))
+        self.assertEqual(clone.read_text(encoding="utf-8"), copy)
+        self.assertIn("| canary | pro | expert | pa-expert |", (SCRATCH / "README.md").read_text(encoding="utf-8"))
 
     def test_answers_retained_and_harness_rule(self):
         """T1 (3.9.7): four files beside each clone; denials counted; failed + denial -> harness, else null."""
@@ -261,58 +316,6 @@ class BenchRun(unittest.TestCase):
         line = next(ln for ln in text.splitlines() if ln.startswith("expert "))
         self.assertTrue(line.endswith(f" ${cost:.2f}"), line)
 
-    def test_no_rubric_skips_it(self):
-        """T4 (3.9.7): --no-rubric: no grader call, rubric null, cost the agent's alone."""
-        self.pct(10.0)
-        rc, text = self.run_bench("canary", "--no-rubric")
-        self.assertEqual(rc, 0, text)
-        p01 = self.doc()["arms"][2]["tasks"][0]
-        self.assertEqual((p01["rubric"], p01["cost_usd"]), (None, 0.05))
-        self.assertEqual(self.calls(rubric=True), [])
-        self.assertFalse(list((SCRATCH / "work").glob("*/planner/p01.rubric.txt")))
-
-    def rubric_task(self, arm, tid):
-        """run_task on one task of arm with the fake claude; the record."""
-        work = SCRATCH / "work" / "direct"
-        (work / arm).mkdir(parents=True, exist_ok=True)
-        ctx = {"fixtures": BENCH, "work": work, "claude": shutil.which("claude"), "model": None, "rubric": True}
-        meta = {"path": PKG / "agents" / f"{arm}.md", "agent": arm, "effort": "medium",
-                "file_model": "claude-opus-5-5"}
-        task = json.loads((BENCH / "tasks" / arm / f"{tid}.json").read_text(encoding="utf-8"))
-        return bench.run_task(ctx, arm, task, meta), work
-
-    def test_rubric_fills_critic_and_review(self):
-        """T4 (3.9.7): critic and review records carry rubric {score, max, model}; grader cost added; the grader
-        call runs in an empty <work>/_rubric/<arm>-<id>/ with tools off, no --agent, no --bare."""
-        for arm, tid, mx in (("critic", "k01", 7), ("review", "v01", 6)):
-            rec, work = self.rubric_task(arm, tid)
-            self.assertEqual(rec["rubric"], {"score": 11.0, "max": mx, "model": "claude-opus-5-5"}, arm)
-            self.assertAlmostEqual(rec["cost_usd"], 0.07)
-            self.assertIn(f"rubric 11/{mx} $0.02", rec["detail"])
-            prompt = (work / arm / f"{tid}.rubric.txt").read_text(encoding="utf-8")
-            self.assertEqual(list((work / "_rubric" / f"{arm}-{tid}").iterdir()), [])
-            call = next(c for c in self.calls(rubric=True) if c["id"] == f"{arm}-{tid}")
-            self.assertEqual(call["stdin"], prompt)
-            argv = call["argv"]
-            self.assertEqual(argv[argv.index("--model") + 1], "claude-opus-5-5")
-            self.assertIn("Read,Edit,Write,Bash,Grep,Glob,Agent,WebFetch,WebSearch", argv)
-            self.assertFalse({"--agent", "--bare", "--settings"} & set(argv))
-
-    def test_rubric_failure_leaves_null(self):
-        os.environ["FAKE_RUBRIC"] = "no score here"
-        rec, _ = self.rubric_task("critic", "k01")
-        self.assertIsNone(rec["rubric"])
-        self.assertIn("rubric failed $0.02: no `total <n>` on line 1", rec["detail"])
-
-    def test_rubric_score_parses_total(self):
-        cwd = SCRATCH / "work" / "_rubric" / "x"
-        cwd.mkdir(parents=True)
-        grader = {"model": "claude-opus-5-5", "effort": "medium", "max": 12}
-        for line, want in (("S1 1 C2 1 total 11", 11.0), ("S1 1 | total 11", 11.0), ("no score", None)):
-            os.environ["FAKE_RUBRIC"] = line
-            score, mx, d = bench._bench_grade.rubric_score("p", grader, shutil.which("claude"), cwd)
-            self.assertEqual((score, mx, d["line"], d["cost_usd"]), (want, 12, line, 0.02), line)
-
     def test_scored_task_agent_kind_and_mu(self):
         """T24: a coder task with score_cmd is graded by grade_scored; score 0.5 < 1.0 -> failed, kind agent at run
         time; the arm summary carries the mean score."""
@@ -326,8 +329,8 @@ class BenchRun(unittest.TestCase):
                 "expect": {"score_cmd": [sys.executable, "{fixtures}/score.py", "{clone}"], "pass_score": 1.0}}
         work = SCRATCH / "work" / "direct"
         (work / "coder").mkdir(parents=True)
-        ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None, "rubric": True}
-        meta = {"path": PKG / "agents" / "coder-opus55.md", "agent": "coder-opus55", "effort": "medium",
+        ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None}
+        meta = {"path": PKG / "agents" / "pa-coder.md", "agent": "pa-coder", "effort": "medium",
                 "file_model": "claude-opus-5-5"}
         rec = bench.run_task(ctx, "coder", task, meta)
         self.assertEqual((rec["passed"], rec["score"], rec["failure_kind"], rec["audit_note"]),
@@ -347,8 +350,8 @@ class BenchRun(unittest.TestCase):
                 "expect": {"score_cmd": [sys.executable, "{fixtures}/score.py", "{clone}"], "pass_score": 1.0}}
         work = SCRATCH / "work" / "direct"
         (work / "coder").mkdir(parents=True)
-        ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None, "rubric": True}
-        meta = {"path": PKG / "agents" / "coder-opus55.md", "agent": "coder-opus55", "effort": "medium",
+        ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None}
+        meta = {"path": PKG / "agents" / "pa-coder.md", "agent": "pa-coder", "effort": "medium",
                 "file_model": "claude-opus-5-5"}
         os.environ["FAKE_DENY"] = "m01"
         rec = bench.run_task(ctx, "coder", task, meta)
@@ -369,7 +372,7 @@ class BenchRun(unittest.TestCase):
     def test_order_first_alone_then_at_most_four(self):
         self.pct(10.0)
         os.environ["FAKE_SLEEP"] = "0.6"
-        rc, text = self.run_bench("coder-opus55", "--jobs", "4")
+        rc, text = self.run_bench("pa-coder", "--jobs", "4")
         self.assertEqual(rc, 0, text)
         calls = sorted(self.calls(), key=lambda c: c["start"])
         self.assertEqual(len(calls), 14)   # was 12; 3.9.8 T1 adds c21, c22 to light
@@ -389,7 +392,7 @@ class BenchRun(unittest.TestCase):
         rc, text = self.run_bench("canary")
         self.assertEqual(rc, 0, text)
         calls = self.calls()
-        for a, b in (("coder", "expert"), ("expert", "planner")):
+        for a, b in (("coder", "expert"),):   # 3.24: was + (expert, planner)
             self.assertLessEqual(max(c["end"] for c in calls if c["arm"] == a),
                                  min(c["start"] for c in calls if c["arm"] == b))
 
@@ -398,11 +401,11 @@ class BenchRun(unittest.TestCase):
         self._patch(mock.patch.object(bench, "POLL_EVERY_S", 0))
         rc, text = self.run_bench("canary")
         self.assertEqual(rc, 0, text)
-        coder, expert, planner = self.doc()["arms"]
+        coder, expert, partner = self.doc()["arms"]   # 3.27 T6: + partner
         self.assertEqual(coder["stopped"], 1)
         self.assertIsNotNone(coder["tasks"][0]["passed"])
         self.assertTrue(all(t["passed"] is None for t in coder["tasks"][1:]))
-        for arm in (expert, planner):
+        for arm in (expert, partner):
             self.assertEqual(arm["stopped"], 1)
             self.assertTrue(all(t["passed"] is None for t in arm["tasks"]))
         self.assertEqual(len(self.calls()), 1)
@@ -414,7 +417,7 @@ class BenchRun(unittest.TestCase):
         rc, text = self.run_bench("canary", "--no-stop")
         self.assertEqual(rc, 0, text)
         self.assertTrue(all(a["stopped"] == 0 for a in self.doc()["arms"]))
-        self.assertEqual(len(self.calls()), 7)
+        self.assertEqual(len(self.calls()), 7)   # 3.27 T6: was 6 (+ partner p04)
 
     def test_gate_refuses_then_force_runs(self):
         self.pct(95.0)
@@ -425,14 +428,14 @@ class BenchRun(unittest.TestCase):
         self.assertFalse(self.out.exists())
         rc, text = self.run_bench("canary", "--force", "--no-stop")
         self.assertEqual(rc, 0, text)
-        self.assertEqual(len(self.calls()), 7)
+        self.assertEqual(len(self.calls()), 7)   # 3.27 T6: was 6 (+ partner p04)
 
     def test_repeat_two_attempts(self):
         """T5 (3.9.7): --repeat 2 clones <id>/a1, a2; records id-major with attempt 1/2; first task's attempt 1
         alone; retained files <id>.a<i>.*; per-id tally; ledger rows per attempt."""
         self.pct(10.0)
         os.environ.update(FAKE_PASS="1", FAKE_SLEEP="0.4")
-        rc, text = self.run_bench("coder-opus55", "--suite", "canary", "--repeat", "2", "--jobs", "4")
+        rc, text = self.run_bench("pa-coder", "--suite", "canary", "--repeat", "2", "--jobs", "4")
         self.assertEqual(rc, 0, text)
         doc = self.doc()
         self.assertEqual((doc["format"], doc["repeat"], doc["suite"]), (2, 2, "canary"))
@@ -461,9 +464,9 @@ class BenchRun(unittest.TestCase):
     def agents_ab(self, role_b="coder"):
         d = SCRATCH / "agents"
         d.mkdir()
-        src = (PKG / "agents" / "coder-opus55.md").read_text(encoding="utf-8")
+        src = (PKG / "agents" / "pa-coder.md").read_text(encoding="utf-8")
         for name, role in (("coder-a", "coder"), ("coder-b", role_b)):
-            (d / f"{name}.md").write_text(src.replace("name: coder-opus55", f"name: {name}")
+            (d / f"{name}.md").write_text(src.replace("name: pa-coder", f"name: {name}")
                                           .replace("role: coder", f"role: {role}"), encoding="utf-8")
         return d
 
@@ -509,10 +512,11 @@ class BenchPlan(unittest.TestCase):
                               text=True, encoding="utf-8")
 
     def test_plan_lines(self):
-        want = {"light": "coder 14 · expert 8 · planner 5 · retriever 10 · router 8 · critic 4 · review 4",   # was "... · router 8" (no critic, review): +k01,k03,k04,k09, v01,v04,v05,v07 (3.10 T9); was router 6: +o14, o15 (3.10 T17); was router 5: +o13 (3.10 T20)
-                "canary": "coder 4 · expert 2 · planner 1",
-                "full": "coder 28 · expert 12 · planner 12 · retriever 28 · router 15 · critic 12 · review 12",   # was router 13: +o14, o15 (3.10 T17); was router 12: +o13 (3.10 T20)
-                "coder-opus55": "coder 14"}
+        want = {"light": "coder 14 · expert 8 · retriever 10 · partner 6",   # 3.24: was + planner 5, router 8, critic 4, review 4
+                "canary": "coder 4 · expert 2 · partner 1",   # 3.24: was + planner 1; 3.27 T6: + partner
+                "full": "coder 28 · expert 12 · retriever 28 · partner 10",   # 3.24: was + planner 12, router 15, critic 12, review 12
+                "pa-coder": "coder 14",
+                "pa-claude": "partner 6"}   # 3.27 T6
         for target, line in want.items():
             r = self.plan(target)
             self.assertEqual((r.returncode, r.stdout.strip()), (0, line), target)
@@ -520,17 +524,15 @@ class BenchPlan(unittest.TestCase):
         self.assertEqual(r.returncode, 2)
         self.assertEqual(len(r.stdout.strip().splitlines()), 1)
 
-    def test_plan_preset_skip(self):
-        """3.10.6 T6: expert-fable has no rung on pro (one skip line, no counts); on max20 it counts."""
-        skip = "skipped expert-fable: preset pro has no hard rung"
-        r = subprocess.run([sys.executable, str(TOOLS / "bench.py"), "plan", "expert-fable", "--preset", "pro"],
-                           capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual((r.returncode, r.stdout.strip()), (0, skip))
-        r = subprocess.run([sys.executable, str(TOOLS / "bench.py"), "plan", "expert-fable", "--preset", "max20"],
-                           capture_output=True, text=True, encoding="utf-8")
-        self.assertEqual(r.returncode, 0)
-        self.assertNotIn("skipped", r.stdout)
-        self.assertTrue(r.stdout.startswith("expert "), r.stdout)
+    def test_plan_preset_no_skip(self):
+        """3.10.6 T6: an agent absent at the preset was skipped (expert-fable on pro); 3.25 T6a: pa-expert has a
+        row on every tier, so it counts on pro and max20 alike."""
+        for preset in ("pro", "max20"):
+            r = subprocess.run([sys.executable, str(TOOLS / "bench.py"), "plan", "pa-expert", "--preset", preset],
+                               capture_output=True, text=True, encoding="utf-8")
+            self.assertEqual(r.returncode, 0)
+            self.assertNotIn("skipped", r.stdout)
+            self.assertTrue(r.stdout.startswith("expert "), r.stdout)
 
     def test_window_cap_default_80(self):
         self.assertEqual(config.DEFAULTS["bench"]["window_max_pct"], 80)
@@ -837,6 +839,14 @@ class BenchCheck(unittest.TestCase):
         rc, out = self.check()
         self.assertEqual((rc, out[2:4]), (0, ["noise coder-opus55 ±3/4 (2026-09-30)",
                                               "noise expert-opus55 unknown"]), out)
+
+    def test_noise_per_agent_full_runs(self):
+        """3.27 T2: two single-agent full runs with repeats give a noise line per agent."""
+        self.write("light", "2026-09-20T00:00:00Z", [self.arm("coder", before=10.0, after=11.0)])
+        self.write("full", "2026-09-21T00:00:00Z", [dict(self.repeat_arm(), agent="expert-opus55")], fmt=2)
+        self.write("full", "2026-09-22T00:00:00Z", [self.repeat_arm()], fmt=2)
+        rc, out = self.check()
+        self.assertEqual(out[2:4], ["noise coder-opus55 ±3/4", "noise expert-opus55 ±3/4 (2026-09-21)"], out)
 
     def test_readme(self):
         """readme: README.md inside a results dir not named results/ (the Action's publish job, 3.9.6 T9)."""

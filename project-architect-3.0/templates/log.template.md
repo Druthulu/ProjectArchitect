@@ -16,7 +16,7 @@
 - <name> → .run/logs/<name>.log — <verdict in one line>
 
 ## Coder briefs sent
-- c<k> coder-opus55 — <task line> → <return status>, log logs/T<n>.c<k>.md
+- c<k> pa-coder — <task line> → <return status>, log logs/T<n>.c<k>.md
 
 ## Retriever questions asked
 - <question> → R<N>-<nnn>

@@ -11,13 +11,13 @@ Public:
     audit(raw)                      raw config.json -> [(kind, dotted, value, detail)]
                                     kinds past_default | retired_model | unknown_key
     enabled(cfg=None)               False when config.enabled is off or PA_LEDGER_OFF=1
-    role_from_agent_type(agent_type, cfg=None)   -> expert|coder|retriever|critic|
-                                                    router|planner|review|other
+    role_from_agent_type(agent_type, cfg=None)   -> expert|coder|retriever|partner|
+                                                    thinker|other (old ledger rows: router|planner|review|critic)
     pinned_model_for(agent_name, cfg=None)       -> model id or None
     ttl_for_role(role, cfg=None)                 -> "5m" | "1h"
     get(cfg, dotted_key, default=None)
     extra_root_entries(cfg)         extra_roots normalized to [{path, account, label}]
-    PROJECT_DEFAULTS                pa.json keys read with a default (3.9.5 T2: ``toast``; T4: ``warmer``)
+    PROJECT_DEFAULTS                pa.json keys read with a default (3.9.5 T2: ``toast``; ``warmer`` retired 3.24)
     toast_level(project_cfg)        -> "waiting" | "all" | "off"
 
 The defaults are section G of ``docs/pa3-build/design/A-ledger-statusline-hooks.md``
@@ -48,34 +48,37 @@ DEFAULTS = {
             "expert-": "expert",
             "coder-": "coder",
             "retriever-": "retriever",
-            "critic": "critic",
-            "router": "router",
-            "pa-session": "router",
-            "planner-": "planner",
-            "review": "review",
-        }
+            # 3.24 T3.1: the Gen 3 agents left (critic, router, pa-session, planner-, review);
+            # their roles stay in _VALID_ROLES for old ledger rows
+            "partner": "partner",      # 3.22: the mod's conversation agent (its type before T8f)
+            "thinker": "thinker",      # 3.22: the mod's one-shot hard-question agent
+            "deep-thinker": "thinker", # 3.22 T8f: the Fable max thinker
+            # 3.25 T6a: pa-expert, pa-coder and pa-thinker are in exact_map (a ``pa-`` prefix is shared)
+        },
+        # 3.22 T8f: agent types matched by exact name only, before the prefix scan; a ``claude``
+        # prefix would swallow built-ins such as ``claude-code-guide``
+        "exact_map": {
+            "pa-claude": "partner",    # 3.22 T8g: the mod's conversation agent; was "claude" (T8f), now
+                                       # never mapped, so the built-in catch-all is not the partner
+            "pa-planner": "planner",   # 3.24 T17: the one planner agent
+            "pa-expert": "expert",     # 3.25 T6a: one agent per role; the old types still map above
+            "pa-coder": "coder",
+            "pa-thinker": "thinker",
+        },
     },
     "pinned_models": {
-        "router": "claude-sonnet-5-5",  # was claude-sonnet-5
-        "pa-session": "claude-sonnet-5-5",  # was claude-sonnet-5
-        "planner-gen": "claude-opus-5-5",  # was claude-fable-5-1
-        "planner-phase": "claude-opus-5-5",  # was claude-fable-5-1
-        "review": "claude-fable-5-1",
-        "expert-fable": "claude-fable-5-1",
-        "expert-opus55": "claude-opus-5-5",
-        "expert-fable-5m": "claude-fable-5-1",
-        "expert-opus55-5m": "claude-opus-5-5",
+        # 3.24 T3.1: router, pa-session, planner-gen, planner-phase, review, critic and the -5m twins left
+        # 3.25 T6a: expert-fable, expert-opus55 and coder-opus55 left: the ladder table sets the role agents
         "coder-opus46": "claude-opus-4-6",
-        "coder-opus55": "claude-opus-5-5",
         "coder-sonnet": "claude-sonnet-5",
-        "retriever-code": "claude-sonnet-5-5",  # was claude-haiku-4-5
-        "retriever-digest": "claude-sonnet-5-5",  # was claude-sonnet-5
-        "retriever-web": "claude-sonnet-5-5",  # was claude-sonnet-5
-        "critic": "claude-fable-5-1",
+        "retriever-code": "claude-haiku-5-5[1m]",  # 3.27 T11; was claude-sonnet-5-5[1m]
+        "retriever-digest": "claude-haiku-5-5[1m]",  # 3.27 T11; was claude-sonnet-5-5[1m]
+        "retriever-web": "claude-haiku-5-5[1m]",  # 3.27 T11; was claude-sonnet-5-5[1m]
     },
     "ttl_default": {
         "main": "1h", "expert": "1h", "coder": "5m",  # expert was "5m" (was "1h" before); coder was "1h"
         "critic": "5m", "retriever": "5m", "other": "5m",
+        "partner": "1h", "thinker": "5m",  # 3.22: the mod's agents
     },
     "handoff": {"threshold_tokens": 350000, "roles": ["expert", "coder"], "text": None},  # was ["expert"]
     "fit": {
@@ -131,26 +134,22 @@ DEFAULTS = {
     },
     "ledger": {"lock_inline_max_bytes": 20000000, "disk_min_free_mb": 50,
                "wal_size_limit": 4194304, "retain_samples_days": 120},
-    "seed": {"max_tokens": 40000, "growth_pct": 20},
+    "seed": {"max_tokens": 40000},  # 3.28 T4e: growth_pct (20) retired with the growth rule
     "usage_api": {"enabled": True, "poll_min": 15},  # was 5
     "liveness": {"dead_min": 20, "scan_bytes": 4194304},
-    "warmer": {"fire_5m_s": 285, "fire_1h_s": 3300, "relay_lead_s": 25,
-               "max_pings_5m": 12,  # the ceiling (3.15 T3); was 3 (max_pings), developer 2026-09-24
-               "max_pings_5m_fallback": 3,  # 3.15 T3: cap when its inputs are missing
-               "max_pings_1h": 3, "poll_s": 5},  # 3.9.5 T4
-    "ttl_choice": {"min_runs": 5, "idle_min": 15},  # 3.15 T5: tools/expert_ttl.py, expert 1h vs -5m twin
+    # 3.24 T3.1: "warmer" (3.9.5 T4) and "ttl_choice" (3.15 T5) retired with the warmer and the -5m twins
     "resume": {"liveness_min": 5, "unstop": True},
-    "discussion_allow_scripts": ["tools/analysis/*.py", "tools/plan_show.py", "tools/discussion.py",
-                                 "tools/card.py slice|check", "tools/plan_edit.py show|grammar"],  # 3.9.7 T9
+    # 3.24 T3.2: "discussion_allow_scripts" (3.9.7 T9) retired with the discussion guard
     "credit": {"spill_chars": 20000, "note_max_age_s": 3600},  # measured 2026-09-22: inline max 92998, spilled min 20114
     "audit": {"file_chars_flag": 500000, "growth_flag": 0.2,
               "noise_patterns": ["warning: in the working copy of", "CRLF will be replaced",
                                  "usage: ", "No such file or directory"],
               "router_ctx_flag": 300000},
     "install": {"source": "https://github.com/Druthulu/ProjectArchitect.git", "clone_dir": "pa3-src",
-                "update_check_hours": 24, "fetch_timeout_s": 8},  # 3.7: the package clone under the config dir
+                "fetch_timeout_s": 8},  # 3.7: the package clone under the config dir
     "card": {"max_chars": 7000},  # 3.7: HOW_WE_WORK.md cap, enforced by the archive (developer 2026-09-23)
-    "guard": {"spilled_read": True, "whole_plan_roles": ["review", "critic"], "tool_source_roles": ["expert"],
+    # whole_plan_roles = [] (3.24 T3.6; was ["review", "critic"], agents gone with the Gen 3 loop; no 3.2 role is limited)
+    "guard": {"spilled_read": True, "whole_plan_roles": [], "tool_source_roles": ["expert"],
               "whole_read_chars": 20000, "reread_deny": True},
     "doctor": {"hook_warn_ms": 2000},  # 3.9.6 T5: doctor WARNs when a hook's run() on the fixture exceeds this
     "bench": {"window_max_pct": 80},  # 3.9.6 T6: bench.py run refuses / clean-stops above this five-hour %
@@ -169,17 +168,42 @@ SUPERSEDED = {
     "ttl_default.expert": ["5m"],  # was ["1h"]
     "ttl_default.coder": ["1h"],
     "usage_api.poll_min": [5],
-    "pinned_models.planner-gen": ["claude-fable-5-1"],
-    "pinned_models.planner-phase": ["claude-fable-5-1"],
+    "pinned_models.planner-gen": ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5-5[1m]"],  # retired 3.24
+    "pinned_models.planner-phase": ["claude-fable-5-1", "claude-opus-5-5", "claude-opus-5-5[1m]"],  # retired 3.24
+    # 3.23 T13: every model carries [1m] (the handoff window reads the tag); the bare ids are past defaults.
+    "pinned_models.router": ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]"],  # retired 3.24
+    "pinned_models.pa-session": ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]"],  # retired 3.24
+    "pinned_models.review": ["claude-fable-5-1", "claude-fable-5-1[1m]"],  # retired 3.24
+    "pinned_models.expert-fable": ["claude-fable-5-1", "claude-fable-5-1[1m]"],  # retired 3.25
+    "pinned_models.expert-opus55": ["claude-opus-5-5", "claude-opus-5-5[1m]"],  # retired 3.25
+    "pinned_models.expert-fable-5m": ["claude-fable-5-1", "claude-fable-5-1[1m]"],  # retired 3.24
+    "pinned_models.expert-opus55-5m": ["claude-opus-5-5", "claude-opus-5-5[1m]"],  # retired 3.24
+    "pinned_models.coder-opus55": ["claude-opus-5-5", "claude-opus-5-5[1m]"],  # retired 3.25
+    "pinned_models.retriever-code": ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]"],  # 3.27 T11
+    "pinned_models.retriever-digest": ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]"],  # 3.27 T11
+    "pinned_models.retriever-web": ["claude-sonnet-5-5", "claude-sonnet-5-5[1m]"],  # 3.27 T11
+    "pinned_models.critic": ["claude-fable-5-1", "claude-fable-5-1[1m]"],  # retired 3.24
     "handoff.roles": [["expert"]],
-    "discussion_allow_scripts": [["tools/analysis/*.py", "tools/plan_show.py"]],
+    "discussion_allow_scripts": [["tools/analysis/*.py", "tools/plan_show.py"],
+                                 ["tools/analysis/*.py", "tools/plan_show.py", "tools/discussion.py",
+                                  "tools/card.py slice|check", "tools/plan_edit.py show|grammar"]],  # retired 3.24
     "statusline.show_modeled": [True],
     "statusline.max_width": [110],
     "warmer.max_pings": [3],                 # retired key: renamed max_pings_5m (66ae86f)
+    "warmer.fire_5m_s": [285],               # retired key: the warmer left (3.24 T3.1)
+    "warmer.fire_1h_s": [3300],              # retired key: the warmer left (3.24 T3.1)
+    "warmer.relay_lead_s": [25],             # retired key: the warmer left (3.24 T3.1)
+    "warmer.max_pings_5m": [12],             # retired key: the warmer left (3.24 T3.1)
+    "warmer.max_pings_5m_fallback": [3],     # retired key: the warmer left (3.24 T3.1)
+    "warmer.max_pings_1h": [3],              # retired key: the warmer left (3.24 T3.1)
+    "warmer.poll_s": [5],                    # retired key: the warmer left (3.24 T3.1)
+    "ttl_choice.min_runs": [5],              # retired key: the -5m twins left (3.24 T3.1)
+    "ttl_choice.idle_min": [15],             # retired key: the -5m twins left (3.24 T3.1)
     "archive_transcripts": [False],          # retired key: dropped (7d39518)
     "modeled.seed_old": [150000],            # retired key: plain 1M cycle (T30)
     "modeled.old_reset": [900000],           # retired key: plain 1M cycle (T30)
     "modeled.vanilla_seed": [40000],         # retired key: plain 1M cycle (T30)
+    "seed.growth_pct": [20],                 # retired key: the seed alert keeps only its cap (3.28 T4e)
 }
 
 # Top-level keys only the user (or the installer, for them) sets: never pruned by save().
@@ -187,16 +211,18 @@ USER_KEYS = ("schema", "machine", "python", "installed_at", "renewal_day", "extr
              "accounts", "recalc_default_account")
 
 # Maps whose children are user-named: audit() never calls a child an unknown key.
-OPEN_MAPS = ("accounts", "pinned_models", "roles.prefix_map", "fit.window_durations_s")
+OPEN_MAPS = ("accounts", "pinned_models", "roles.prefix_map", "roles.exact_map", "fit.window_durations_s")
 
-# pa.json keys a hook reads with a default when the project file omits them
+# pa.json keys a hook reads with a default when the project file omits them.
+# Retired pa.json keys, ignored when an old file still carries them: "warmer" (was "on"),
+# "follow_agents" (3.24 T3.1: the warmer and the Gen 3 loop left).
 PROJECT_DEFAULTS = {
     "toast": "waiting",
-    "warmer": "on",
 }
 TOAST_LEVELS = ("waiting", "all", "off")
 
-_VALID_ROLES = ("router", "planner", "review", "expert", "coder", "retriever", "critic", "other")
+_VALID_ROLES = ("router", "planner", "review", "expert", "coder", "retriever", "critic", "other",
+                "partner", "thinker")
 _CACHE = {}
 
 
@@ -334,7 +360,10 @@ def audit(raw):
     out = []
     if not isinstance(raw, dict):
         return out
+    from .install import ladder
     current_models = set(_model_norm(v) for v in DEFAULTS["pinned_models"].values())
+    # 3.25 T6a: the role agents' pins left for the ladder table; its models are current too
+    current_models.update(_model_norm(r["model"]) for t in ladder.PRESETS.values() for r in t.values() if r)
 
     def walk(node, prefix):
         for k in sorted(node):
@@ -351,6 +380,9 @@ def audit(raw):
                 continue
             parent = prefix[:-1]
             if parent not in OPEN_MAPS and get(DEFAULTS, dotted, _MISSING) is _MISSING:
+                if isinstance(v, dict) and any(s.startswith(dotted + ".") for s in SUPERSEDED):
+                    walk(v, dotted + ".")   # 3.24 T3.1: a retired section (warmer): each leaf judged
+                    continue
                 out.append(("unknown_key", dotted, v, "not read by the package"))
                 continue
             if isinstance(v, dict) and isinstance(get(DEFAULTS, dotted), dict):
@@ -619,16 +651,21 @@ def regime_since_for(cfg, account=None):
 
 
 def role_from_agent_type(agent_type, cfg=None):
-    """Map an ``agent_type`` to a PA3 role via ``roles.prefix_map``.
+    """Map an ``agent_type`` to a PA3 role via ``roles.exact_map``, then ``roles.prefix_map``.
 
-    Longest key first, so ``expert-opus55`` -> expert and ``retriever-code`` ->
-    retriever; keys without a trailing dash match exactly (``router``,
-    ``critic``, ``review``).  Anything unknown (including None) -> ``other``.
+    ``exact_map`` matches the whole name only (``pa-claude`` -> partner; ``claude``, ``claude-code-guide`` -> other).
+    Prefix map: longest key first, so ``expert-opus55`` -> expert and ``retriever-code`` ->
+    retriever; keys without a trailing dash match exactly (``partner``,
+    ``thinker``).  Anything unknown (including None) -> ``other``.
     """
     name = str(agent_type or "").strip().lower()
     if not name:
         return "other"
     cfg = cfg if cfg is not None else load()
+    exact_map = get(cfg, "roles.exact_map", None) or DEFAULTS["roles"]["exact_map"]
+    for key, role in exact_map.items():
+        if name == str(key).lower():
+            return role
     prefix_map = get(cfg, "roles.prefix_map", None) or DEFAULTS["roles"]["prefix_map"]
     for key in sorted(prefix_map, key=len, reverse=True):
         k = str(key).lower()
@@ -688,11 +725,13 @@ def _ladder_tier():
     return _LADDER_TIER
 
 
-def pinned_model_for(agent_name, cfg=None):
+def pinned_model_for(agent_name, cfg=None, tagged=False):
     """Model id pinned to an agent/session kind, or None when unpinned.
 
     3.10.6 T3: a ladder agent without a user-set pin (an entry differing from the default)
-    gets its ladder row's model for this process's tier, ``[1m]`` stripped."""
+    gets its ladder row's model for this process's tier. ``[1m]`` is stripped (ledger rows and
+    prices key on the bare id) unless ``tagged``: the handoff threshold reads the context window
+    from the tag, since transcripts record the bare id (3.23 T13: every model carries ``[1m]``)."""
     name = str(agent_name or "").strip()
     if not name:
         return None
@@ -714,9 +753,15 @@ def pinned_model_for(agent_name, cfg=None):
             tier, override = _ladder_tier()
             row = ladder.row(low, tier, override)
             if row and row.get("model"):
-                m = str(row["model"])
-                return m[:-4] if m.lower().endswith("[1m]") else m
-    return model if found else None
+                return _tag(str(row["model"]), tagged)
+    return _tag(model, tagged) if found else None
+
+
+def _tag(model, tagged):
+    """``model`` as pinned when ``tagged``, else with a trailing ``[1m]`` stripped."""
+    if tagged or not isinstance(model, str):
+        return model
+    return model[:-4] if model.lower().endswith("[1m]") else model
 
 
 def ttl_for_role(role, cfg=None):

@@ -38,6 +38,7 @@ from . import fsutil
 from . import hooks
 from . import paths
 from . import prices
+from . import runs as ledger_runs   # T13l; `runs` is a local name elsewhere
 from . import savings
 from . import transcript
 
@@ -695,6 +696,10 @@ def lock_agent_transcript(conn, agent_path, run_id=None, session_id=None, cfg=No
             ret["void"] = 1
             ret["kept_out_tokens"] = 0
             ret["kept_out_mode"] = "workflow"
+        elif role == "partner":
+            ret["void"] = 1
+            ret["kept_out_tokens"] = 0
+            ret["kept_out_mode"] = "partner"                # 3.22: its tokens are the conversation
         if not dry_run:
             db.upsert_retrieval(conn, ret)
         if stats is not None:
@@ -884,6 +889,10 @@ def recalc_session_file(conn, path, slug, sid, cfg, opts, stats):
                     ret["void"] = 1
                     ret["kept_out_tokens"] = 0
                     ret["kept_out_mode"] = "workflow"
+                elif role == "partner":
+                    ret["void"] = 1
+                    ret["kept_out_tokens"] = 0
+                    ret["kept_out_mode"] = "partner"        # 3.22: its tokens are the conversation
                 if not dry:
                     db.upsert_retrieval(conn, ret)
                 stats["retrievals"] += 1
@@ -895,7 +904,20 @@ def recalc_session_file(conn, path, slug, sid, cfg, opts, stats):
         residual = None
         harness_cost = (float(cost_state_rec.get("totalCostUSD") or 0.0)
                         if cost_state_rec else None)
-        if cost_state_rec and cs_fresh:
+        res_ts = main_agg["last_ts"] or transcript.iso(
+            cost_state_rec.get("startTime", 0) / 1000.0
+            if cost_state_rec and cost_state_rec.get("startTime") else None)
+        # 3.24 T13l: per model, scale the estimated outputs to the cost-state and book the rest
+        # as unattributed residual rows (never the main loop)
+        reconciled = (ledger_runs.reconcile_models(conn, sid, cost_state_rec, account=account,
+                                                   ts=res_ts)
+                      if cost_state_rec and cs_fresh and not dry else None)
+        if reconciled is not None:
+            cost_usd = harness_cost
+            total_cost += reconciled["scaled_usd"]
+            residual = reconciled["residual_usd"]
+            stats["residuals"] += len(reconciled["rows"])
+        elif cost_state_rec and cs_fresh:
             cost_usd = harness_cost
             if dry:
                 attributed = total_cost
@@ -904,11 +926,10 @@ def recalc_session_file(conn, path, slug, sid, cfg, opts, stats):
                                                 " WHERE session_id=? AND kind='api'", (sid,), 0.0))
             residual = cost_usd - attributed
             res_row = {
-                "msg_id": "residual:%s" % sid, "request_id": None, "run_id": sid,
+                "msg_id": "residual:%s" % sid, "request_id": None,
+                "run_id": ledger_runs.unattributed_run(sid),
                 "session_id": sid, "account": account,
-                "ts": main_agg["last_ts"] or transcript.iso(
-                    cost_state_rec.get("startTime", 0) / 1000.0
-                    if cost_state_rec.get("startTime") else None),
+                "ts": res_ts,
                 "model": None, "effort": None, "input": 0, "cache_write_5m": 0,
                 "cache_write_1h": 0, "cache_write": 0, "cache_read": 0, "output": 0,
                 "thinking": 0, "ctx": 0, "new_tokens": 0, "gap_s": None, "cold": 0,
@@ -921,8 +942,8 @@ def recalc_session_file(conn, path, slug, sid, cfg, opts, stats):
             # stale: delete any existing residual row, use turns as cost source
             if not dry:
                 try:
-                    conn.execute("DELETE FROM turns WHERE msg_id=? AND session_id=?",
-                                 ("residual:%s" % sid, sid))
+                    conn.execute("DELETE FROM turns WHERE kind='residual' AND session_id=?",
+                                 (sid,))
                 except sqlite3.DatabaseError:
                     pass
             cost_usd = None        # fall through to turns-based cost
@@ -967,13 +988,21 @@ def recalc_session_file(conn, path, slug, sid, cfg, opts, stats):
             "cost": total_cost, "cost_state": cost_usd, "residual": residual}
 
 
+def _recalc_sessions(value):
+    """``recalc --session`` (repeatable, 3.24 T10) as a list of session ids or prefixes."""
+    if value is None:
+        return []
+    return [value] if isinstance(value, str) else [v for v in value if v]
+
+
 def recalc_from_turns(conn, cfg, opts, stats):
     """Rebuild ``agent_runs`` aggregates, ``retrievals`` links and ``savings`` from ``turns``."""
     where = ["kind='api'"]
     args = []
     if opts.session:
-        where.append("session_id=?")
-        args.append(opts.session)
+        sids = _recalc_sessions(opts.session)
+        where.append("session_id IN (%s)" % ",".join("?" * len(sids)))
+        args.extend(sids)
     if opts.since:
         where.append("ts >= ?")
         args.append(parse_date(opts.since))
@@ -1469,10 +1498,54 @@ def _report_snapshot(until=None):
     return doc
 
 
+_SPAWNER = None     # tests: a callable(argv) in place of recalc --detach's detached spawn
+
+
+def _recalc_detach(args):
+    """``recalc --detach`` (3.24 T10b): the same recalc started detached (no pipes, its own session) and 0 at once.
+    The mod's close runs it: a mod `$.process.run` child alive for minutes stalled the session's message queue (one
+    item per 60 s, the closer's card lost; logs/T10.md Part b). ``--done-file`` is removed here, written at the end."""
+    if args.done_file:
+        try:
+            os.remove(args.done_file)
+        except OSError:
+            pass
+    entry = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "pa_ledger.py")
+    argv = [sys.executable, entry] + [a for a in getattr(args, "argv", sys.argv[1:]) if a != "--detach"]
+    if _SPAWNER is not None:
+        _SPAWNER(argv)
+        return 0
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
+              "stderr": subprocess.DEVNULL, "close_fds": True}
+    if os.name == "nt":
+        kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+                                   | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        subprocess.Popen(argv, **kwargs)                # noqa: S603 - fixed argv
+    except OSError as exc:
+        err("recalc --detach: %s" % exc)
+        return 1
+    return 0
+
+
 def cmd_recalc(args):
-    if getattr(args, "check", False):
-        return _cmd_recalc_check(args)
-    return _cmd_recalc_run(args)
+    if getattr(args, "detach", False):
+        return _recalc_detach(args)
+    t0, rc = time.time(), 1
+    try:
+        rc = _cmd_recalc_check(args) if getattr(args, "check", False) else _cmd_recalc_run(args)
+        return rc
+    finally:
+        if getattr(args, "done_file", None):
+            # 3.24 T10b: the close's chain reads it (exit, seconds), whatever the run's end
+            try:
+                fsutil.atomic_write_text(args.done_file, json.dumps(
+                    {"exit": rc, "secs": round(time.time() - t0, 1),
+                     "sessions": _recalc_sessions(args.session), "at": time.time()}))
+            except OSError:
+                pass
 
 
 def _round_floats(obj):
@@ -1521,6 +1594,8 @@ def _cmd_recalc_run(args):
     conn = open_db()
     stats = {"sessions": 0, "runs": 0, "turns": 0, "retrievals": 0, "savings": 0,
              "residuals": 0, "cost": 0.0, "files": 0, "groups": {}}
+    from . import log as _log
+    t_rows = time.time()
     try:
         if args.pending:
             rc = drain_pending(conn, cfg, args, stats)
@@ -1530,12 +1605,17 @@ def _cmd_recalc_run(args):
             recalc_from_turns(conn, cfg, args, stats)
         elif not args.pending or args.root or args.session or args.project:
             roots = projects_roots(args.root)
+            seen = set()                    # several --session prefixes may match one file
             for root in roots:
                 if not os.path.isdir(_base_dir(os.path.abspath(root))):
                     err("recalc: root not readable: %s" % root)
                     continue
-                for item in iter_transcripts(root, session=args.session,
-                                             project=args.project, since=args.since):
+                for item in (it for sess in (_recalc_sessions(args.session) or [None])
+                             for it in iter_transcripts(root, session=sess,
+                                                        project=args.project, since=args.since)):
+                    if item["path"] in seen:
+                        continue
+                    seen.add(item["path"])
                     stats["files"] += 1
                     try:
                         res = recalc_session_file(conn, item["path"], item["slug"], item["sid"],
@@ -1546,7 +1626,13 @@ def _cmd_recalc_run(args):
                     if args.verbose:
                         out("  %-40s %5d turns  %8s  %s" % (
                             res["sid"], res["turns"], usd(res["cost"]), item["slug"]))
-        if not args.dry_run:
+        rows_s = time.time() - t_rows
+        if getattr(args, "rows_only", False) and not args.dry_run:
+            # 3.24 T10b: the close needs only the rows (the PhaseEnd reads agent_runs and savings); the refit and the
+            # summary rebuild are the statusline child's (T9)
+            _log.log("recalc_timing", sessions=_recalc_sessions(args.session) or None,
+                     files=stats["files"], rows_s=round(rows_s, 2), rows_only=True)
+        elif not args.dry_run:
             # Build readers for the refit + summary so the fit sees all roots
             readers = None
             try:
@@ -1555,12 +1641,18 @@ def _cmd_recalc_run(args):
                     readers = db.union_readers(extra, include_local=False)
             except Exception:
                 pass
+            t_fit = time.time()
             try:
                 from . import fit as _fit
                 _fit.refit_all(conn, cfg, readers=readers)
             except Exception:
                 pass
+            t_sum = time.time()
             rebuild_summary(conn, cfg, readers=readers)
+            # T10 (3.24): each stage's duration, so the close's recalc shows where its time goes
+            _log.log("recalc_timing", sessions=_recalc_sessions(args.session) or None,
+                     files=stats["files"], rows_s=round(rows_s, 2),
+                     refit_s=round(t_sum - t_fit, 2), rebuild_s=round(time.time() - t_sum, 2))
             # close reader connections
             for rd in (readers or []):
                 try:
@@ -1664,7 +1756,9 @@ def _saved_rows(conn, args, since, default_account=None, until=None):
         where.append("COALESCE(sv.phase, ss.phase) = ?")
         where_params.append(args.phase)
     if since:
-        where.append("COALESCE(sv.updated, ss.started) >= ?")
+        # by the session's own start, as `until` goes by its end: a recalc restamps sv.updated,
+        # so the row's stamp would let every older session in; no session row keeps sv.updated
+        where.append("COALESCE(ss.started, sv.updated) >= ?")
         where_params.append(since)
     if until:
         # savings of sessions closed before the cutoff only: a live session's savings rows are
@@ -2404,6 +2498,13 @@ def cmd_report(args):
                        int(rp_show.get("ttl_old_s", 3600)),
                        "subtracted" if rp_show.get("subtract_agent_seeds", True) else "not subtracted",
                        pv))
+                # 3.27 T9 (I66): the measured feature charges and what stays out
+                out("  vanilla features: prompt suggestion $%.4f per main-loop turn (772d01c6 vs 2931fbad)"
+                    " · compaction at overflow: read context + %d output tokens, keeps %d"
+                    " (headless /compact, f4b175bb)"
+                    % (float(rp_show.get("suggest_usd", 0.0)), int(rp_show.get("compact_out", 0)),
+                       int(rp_show.get("compact_post", 0))))
+                out("  left out: %s" % _replay_mod.LEFT_OUT)
 
             # measured block -- aggregate across readers
             out("")
@@ -2445,12 +2546,8 @@ def _transcript_truth(path, sid, cfg):
     """(a) Aggregate every request of main + subagent transcripts by normalized model.
 
     Returns ``{norm_key: {n, input, cache_write_5m, cache_write_1h, cache_read,
-    output, cost, over_n}, ...}``, per_run ``{run_id: {agent_type, n, cost}, ...}``,
-    and ``transcript_total`` (float).  ``over_n`` (T8) counts the requests whose
-    own context exceeded ``LONG_CONTEXT_TOKENS`` -- ``cost`` already prices them
-    at the long-context tier (``transcript.request_cost``); ``_price_check``
-    only reads ``over_n`` as a per-pool "long-context" flag (a cost-state pool
-    total has no per-request ctx to apportion, see ``prices.cost_of``).
+    output, cost}, ...}``, per_run ``{run_id: {agent_type, n, cost}, ...}``,
+    and ``transcript_total`` (float).
     """
     pools = {}          # norm_key -> aggregate
     per_run = {}        # run_id -> {agent_type, n, cost}
@@ -2460,8 +2557,7 @@ def _transcript_truth(path, sid, cfg):
         cost_usd, _parts = transcript.request_cost(req, ttl_default=ttl)
         if nk not in pools:
             pools[nk] = {"n": 0, "input": 0, "cache_write_5m": 0,
-                         "cache_write_1h": 0, "cache_read": 0, "output": 0, "cost": 0.0,
-                         "over_n": 0}
+                         "cache_write_1h": 0, "cache_read": 0, "output": 0, "cost": 0.0}
         p = pools[nk]
         p["n"] += 1
         p["input"] += int(req.get("input") or 0)
@@ -2478,8 +2574,6 @@ def _transcript_truth(path, sid, cfg):
         p["cache_read"] += int(req.get("cache_read") or 0)
         p["output"] += int(req.get("output") or 0)
         p["cost"] += cost_usd
-        if int(req.get("ctx") or 0) > prices.LONG_CONTEXT_TOKENS:
-            p["over_n"] += 1
         return cost_usd
 
     # main transcript
@@ -2532,7 +2626,8 @@ def _split_candidates(nk, cs, tp, creation):
         shaped = {"inputTokens": cs["inputTokens"], "outputTokens": cs["outputTokens"],
                   "cacheReadInputTokens": cs["cacheReadInputTokens"],
                   "cache_write_5m": w5, "cache_write_1h": w1}
-        cost, parts = prices.cost_of(shaped, nk, ttl_default="1h")
+        # a pool total: its summed ctx is no request's prompt, so no prompt-length tier
+        cost, parts = prices.cost_of(shaped, nk, ttl_default="1h", ctx=0)
         delta = ((cost - actual) / actual * 100.0) if actual else None
         return {"w5": w5, "w1": w1, "cost": cost, "delta_pct": delta, "priced": parts["priced"]}
 
@@ -2592,15 +2687,6 @@ def _price_check(state, transcript_pools):
         cands, best = _split_candidates(nk, cs, tp, creation)
         chosen = cands[best]
         w5, w1, cost, delta = chosen["w5"], chosen["w1"], chosen["cost"], chosen["delta_pct"]
-        # T8: the long-context tier is per-request (prices.cost_of, applied via
-        # pa.transcript.request_cost for real per-request costs); a cost-state
-        # pool is a whole-session total whose own token counts include an
-        # unknown share of invisible "subagent overhead" traffic (design doc F),
-        # so apportioning it between under/over-200k shares from the transcript's
-        # own ratio was verified (b2fa9a37) to overshoot in every combination
-        # tried -- the pool stays priced flat; "long_context" only flags that its
-        # transcript carries over-200k requests, for the reconcile table's note.
-        long_ctx = bool(tp and tp.get("over_n"))
         graded = actual >= PRICE_MIN_COST and chosen["priced"]
         if graded and delta is not None:
             worst = max(worst, abs(delta))
@@ -2608,7 +2694,6 @@ def _price_check(state, transcript_pools):
             "model": nk, "raw_keys": cs["raw_keys"],
             "cost_state_usd": actual, "computed_usd": cost,
             "delta_pct": delta, "graded": graded, "priced": chosen["priced"],
-            "long_context": long_ctx,
             "write_split": best,
             "split_candidates": {label: c["delta_pct"] for label, c in cands.items()},
             "w5": w5, "w1": w1,
@@ -2810,8 +2895,6 @@ def cmd_reconcile(args):
             note_bits = []
             if not m["graded"]:
                 note_bits.append("unpriced" if not m["priced"] else "below $%.2f" % PRICE_MIN_COST)
-            if m.get("long_context"):
-                note_bits.append("long-context")
             rows.append([m["model"], keys_str, usd(m["cost_state_usd"], 6), usd(m["computed_usd"], 6),
                          "-" if m["delta_pct"] is None else "%+.4f%%" % m["delta_pct"],
                          m.get("write_split", "-"), "; ".join(note_bits)])
@@ -2903,39 +2986,98 @@ def _money(cell):
         return None
 
 
+_MODEL_NAME_RE = re.compile(r"^(?:claude-)?([a-z]+)-(\d+(?:-\d+)?)(?![0-9])")
+_OVER_TOKENS_RE = re.compile(r"(?i)\bover\s+([0-9][0-9,]*)\s*(k\b)?\s*(?:tokens)?")
+
+
 def _label_model_key(cell):
-    """``Claude Fable 5.1`` / ``claude-fable-5-1`` -> the ``pa.prices`` key."""
-    raw = str(cell or "")
-    slug = re.sub(r"[^a-z0-9]+", "-", raw.lower()).strip("-")
-    return prices.model_key(slug) or prices.model_key(raw)
+    """``Claude Fable 5.1 <tagline>`` / ``claude-fable-5-1`` -> ``(key, named)``.
+
+    3.22: the exact ``pa.prices`` key ``<family>-<version>`` or None -- never the
+    substring fallback (``Claude Opus 4.5`` must not price as ``opus``); ``named``
+    says the cell looks like a model name, so an unmapped row is reported."""
+    slug = re.sub(r"[^a-z0-9]+", "-", str(cell or "").lower()).strip("-")
+    m = _MODEL_NAME_RE.match(slug)
+    if not m:
+        return None, slug.startswith("claude-")
+    key = "%s-%s" % m.groups()
+    return (key if any(t[0] == key for t in prices.PRICES) else None), True
 
 
-def parse_price_table(text):
-    """Best-effort parse of a markdown/HTML pricing table into price rows."""
+def _header_field(cell):
+    """Price field a header cell names (``5m cache writes`` -> ``write_5m``), ``model``, or None."""
+    c = cell.lower()
+    if re.search(r"\b5\s*-?\s*m(?:in(?:ute)?s?)?\b", c):
+        return "write_5m"
+    if re.search(r"\b1\s*-?\s*h(?:our)?s?\b", c):
+        return "write_1h"
+    if "hit" in c or "read" in c or "refresh" in c:
+        return "read"
+    if "output" in c:
+        return "output"
+    if "input" in c:
+        return "input"
+    if "model" in c or "name" in c:
+        return "model"
+    return None
+
+
+def parse_price_table(text, skipped=None):
+    """Parse a markdown/HTML pricing table into price rows, columns mapped by header text.
+
+    3.22: a header row (no ``$`` cells) maps each column by its text (any order,
+    footnote markers ignored); only a table whose header names all five price
+    fields is read.  A row continuing the previous model with "over N tokens"
+    (Haiku 5.5's rowspan pair) becomes that row's ``tier`` ``{over, <fields>}``.
+    Rows whose model name has no exact ``pa.prices`` key are skipped and, when
+    ``skipped`` is a list, their names appended to it."""
     if "<" in text and ">" in text and "|" not in text:
         text = _strip_html(text)
     elif "<td" in text.lower() or "<tr" in text.lower():
         text = _strip_html(text)
     rows = {}
+    cols = {}                 # field -> column index of the current table's header
+    model_col = 0
+    prev = None               # the last base row read, for a tier continuation
     for line in text.splitlines():
         if "|" not in line:
             continue
-        cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cells) < 3:
+        body = line.strip()
+        body = body[1:] if body.startswith("|") else body
+        body = body[:-1] if body.endswith("|") else body
+        cells = [re.sub(r"<[^>]+>", " ", c).replace("\u00a0", " ").strip() for c in body.split("|")]
+        if all(re.fullmatch(r"[\s:-]*", c) for c in cells):
+            continue                                   # markdown separator / blank row
+        if not any(_money(c) is not None for c in cells):
+            fields = [_header_field(c) for c in cells]
+            if any(f and f != "model" for f in fields):
+                cols = {f: i for i, f in reversed(list(enumerate(fields))) if f}
+                model_col = cols.pop("model", 0)
+                prev = None
             continue
-        key = _label_model_key(cells[0])
+        if not all(f in cols for f in _PRICE_FIELDS):
+            continue                                   # not a five-field price table
+        width = max(cols.values()) + 1
+        if len(cells) == width - 1 and _money(cells[0]) is not None and model_col == 0:
+            cells = [""] + cells                       # HTML rowspan: the model cell is absent
+        key, named = _label_model_key(cells[model_col]) if model_col < len(cells) else (None, False)
+        vals = {f: _money(cells[i]) if i < len(cells) else None for f, i in cols.items()}
+        over = _OVER_TOKENS_RE.search(" ".join(cells))
+        if over and prev is not None and (key is None and not named or key == prev["model_key"]):
+            if None not in vals.values():
+                n = int(over.group(1).replace(",", "")) * (1000 if over.group(2) else 1)
+                prev.setdefault("tier", dict(vals, over=n))
+            continue
         if not key:
+            if named and skipped is not None and cells[model_col] not in skipped:
+                skipped.append(cells[model_col])
             continue
-        vals = [v for v in (_money(c) for c in cells[1:]) if v is not None]
-        if len(vals) >= 5:
-            row = dict(zip(("input", "write_5m", "write_1h", "read", "output"), vals[:5]))
-        elif len(vals) == 4:
-            row = {"input": vals[0], "write_5m": vals[1], "read": vals[2], "output": vals[3]}
-            row["write_1h"] = round(vals[0] * 2.0, 4)
-        else:
+        if None in vals.values():
+            if skipped is not None and cells[model_col] not in skipped:
+                skipped.append(cells[model_col])
             continue
-        row["model_key"] = key
-        rows.setdefault(key, row)
+        row = dict(vals, model_key=key)
+        prev = rows.setdefault(key, row)
     return list(rows.values())
 
 
@@ -2945,6 +3087,40 @@ def fetch_price_page(url=PRICING_URL, timeout=20):
     req = urllib.request.Request(url, headers={"User-Agent": "pa-ledger/3.0 (+stdlib)"})
     with urllib.request.urlopen(req, timeout=timeout) as fh:
         return fh.read(4000000).decode("utf-8", "replace")
+
+
+EVENT_KINDS = ("warm_ping",)     # 3.22: kinds the mod may spool through ``event``
+
+
+def cmd_event(args):
+    """3.22: ``event <kind> --session <sid> [--run <id>] [--detail <json>]`` -> one spooled row."""
+    if args.kind not in EVENT_KINDS:
+        err("event: kind %r not in %s" % (args.kind, ", ".join(EVENT_KINDS)))
+        return 2
+    detail = None
+    if args.detail:
+        try:
+            detail = json.loads(args.detail)
+        except ValueError:
+            detail = None
+        if not isinstance(detail, dict):
+            err("event: --detail must be a JSON object")
+            return 2
+    row = hooks.spool_event(args.session, args.kind, detail, run_id=args.run)
+    out(json.dumps(row, sort_keys=True, default=str))
+    return 0
+
+
+def cmd_toast(args):
+    """3.22: ``toast --session <sid> --cause <cause> --title <t> --body <b> [--project <root>]``."""
+    if args.cause not in hooks.WAITING_CAUSES:
+        err("toast: cause %r not in %s" % (args.cause, ", ".join(hooks.WAITING_CAUSES)))
+        return 2
+    pcfg = hooks.project_config(args.project) if args.project else {}
+    result = hooks.toast(config.load(), args.title, args.body, kind="waiting",
+                         session_id=args.session, project_cfg=pcfg, cause=args.cause)
+    out(json.dumps(result, sort_keys=True, default=str))
+    return 0
 
 
 def _current_prices(conn):
@@ -2960,7 +3136,50 @@ def _current_prices(conn):
     return cur
 
 
+_PRICE_FIELDS = ("read", "write_5m", "write_1h", "input", "output")
+
+
+def _usd(v):
+    """A $/MTok rate at two decimals, three when it needs them (Haiku 5.5's 0.125)."""
+    return "%.2f" % v if abs(round(v, 2) - v) < 1e-9 else "%.3f" % v
+
+
+def _latest_prices():
+    """``{model_key: row}`` of each key's latest ``pa.prices.PRICES`` row: the table costs read."""
+    latest = {}
+    for tup in sorted(prices.PRICES, key=lambda t: t[2]):
+        latest[tup[0]] = dict(zip(("model_key", "priority", "effective_from", "input", "write_5m",
+                                   "write_1h", "read", "output", "tokenizer", "window"), tup))
+    return latest
+
+
+def _prices_json(args):
+    """3.22: ``prices --json [--model <id>]`` -> one JSON line of per-million prices."""
+    doc = {}
+    if args.model:
+        row = prices.price_for(args.model)
+        if not row:
+            err("prices --json: unknown model %r" % args.model)
+            return 2
+        doc.update({"model": args.model, "model_key": prices.model_key(args.model),
+                    "price": {f: row[f] for f in _PRICE_FIELDS}})
+        tier = prices.prompt_tier(args.model)
+        if tier:                                      # priced by prompt length above tier[0]
+            doc["price"]["prompt_tier"] = dict(tier[1], over=tier[0])
+    else:
+        doc["prices"] = {}
+        for k, t in _latest_prices().items():
+            doc["prices"][k] = {f: t[f] for f in _PRICE_FIELDS}
+            tier = prices.PROMPT_TIERS.get(k)
+            if tier:
+                doc["prices"][k]["prompt_tier"] = dict(tier[1], over=tier[0])
+    out(json.dumps(doc, sort_keys=True))
+    return 0
+
+
 def cmd_prices(args):
+    if args.json:
+        return _prices_json(args)
     conn = open_db()
     try:
         current = _current_prices(conn)
@@ -2984,19 +3203,23 @@ def cmd_prices(args):
                 return 0
 
         parsed = []
+        skipped = []
         if args.refresh:
             try:
                 text = fetch_price_page(args.url)
             except Exception as exc:                     # network / TLS / proxy
                 err("prices --refresh: fetch failed: %s" % exc)
                 return 1
-            parsed = parse_price_table(text)
+            parsed = parse_price_table(text, skipped)
             out("")
             out("fetched %s: %d price rows parsed" % (args.url, len(parsed)))
         elif args.paste:
             text = sys.stdin.read()
-            parsed = parse_price_table(text)
+            parsed = parse_price_table(text, skipped)
             out("pasted table: %d price rows parsed" % len(parsed))
+        if skipped:
+            out("skipped (no pa.prices key or incomplete row): %s" % "; ".join(
+                re.sub(r"[^!-~]+", " ", n)[:40].strip() for n in skipped))
         if args.apply and not parsed:
             err("prices --apply: nothing parsed (use --refresh or --paste)")
             return 1
@@ -3006,23 +3229,32 @@ def cmd_prices(args):
         eff = parse_date(args.effective_from)[:10] if args.effective_from else \
             time.strftime("%Y-%m-%d")
         out("")
+        # 3.22: the diff is against pa.prices.PRICES (what cost_of reads), not ledger.sqlite
+        base = _latest_prices()
+        diffs = []
+        for row in parsed:
+            diffs.append((row["model_key"], row, base.get(row["model_key"])))
+            if row.get("tier"):
+                tier = prices.PROMPT_TIERS.get(row["model_key"])
+                diffs.append(("%s >%d" % (row["model_key"], row["tier"]["over"]), row["tier"],
+                              dict(tier[1]) if tier and tier[0] == row["tier"]["over"] else None))
         rows = []
-        for row in sorted(parsed, key=lambda r: r["model_key"]):
-            old = current.get(row["model_key"])
+        for label, row, old in sorted(diffs, key=lambda d: d[0]):
             changed = []
             for field in ("input", "write_5m", "write_1h", "read", "output"):
                 if not old or abs(float(old[field]) - float(row[field])) > 1e-9:
-                    changed.append("%s %s->%.2f" % (field, "-" if not old else "%.2f" % old[field],
-                                                    row[field]))
-            rows.append([row["model_key"], "%.2f" % row["input"], "%.2f" % row["write_5m"],
-                         "%.2f" % row["write_1h"], "%.2f" % row["read"], "%.2f" % row["output"],
-                         ", ".join(changed) if changed else "(same)"])
+                    changed.append("%s %s->%s" % (field, "-" if not old else _usd(old[field]),
+                                                  _usd(row[field])))
+            rows.append([label] + [_usd(row[f]) for f in ("input", "write_5m", "write_1h", "read",
+                                                          "output")]
+                        + [", ".join(changed) if changed else "(same)"])
         for line in table(["model_key", "input", "write 5m", "write 1h", "read", "output", "diff"],
                           rows, ["<", ">", ">", ">", ">", ">", "<"]):
             out(line)
         if not args.apply:
             out("")
-            out("(diff only -- re-run with --apply [--effective-from DATE] to write rows)")
+            out("(diff vs pa.prices.PRICES, the table costs read; --apply writes ledger.sqlite"
+                " rows only, without tiers -- edit pa/prices.py to change costs)")
             return 0
         written = 0
         with _tx(conn):
@@ -4105,14 +4337,267 @@ def _doctor_update_check(doc, cfg):
     else:
         state = "current"
 
-    hours = float(config.get(cfg, "install.update_check_hours", 24) or 24)
-    stale = age_s is not None and age_s > hours * 3600 * 2
     text = (("update check: %s (%s ago)" % (state, age_str)) if age_s is not None
             else "update check: %s" % state)
-    if behind > 0 or stale:
+    if behind > 0:                                        # 3.28 T5: the hours-based stale test is gone
         doc.warn(text)
     else:
         doc.ok(text)
+
+
+# 3.24 T4: the Gen 3 pieces a 3.2 project no longer carries (T3 removed them from the package; T5's
+# upgrade removes them from projects)
+GEN3_AGENTS = ("pa-session", "critic", "review", "discuss", "discuss-high", "discuss-max", "planner-gen",
+               "planner-phase", "expert-opus55-5m", "expert-fable-5m", "plain",
+               # 3.25 T6a: the per-model role agents pa-expert, pa-coder and pa-thinker replace
+               "expert-opus55", "expert-fable", "coder-opus55", "thinker", "deep-thinker")
+GEN3_COMMANDS = ("discuss", "plangen", "planphase", "proceed", "thoughts")
+GEN3_MODELS = ("claude-sonnet-5[1m]", "claude-sonnet-5-5[1m]")          # the shipped `model` pins
+GEN3_MODEL_SETTINGS = ("claude-sonnet-5", "claude-sonnet-5-5", "claude-fable-5-1")   # at effortLevel medium
+
+
+def _fwd_norm(path):
+    """A path for comparison: absolute, forward slashes, case-folded on Windows."""
+    p = os.path.abspath(str(path)).replace("\\", "/").rstrip("/")
+    return p.lower() if os.name == "nt" else p
+
+
+def _version_lines(text):
+    """``{key: value}`` of VERSION's ``key: value`` lines (first wins)."""
+    out = {}
+    for line in (text or "").splitlines():
+        if ":" in line:
+            key, val = line.split(":", 1)
+            out.setdefault(key.strip(), val.strip())
+    return out
+
+
+def _doctor_root_manifest(doc):
+    """3.24 T4: the root's files match ``MANIFEST.json``, and VERSION is the one it was written with
+    (3.24 T6: the check is pa/health.py ``root_files``, shared with the session-start hook)."""
+    from . import health
+    from .install import root as _root
+    pa3 = paths.install_dir()
+    got = health.root_files(pa3)
+    bad, total = got["bad"], got["total"]
+    if got["state"] == "none":
+        doc.warn("root files: no %s in %s; run the root installer once" % (_root.MANIFEST, pa3))
+        return
+    if got["state"] == "half":
+        doc.fail("root files: VERSION in %s does not match its manifest (a half copy); run the root "
+                 "installer again" % pa3)
+    elif bad:
+        doc.fail("root files: %d of %d differ from the manifest (%s%s); run the root installer again"
+                 % (len(bad), total, ", ".join(bad[:3]), ", ..." if len(bad) > 3 else ""))
+    else:
+        doc.ok("root files: %d match the manifest" % total)
+
+
+def _doctor_registration(doc, label, settings_path):
+    """3.24 T4: the mod is declared at ``<pa3>/mod`` and enabled; ``Read`` is in the PreToolUse matcher
+    (3.24 T6: the registration check is pa/health.py ``registration``)."""
+    from . import health
+    from .install import settings_merge as _sm
+    data = fsutil.read_json(settings_path, None)
+    if not isinstance(data, dict):
+        return
+    want = _fwd_norm(os.path.join(paths.install_dir(), "mod"))
+    reg = health.registration(settings_path, paths.install_dir())
+    have, off = reg["have"], reg["off"]
+    if reg["state"] == "missing":
+        doc.fail("%s: the mod is not registered (no extraKnownMarketplaces.%s); run the root installer"
+                 % (label, _sm.MARKETPLACE))
+    elif reg["state"] == "elsewhere":
+        doc.fail("%s: the mod is registered at %s, not %s; run the root installer" % (label, have, want))
+    elif reg["state"] == "off":
+        doc.fail("%s: %s not enabled; run the root installer" % (label, ", ".join(off)))
+    else:
+        doc.ok("%s: mod registered at %s" % (label, have))
+    matchers = []
+    for group in ((data.get("hooks") or {}).get("PreToolUse") or []):
+        cmds = [str((h or {}).get("command") or "") for h in (group or {}).get("hooks") or []]
+        if any("pa_hook.py" in c for c in cmds):
+            matchers.append(str((group or {}).get("matcher") or ""))
+    if any("Read" in m.split("|") for m in matchers):
+        doc.ok("%s: Read is in the PreToolUse matcher" % label)
+    elif matchers:
+        doc.fail("%s: Read is not in the PreToolUse matcher (%s); run the root installer"
+                 % (label, matchers[0]))
+
+
+def _doctor_floor(doc):
+    """3.24 T4: Claude Code at or above the mod's floor (the root's copy of the constant, else the package's;
+    3.24 T6: pa/health.py ``floor``)."""
+    from . import health
+    ok, ver, floor = health.floor(paths.install_dir())
+    if not ver or not floor:
+        doc.warn("claude code: version %s, floor %s (not checked)" % (ver or "unknown", floor or "unknown"))
+    elif ok:
+        doc.ok("claude code: %s (floor %s)" % (ver, floor))
+    else:
+        doc.fail("claude code: %s is below the mod's floor %s; update Claude Code" % (ver, floor))
+
+
+def _doctor_released(doc):
+    """3.24 T4: the installed VERSION ``tree:`` against the clone's ``@{u}`` package tree; a release
+    candidate differs by design, so a difference WARNs."""
+    tree = _version_lines(fsutil.read_text(os.path.join(paths.install_dir(), "VERSION"), "")).get("tree")
+    clone = paths.package_clone_dir()
+    if not tree or not os.path.isdir(clone):
+        return
+    up = ""
+    try:
+        proc = subprocess.run(["git", "-C", clone, "rev-parse", "@{u}:project-architect-3.0"],
+                              capture_output=True, text=True, timeout=5)
+        up = proc.stdout.strip() if proc.returncode == 0 else ""
+    except (OSError, subprocess.SubprocessError):
+        up = ""
+    if not up:
+        doc.warn("release: the clone's upstream package tree is unreadable (%s)" % clone)
+    elif up == tree:
+        doc.ok("release: the root is the clone's released package (tree %s)" % tree[:12])
+    else:
+        doc.warn("release: the root's tree %s is not the clone's upstream %s (a release candidate, or "
+                 "an update to take)" % (tree[:12], up[:12]))
+
+
+def _gen3_pins(settings):
+    """The Gen 3 pins PA3 shipped that ``settings`` still holds (decision 4), as dotted keys."""
+    out = []
+    if not isinstance(settings, dict):
+        return out
+    if settings.get("agent") == "pa-session":
+        out.append("agent")
+    if settings.get("model") in GEN3_MODELS:
+        out.append("model")
+    ms = settings.get("modelSettings")
+    for key in GEN3_MODEL_SETTINGS:
+        if isinstance(ms, dict) and ms.get(key) == {"effortLevel": "medium"}:
+            out.append("modelSettings." + key)
+    return out
+
+
+def _doctor_project_mod(doc, project):
+    """3.24 T4 (``--project``, governed only): ``mod: on``, the 3.2 agent set per the ladder, no Gen 3
+    pins and none of the removed agent or command files."""
+    if not project:
+        return
+    pa = fsutil.read_json(os.path.join(project, ".claude", "pa.json"), None)
+    if not isinstance(pa, dict):
+        return
+    from .install import ladder
+    if pa.get("mod") == "on":
+        doc.ok("project: mod: on")
+    else:
+        doc.fail("project: pa.json mod is %s, not on; run tools/pa3_update.py" % json.dumps(pa.get("mod")))
+    src = os.path.join(paths.install_dir(), "agents")
+    if not os.path.isdir(src):
+        from .install import root as _root
+        src = os.path.join(_root.package_root(), "agents")
+    preset = pa.get("preset") or "max5"
+    override = pa.get("ladder") if isinstance(pa.get("ladder"), dict) else None
+    want = [n[:-3] for n in sorted(os.listdir(src)) if n.endswith(".md")] if os.path.isdir(src) else []
+    want = [a for a in want if a not in ladder.MANAGED or ladder.row(a, preset, override) is not None]
+    agents = os.path.join(project, ".claude", "agents")
+    missing = [a for a in want if not os.path.isfile(os.path.join(agents, a + ".md"))]
+    if missing:
+        doc.fail("project: 3.2 agents missing (%s preset): %s; run tools/pa3_update.py"
+                 % (preset, ", ".join(missing)))
+    else:
+        doc.ok("project: the 3.2 agent set (%d, %s preset)" % (len(want), preset))
+    old = [".claude/agents/%s.md" % a for a in GEN3_AGENTS if os.path.isfile(os.path.join(agents, a + ".md"))]
+    old += [".claude/commands/%s.md" % c for c in GEN3_COMMANDS
+            if os.path.isfile(os.path.join(project, ".claude", "commands", c + ".md"))]
+    if old:
+        doc.fail("project: Gen 3 files left: %s; run tools/pa3_update.py" % ", ".join(old))
+    else:
+        doc.ok("project: no Gen 3 agent or command files")
+    pins = _gen3_pins(fsutil.read_json(os.path.join(project, ".claude", "settings.json"), None))
+    local = _gen3_pins(fsutil.read_json(os.path.join(project, ".claude", "settings.local.json"), None))
+    if pins:
+        doc.fail("project: Gen 3 pins in .claude/settings.json: %s; run tools/pa3_update.py" % ", ".join(pins))
+    else:
+        doc.ok("project: no Gen 3 pins in .claude/settings.json")
+    if local:
+        doc.warn("project: Gen 3 pins in .claude/settings.local.json (yours; kept): %s" % ", ".join(local))
+    _doctor_ladder_spawns(doc, project)
+
+
+_JOURNAL_DAY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}(\.md)?$")
+_JOURNAL_KEY_RE = re.compile(r"^([A-Za-z_]+): (.*)$")  # 3.25 T6a: + _ (row_model, row_effort)
+
+
+def _journal_spawns(project, days=7):
+    """``{agentType: (model, effort, row_model, row_effort)}`` (3.25 T6a: + the row, "" when absent), the
+    latest spawn record per agent type in the journal's last ``days`` days (3.24 T17; T17b writes them): any entry whose frontmatter has ``agentType``, ``model`` and
+    ``effort``, in the live ``<date>/`` folders and the rolled ``<date>.md`` files alike."""
+    root = os.path.join(project, ".claude-state", "journal")
+    try:
+        names = sorted(n for n in os.listdir(root) if _JOURNAL_DAY_RE.match(n))
+    except OSError:
+        return {}
+    days_kept = sorted({n[:10] for n in names})[-days:]
+    texts = []
+    for name in names:
+        if name[:10] not in days_kept:
+            continue
+        path = os.path.join(root, name)
+        if os.path.isdir(path):
+            texts += [(name + "/" + f, os.path.join(path, f)) for f in sorted(os.listdir(path)) if f.endswith(".md")]
+        else:
+            texts.append((name, path))
+    out = {}
+    for _key, path in sorted(texts):
+        text = fsutil.read_text(path, "") or ""
+        meta, inside = {}, False
+        for line in text.replace("\r\n", "\n").split("\n"):
+            if line == "---":
+                if inside and meta.get("agentType") and meta.get("model") and meta.get("effort"):
+                    out[meta["agentType"]] = (meta["model"], meta["effort"],
+                                              meta.get("row_model", ""), meta.get("row_effort", ""))
+                inside, meta = not inside, {}
+                continue
+            m = _JOURNAL_KEY_RE.match(line) if inside else None
+            if m:
+                raw = m.group(2).strip()
+                if raw.startswith('"'):
+                    try:
+                        raw = json.loads(raw)
+                    except ValueError:
+                        continue
+                meta[m.group(1)] = raw if isinstance(raw, str) else ""
+    return out
+
+
+def _doctor_ladder_spawns(doc, project):
+    """3.24 T17: the planner's row for the live tier and its installed copy, and every managed agent whose
+    last journaled spawn got another model or effort than its row (warn).  3.25 T6a: the row is the one the
+    spawn entry recorded (``row_model``, ``row_effort``: a hinted spawn ran on a variant row); an entry
+    without one is compared with its type's row."""
+    from . import ladder_row
+    from .install import ladder
+    r = ladder_row.resolve("pa-planner", project)
+    have = ladder._installed(os.path.join(project, ".claude", "agents", "pa-planner.md"))
+    line = "project: pa-planner runs %s at %s (tier %s, %s); installed %s at %s" % (
+        r["model"], r["effort"], r["tier"], r["source"],
+        have["model"] if have else "-", have["effort"] if have else "-")
+    if have is None:
+        doc.fail(line + "; run tools/pa3_update.py")
+    else:
+        doc.ok(line)
+    bare = lambda m: str(m or "").replace("[1m]", "")
+    off = []
+    for agent, (model, effort, row_model, row_effort) in sorted(_journal_spawns(project).items()):
+        if agent not in ladder.MANAGED:
+            continue
+        want = ({"model": row_model, "effort": row_effort} if row_model and row_effort
+                else ladder_row.resolve(agent, project))
+        if bare(model) != bare(want["model"]) or effort != want["effort"]:
+            off.append("%s got %s/%s, row %s/%s" % (agent, model, effort, want["model"], want["effort"]))
+    if off:
+        doc.warn("project: spawns off their ladder row: %s" % "; ".join(off))
+    else:
+        doc.ok("project: managed spawns match their ladder rows (journal, last 7 days)")
 
 
 def _doctor_card(doc, cfg, project):
@@ -4419,11 +4904,20 @@ def cmd_doctor(args):
     else:
         doc.fail("interpreter: %d.%d.%d is too old" % (ver[0], ver[1], ver[2]))
 
-    _doctor_settings(doc, "user", os.path.join(paths.claude_dir(), "settings.json"))
-    for cdir in (args.config_dir or []):
+    # 3.24 T12e: the user rows follow $CLAUDE_CONFIG_DIR as the installer does (paths.config_dir());
+    # was paths.claude_dir() always
+    user_dir = paths.config_dir()
+    extra = [c for c in (args.config_dir or [])
+             if os.path.normcase(os.path.normpath(c)) != os.path.normcase(os.path.normpath(user_dir))]
+    _doctor_settings(doc, "user", os.path.join(user_dir, "settings.json"))
+    for cdir in extra:
         _doctor_settings(doc, os.path.basename(os.path.normpath(cdir)) or cdir,
                          os.path.join(cdir, "settings.json"))
-    _doctor_update_rules(doc, os.path.join(paths.claude_dir(), "settings.json"), args.project)
+    _doctor_registration(doc, "user", os.path.join(user_dir, "settings.json"))   # 3.24 T4
+    for cdir in extra:
+        _doctor_registration(doc, os.path.basename(os.path.normpath(cdir)) or cdir,
+                             os.path.join(cdir, "settings.json"))
+    _doctor_update_rules(doc, os.path.join(user_dir, "settings.json"), args.project)
 
     ledger = paths.ledger_dir()
     if os.path.isdir(ledger):
@@ -4500,28 +4994,12 @@ def cmd_doctor(args):
 
     _doctor_package_clone(doc)
     _doctor_update_check(doc, cfg)
+    _doctor_root_manifest(doc)                                   # 3.24 T4
+    _doctor_floor(doc)
+    _doctor_released(doc)
+    _doctor_project_mod(doc, args.project)
     _doctor_card(doc, cfg, args.project)
     _doctor_mcp_servers(doc, args.project)
-
-    # the warmer (3.9.5 T5): daemon alive when any .run/warmer/*.pid names a live process
-    try:
-        import glob
-        from . import warmer
-
-        w_root = args.project or os.getcwd()
-        w_alive = False
-        for w_pid in glob.glob(warmer.path(w_root, "*", "pid")):
-            try:
-                with open(w_pid, "r", encoding="utf-8") as fh:
-                    w_alive = warmer.pid_alive(int(fh.read().strip() or 0)) or w_alive
-            except (OSError, ValueError):
-                pass
-        w_runs = (fsutil.read_json(warmer.state_path(w_root), None) or {}).get("runs") or {}
-        w_n = sum(1 for r in w_runs.values()
-                  if isinstance(r, dict) and not r.get("finished") and r.get("ended") is None)
-    except Exception:
-        w_alive, w_n = False, 0
-    doc.ok("warmer: daemon %s, %d runs watched" % ("alive" if w_alive else "idle", w_n))
 
     # usage api status (T4 / T1.c4 writes usage_api.json)
     try:
@@ -5032,7 +5510,9 @@ def build_parser():
     rc = sub.add_parser("recalc", help="rebuild the ledger from transcripts or turns")
     rc.add_argument("--from", dest="source", choices=("transcripts", "turns"),
                     default="transcripts")
-    rc.add_argument("--session")
+    rc.add_argument("--session", action="append",
+                    help="session id or prefix (repeatable): one refit and one summary "
+                         "rebuild for all of them")
     rc.add_argument("--project")
     rc.add_argument("--since")
     rc.add_argument("--root", action="append",
@@ -5045,6 +5525,11 @@ def build_parser():
                     help="snapshot report --window all --json, recalc, compare, "
                          "'idempotent OK' or the first 20 diff lines (exit 1)")
     rc.add_argument("-v", "--verbose", action="store_true")
+    rc.add_argument("--rows-only", action="store_true",
+                    help="recalc the rows only: no refit, no summary rebuild (the close's)")
+    rc.add_argument("--done-file", help="write {exit, secs, sessions, at} JSON here when the recalc ends")
+    rc.add_argument("--detach", action="store_true",
+                    help="start this recalc detached and return at once (removes --done-file first)")
     rc.set_defaults(func=cmd_recalc)
 
     rp = sub.add_parser("report", help="per-account cost / savings tables")
@@ -5081,7 +5566,24 @@ def build_parser():
     pr.add_argument("--apply", action="store_true")
     pr.add_argument("--effective-from", dest="effective_from")
     pr.add_argument("--url", default=PRICING_URL)
+    pr.add_argument("--json", action="store_true", help="one JSON line of per-million prices (3.22)")
+    pr.add_argument("--model", help="with --json: one model's row through prices.price_for")
     pr.set_defaults(func=cmd_prices)
+
+    ev = sub.add_parser("event", help="spool one events row (3.22: the mod's warm_ping)")
+    ev.add_argument("kind")
+    ev.add_argument("--session", required=True)
+    ev.add_argument("--run")
+    ev.add_argument("--detail", help="a JSON object")
+    ev.set_defaults(func=cmd_event)
+
+    to = sub.add_parser("toast", help="raise a waiting toast for a session (3.22: the mod)")
+    to.add_argument("--session", required=True)
+    to.add_argument("--cause", required=True)
+    to.add_argument("--title", required=True)
+    to.add_argument("--body", required=True)
+    to.add_argument("--project", help="project root whose .claude/pa.json sets the toast level")
+    to.set_defaults(func=cmd_toast)
 
     ac = sub.add_parser("accounts", help="list / label accounts, set the default, override the tier, "
                                          "set the renewal day (accounts renewal EMAIL DAY|clear)")
@@ -5180,6 +5682,9 @@ def build_parser():
     dc.add_argument("--session", help="with --repair: also check and repair this session id")
     dc.set_defaults(func=cmd_doctor)
 
+    sub.add_parser("ladder-row", help="one agent's model and effort for the live tier (3.24 T17;"
+                   " pa.ladder_row parses its own arguments)")
+
     bn = sub.add_parser("bench", help="bench results: report / import / export")
     bsub = bn.add_subparsers(dest="bench_cmd", required=True)
     bnr = bsub.add_parser("report", help="per arm key, newest runs first, flips vs the previous run")
@@ -5198,8 +5703,12 @@ def build_parser():
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
+    if argv[:1] == ["ladder-row"]:      # 3.24 T17: pa_ledger.py routes here first; this covers direct callers
+        from . import ladder_row
+        return ladder_row.main(argv[1:])
     parser = build_parser()
     args = parser.parse_args(argv)
+    args.argv = argv                    # recalc --detach relaunches with it
     if not getattr(args, "func", None):
         parser.print_help()
         return 2

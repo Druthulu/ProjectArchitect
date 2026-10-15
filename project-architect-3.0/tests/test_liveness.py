@@ -307,6 +307,44 @@ class LivenessCase(unittest.TestCase):
         self.assertTrue(stale_children[0]["elapsed"].endswith("?"),
                         "Expected elapsed to end with '?'")
 
+    # 3.24 T13h: a flat subagent's running entry had no transcript_path, so every agent
+    # alive 5 minutes at a sweep was dropped as no_transcript while still working.
+    def _running_no_path(self, agent_id):
+        running.set_agent(self.sid, agent_id, {"agent_type": "expert-opus55", "role": "expert",
+                                               "parent": self.sid, "started": _OLD_TS,
+                                               "status": "running", "ctx": 0})
+        path = self._agent_transcript(agent_id)
+        _write_meta(path, {"toolUseId": "toolu_live_001", "agentType": "expert-opus55"})
+        _write_jsonl(path, [_tool_use_record(ts="2026-09-20T11:59:00.000Z")])
+        return path
+
+    def _ledger_rows(self, agent_path=None):
+        from pa import db
+
+        conn = hooks.open_db()
+        try:
+            db.upsert_session(conn, {"session_id": self.sid,
+                                     "transcript_path": self._session_transcript()})
+            if agent_path:
+                db.upsert_agent_run(conn, {"run_id": "live_a1", "session_id": self.sid,
+                                           "status": "running", "transcript_path": agent_path})
+        finally:
+            hooks.close_db(conn)
+
+    def test_running_agent_without_entry_path_kept_via_agent_runs(self):
+        path = self._running_no_path("live_a1")
+        self._ledger_rows(agent_path=path)
+        swept = liveness.sweep(self.sid, self.cfg, now=_NOW, min_age_s=300)
+        self.assertNotIn("live_a1", swept)
+        self.assertNotEqual(running.agent(self.sid, "live_a1"), {})
+
+    def test_running_agent_without_entry_path_kept_via_flat_path(self):
+        self._running_no_path("live_b2")
+        self._ledger_rows()
+        swept = liveness.sweep(self.sid, self.cfg, now=_NOW, min_age_s=300)
+        self.assertNotIn("live_b2", swept)
+        self.assertNotEqual(running.agent(self.sid, "live_b2"), {})
+
 
 class LivenessConfigTest(unittest.TestCase):
     """Config validation for the liveness section."""

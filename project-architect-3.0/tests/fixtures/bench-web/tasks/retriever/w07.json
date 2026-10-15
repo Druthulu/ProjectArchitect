@@ -1,0 +1,16 @@
+{
+  "id": "w07",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which RFC updates RFC 2119 to say the requirement key words have their special meaning only in all capitals? Give its RFC number.\n\nFind the answer in the published source on the web. Give the answer and the full address (URL) of the page you read it on.",
+  "expect": {
+    "tokens": [
+      "8174",
+      "rfc8174"
+    ]
+  },
+  "hidden": "—"
+}

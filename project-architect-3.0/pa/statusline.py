@@ -2,7 +2,8 @@
 
 Public:
     render(payload, cfg=None, user_show=None) -> str        the printable lines (no trailing "\\n")
-    sample(payload, cfg=None) -> None       spool + (on a change) sqlite
+    sample(payload, cfg=None) -> None       spool + queue the slow paths for the child
+    run_background() -> None                the detached child (``-m pa.statusline --background``)
     main(argv=None) -> int                  stdin -> print -> sample; always 0
 
     fmt_tokens(n), fmt_eta(epoch, now), fmt_elapsed(seconds)
@@ -19,7 +20,8 @@ Design: ``docs/pa3-build/design/A-ledger-statusline-hooks.md`` §D (renderer + s
 Hot path: this module imports ``json, os, sys, time`` plus ``pa.paths`` and
 ``pa.fsutil`` only.  ``sqlite3`` (via ``pa.db``), ``shutil`` (via
 ``fsutil.disk_free_mb``) and ``pa.summary`` are imported lazily on the ``change``
-path, which happens a few times an hour.  ``re`` and ``datetime`` are never
+path, which runs in the detached child (3.24 T9: the printing process spools, queues a job
+and exits; ``pa.summary`` and ``pa.notify`` load there only to request the child).  ``re`` and ``datetime`` are never
 imported: the PHASE_PLAN scan and the ISO parser are hand-rolled.
 
 No transcript is ever opened.  Every file read is a small JSON document or one
@@ -99,6 +101,8 @@ DROP_RESET_PCT = 2
 FIVE_HOUR_S = 18000
 DEFAULT_WINDOW_S = 604800
 DISK_MIN_FREE_MB = 50
+PHASE_END_TASK = "PHASE-END"  # the mod's closer task id in status.json (autopilot.tsx PHASE_END)
+BACKGROUND_TICK_S = 30   # a quiet refresh queues the child's poll/sweep/account work at most this often (3.24 T9)
 
 _JSON_CACHE = {}
 
@@ -507,7 +511,8 @@ def scan_phase_plan(path):
                 continue
             fields = line.split("|")
             task_id = fields[0].strip()[2:].strip()
-            if len(task_id) < 2 or not task_id[1].isdigit():
+            # plan_edit TASK_RE: `T<digits>(.<digits>)* |`, never a `## Context` bullet (3.24 T13f)
+            if task_id[:1] != "T" or not all(part.isdigit() for part in task_id[1:].split(".")):
                 continue
             status = fields[1].strip().lower() if len(fields) > 1 else ""
             if status != "superseded":          # a reopened or moved task's parent is not work left
@@ -552,7 +557,7 @@ def _model_short(model):
 
 
 def _agent_label(status, agent):
-    """``expert-opus55 opus55/medium`` for the running subagent (design A line 2, 3.1 T10)."""
+    """``pa-expert opus55/medium`` for the running subagent (design A line 2, 3.1 T10)."""
     who = _text(agent.get("agent_type")) or _text(status.get("expert_agent_type"))
     model = _model_short(_text(agent.get("model_seen")) or _text(agent.get("model_pinned")))
     effort = _text(agent.get("effort_seen"))
@@ -945,12 +950,7 @@ def _line2(payload, ctx, cfg, sl, now):
     phase_name = _text(status.get("phase_name")) or (plan["phase_name"] or "")
     if (phase or phase_name) and show.get("phase", True):
         segments.append(_seg(("Phase %s %s" % (phase, phase_name)).strip(), None, colors))
-    elif not _text(status.get("task")):
-        # between phases (planning a generation or a phase): say so instead of showing nothing
-        launch = _read_json(os.path.join(ctx.get("project") or "", ".run", "launch.json"), None)
-        mode = _text(_dig(launch, "mode"))
-        if mode and mode != "router":
-            segments.append(_seg("%s (planning)" % mode if mode.startswith("planner") else mode, DIM, colors))
+    # was: launch.json's Gen 3 mode label between phases (router/planner seeds), gone with Gen 3 (3.24 T9)
 
     task = _text(status.get("task"))
     if task and show.get("task", True):
@@ -1338,10 +1338,37 @@ def _flag_savings_missing(project, sid, detail, now):
     fsutil.atomic_write_text(path, json.dumps(doc, indent=2, sort_keys=True) + "\n")
 
 
+def _repair_cooling(sid, cfg, now):
+    """True while the sid's last repair is inside ``summary.session_rebuild_cooldown_s``."""
+    cooldown = _cfg_num(cfg, "summary.session_rebuild_cooldown_s", 60)
+    stamp = paths.state_path("session_rebuild", "%s.stamp" % sid)
+    try:
+        with open(stamp, encoding="utf-8") as fh:
+            last = _num(fh.readline().strip(), None)      # line 2: the ledger signature (T10)
+    except OSError:
+        last = None
+    return last is not None and 0 <= now - last < cooldown
+
+
+def _repair_due(sid, summary, cfg, now):
+    """The sampler's cheap check (3.24 T9): no ``sessions[sid].windows``, a ledger exists, and
+    the cooldown has passed -> the child runs :func:`_repair_session`.  No sqlite here."""
+    row = _dig(summary, "sessions", sid) if sid else None
+    if not sid or (isinstance(row, dict) and "windows" in row):
+        return False
+    try:
+        return os.path.isfile(paths.db_path()) and not _repair_cooling(sid, cfg, now)
+    except Exception:
+        return False
+
+
 def _repair_session(ctx, cfg, now):
-    """Render-time repair (T11.1): no ``sessions[sid].windows`` in summary.json but the
+    """The background child's repair (T11.1; render-time until 3.24 T9): no
+    ``sessions[sid].windows`` in summary.json but the
     ledger has cost for this sid -> ``summary.rebuild(sessions_only=True)`` and re-read,
-    at most once per sid per ``summary.session_rebuild_cooldown_s``; a block still missing
+    at most once per sid per ``summary.session_rebuild_cooldown_s``, and only when the sid's
+    ledger rows changed since the last try (3.24 T10: an aged-out session re-ran the ~80 s
+    rebuild every cooldown); a block still missing
     after the rebuild writes the ``savings_missing`` health flag.  Never raises.
     """
     sid = ctx.get("sid")
@@ -1351,34 +1378,35 @@ def _repair_session(ctx, cfg, now):
     try:
         if not os.path.isfile(paths.db_path()):
             return
-        cooldown = _cfg_num(cfg, "summary.session_rebuild_cooldown_s", 60)
+        if _repair_cooling(sid, cfg, now):
+            return
         stamp = paths.state_path("session_rebuild", "%s.stamp" % sid)
         try:
             with open(stamp, encoding="utf-8") as fh:
-                last = _num(fh.read().strip(), None)
+                last_sig = (fh.read().splitlines() + ["", ""])[1].strip()
         except OSError:
-            last = None
-        if last is not None and 0 <= now - last < cooldown:
-            return
-        fsutil.atomic_write_text(stamp, "%.3f\n" % now)
+            last_sig = ""
         from . import db
         from . import summary as summary_mod
 
         conn = db.connect(create=False)
         try:
-            crow = conn.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM turns WHERE session_id=?",
-                                (sid,)).fetchone()
+            crow = conn.execute("SELECT COALESCE(SUM(cost_usd), 0), COUNT(*), MAX(ts) FROM turns "
+                                "WHERE session_id=?", (sid,)).fetchone()
             ledger_cost = float(crow[0] or 0.0) if crow else 0.0
             srow = conn.execute("SELECT cost_usd FROM sessions WHERE session_id=?",
                                 (sid,)).fetchone()
             if srow and _num(srow[0], None):
                 ledger_cost = max(ledger_cost, float(srow[0]))
-            if ledger_cost <= 0:
+            sig = "%.6f %s %s" % (ledger_cost, crow[1] if crow else 0, crow[2] if crow else None)
+            fsutil.atomic_write_text(stamp, "%.3f\n%s\n" % (now, sig))
+            if ledger_cost <= 0 or sig == last_sig:     # once per change, not once per cooldown
                 return
             doc = summary_mod.rebuild(conn, cfg, sessions_only=True)
         finally:
             db.close(conn)
         if not isinstance(doc, dict):
+            fsutil.atomic_write_text(stamp, "%.3f\n" % now)    # a failed rebuild retries next cooldown
             doc = _read_json(paths.summary_path(), None)
         ctx["summary"] = doc
         if not ctx.get("account"):
@@ -1398,7 +1426,7 @@ def _line_session(payload, ctx, cfg, sl, now):
     colors = sl["colors"]
     show = sl["show"]
     segments = []
-    _repair_session(ctx, cfg, now)  # T11.1: rebuild a missing sessions[sid].windows once per cooldown
+    # T11.1's repair of a missing sessions[sid].windows runs in the sampler's child (3.24 T9)
     summary = ctx["summary"]
     account = _account_block(summary, ctx["account"])
     account_windows = account.get("windows") if account else None
@@ -1695,7 +1723,7 @@ def _line5(payload, ctx, cfg, sl, now):
     if os.path.exists(paths.state_path("disk_low")):
         items.append(_seg("%s ledger: disk low" % WARN, BOLD_RED, colors))
 
-    # seed_growth alert (T10): expert seed over threshold or growing fast
+    # seed_growth alert (T10): expert seed max over seed.max_tokens
     pkey = _project_key(ctx.get("project"))
     if pkey and isinstance(alerts, list):
         for alert in alerts:
@@ -1828,13 +1856,10 @@ def _task_block(payload, ctx, cfg, sl, now):
     """
     colors = sl["colors"]
     max_w = sl["max_width"]
+    # ``.run/status.json`` is the 3.2 loop's mirror (the mod stamps it through tools/status.py
+    # beside its own loop.json): phase and task show in every session, the loop owner's or not
+    # (3.24 T9; was T28.c4's "runs in another session" beside line for a Gen 3 router_session)
     status = ctx["status"] or {}
-    # T28.c4: the phase is owned by `router_session`; any other session gets one beside line
-    # fix-18: only while a phase is open; a null phase falls through to the no-phase header
-    owner = _text(status.get("router_session"))
-    if owner and ctx.get("sid") and ctx["sid"] != owner and _text(status.get("phase")):
-        beside = SEP.join(p for p in (_task_project_name(ctx), _text(status.get("phase"))) if p)
-        return [_paint(beside + " runs in another session", DIM, colors)]
     current_task = _text(status.get("task"))
     plan = scan_phase_plan(ctx["phase_plan"])
     tasks = plan.get("tasks") or []
@@ -1851,6 +1876,8 @@ def _task_block(payload, ctx, cfg, sl, now):
             header_parts.append("Phase %s" % header_phase)
         if plan["total"]:
             header_parts.append("%d/%d" % (plan["done"], plan["total"]))
+        if current_task == PHASE_END_TASK:
+            header_parts.append("closing")      # the loop's closer runs (mod PHASE_END)
     else:
         # no task lines (T13.c1): the generation's open phase is being planned, or none is open
         open_phase = _gen_open_phase(ctx.get("project"))
@@ -1925,38 +1952,11 @@ def _task_block(payload, ctx, cfg, sl, now):
         # children of the running task
         if tid == current_task:
             show = (cfg or {}).get("statusline", {}).get("show", {})
-            # agent label, warm count on the current line's children
-            run_id = _text(status.get("run_id")) or None
-            agent, _live = _running_agent(ctx["running"], ctx["sid"], run_id)
+            # DISABLED: running-agent line (label, handoff mark, warm count) under the task — 3.24 T13s
+            # Original intent: show the running subagent, e.g. `pa-expert opus55/medium` (design A line 2)
+            # Why disabled: the developer, 2026-10-10: the bands above the text input show agents better
+            # Re-enable if: the mod's agent bands are gone; the block is in git at 03a77f8b (pa/statusline.py:1955-1985)
             children = _task_children(ctx, status)
-            if agent and t["status"] != "done":
-                label = _agent_label(status, agent)
-                # (text, colour): label unpainted, handoff mark YELLOW, warm DIM; agent ctx dropped (T27)
-                agent_parts = []
-                if label:
-                    agent_parts.append((label, None))
-                if agent.get("handoff_fired"):
-                    agent_parts.append((HANDOFF_MARK, YELLOW))
-                warm = _warm_pings(ctx.get("project"), now, run_id)
-                if warm:
-                    agent_parts.append(("warm ×%d" % warm, DIM))
-                if agent_parts:
-                    agent_parts[0] = ("  " + agent_parts[0][0], agent_parts[0][1])
-                if agent_parts:
-                    atext = SEP.join(t for t, _c in agent_parts)
-                    cut = max_w > 0 and len(atext) > max_w
-                    if not colors:
-                        lines.append(atext[:max_w - 1] + "…" if cut else atext)
-                    else:
-                        # per piece (was flat CYAN), truncated at the same width
-                        budget = max_w - 1 if cut else len(atext)
-                        painted = []
-                        for i, (t, c) in enumerate(agent_parts):
-                            for text, col in (((SEP, None),) if i else ()) + ((t, c),):
-                                piece = text[:max(budget, 0)]
-                                budget -= len(piece)
-                                painted.append(_paint(piece, col, colors))
-                        lines.append("".join(painted) + ("…" if cut else ""))
             # helper lines gated by show.task_helpers (default off, T10.c1)
             if show.get("task_helpers", False):
                 for child in children:
@@ -2187,7 +2187,10 @@ def _primary(reasons):
 
 
 def sample(payload, cfg=None):
-    """Design §D steps 1-4: spool every refresh worth keeping, sqlite on change."""
+    """Design §D steps 1-2 inline: spool every refresh worth keeping (the change brackets need
+    every payload).  The slow paths (account refresh, sqlite on change, the session repair,
+    the usage API poll, the liveness sweep) are queued for the detached single-flight child,
+    :func:`run_background` (3.24 T9: Claude Code draws only after this process exits)."""
     payload = payload if isinstance(payload, dict) else {}
     cfg = cfg if isinstance(cfg, dict) else {}
     sid = _text(payload.get("session_id"))
@@ -2198,17 +2201,8 @@ def sample(payload, cfg=None):
     ctx_running = _read_json(paths.running_path(), None)
     account = (_dig(ctx_summary, "sessions", sid, "account")
                or _dig(ctx_running, "sessions", sid, "account"))
-    # When no Stop has fired since a mid-session account switch, refresh the
-    # stamp ourselves so utilization rows carry the current account (cheap when
-    # the credentials key is unchanged; skipped when no stamp exists yet).
-    if account:
-        try:
-            from . import accounts as _accts
-            refreshed, _changed, _prev = _accts.refresh_account(sid, cfg)
-            if refreshed:
-                account = refreshed
-        except Exception:
-            pass
+    # the account refresh after a mid-session switch runs in the child (3.24 T9); its re-stamp
+    # reaches running.json, so the next refresh's rows carry the current account
     usage_cache = _read_json(os.path.join(paths.ledger_dir(), "usage_api.json"), None)
     cur = build_sample(payload, cfg, now=now, account=account, usage_cache=usage_cache)
 
@@ -2249,30 +2243,203 @@ def sample(payload, cfg=None):
         "spool_offset": state.get("spool_offset") or 0,
         "disk_checked_ts": state.get("disk_checked_ts") or 0,
     }
-    if "change" in reasons:
-        try:
-            _on_change(cfg, sid, prev, cur, new_state)
-        except Exception as exc:            # never break the statusline
-            _log("statusline.change_failed", sid=sid, err=repr(exc))
     try:
         fsutil.atomic_write_json(state_path, new_state)
     except OSError as exc:
         _log("statusline.state_failed", sid=sid, err=repr(exc))
-    # poll usage API when payload has no model_scoped (T1.c4, fail-soft, never raising)
+    # the child's job: the change pair, the repair, the poll (only when the payload has no
+    # model_scoped, T1.c4); a quiet refresh queues a tick at most once per BACKGROUND_TICK_S
     try:
-        rl = payload.get("rate_limits") if isinstance(payload, dict) else None
-        if not isinstance(rl, dict) or not rl.get("model_scoped"):
-            from . import usage_api
-            usage_api.poll(cfg, account=account)
-    except Exception:
-        pass
-    # sweep finished agents that missed their SubagentStop (T1.c6, at most once per 60 s)
-    try:
-        from . import liveness
-        liveness.sweep_if_due(sid, cfg)
-    except Exception:
-        pass
+        rl = payload.get("rate_limits")
+        job = {"sid": sid, "project": project_dir_of(payload),
+               "poll": not (isinstance(rl, dict) and rl.get("model_scoped"))}
+        if "change" in reasons:
+            job["prev"], job["cur"] = prev, cur
+        if _repair_due(sid, ctx_summary, cfg, now):
+            job["repair"] = True
+        tick = _tick_due(now)               # any queued job renews the tick
+        if "change" in reasons or job.get("repair") or tick:
+            fsutil.append_line(_sampler_path("queue.jsonl"),
+                               json.dumps(job, ensure_ascii=False, default=str))
+            request_background()
+    except Exception as exc:                # never break the statusline
+        _log("statusline.queue_failed", sid=sid, err=repr(exc))
     return None
+
+
+# --------------------------------------------------------------------------- background child
+
+def _sampler_path(name):
+    return paths.state_path("sampler", name)
+
+
+def _tick_due(now):
+    """True (and the stamp renewed) when the last tick is BACKGROUND_TICK_S old or missing."""
+    stamp = _sampler_path("tick")
+    try:
+        if 0 <= now - os.path.getmtime(stamp) < BACKGROUND_TICK_S:
+            return False
+    except OSError:
+        pass
+    try:
+        fsutil.atomic_write_text(stamp, "%.3f\n" % now)
+    except OSError:
+        pass
+    return True
+
+
+def background_command():
+    """``(cmd, env)`` of the detached child (``python -m pa.statusline --background``)."""
+    pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    # -s -P, not -I: -I ignores PYTHONPATH, which is how the installed copy is found
+    return ([sys.executable, "-s", "-P", "-X", "utf8", "-m", "pa.statusline", "--background"],
+            {"PYTHONPATH": pkg})
+
+
+def request_background():
+    """Spawn the child unless one runs (single flight, ``summary.request_rebuild``'s lock).
+
+    A held lock spawns nothing: the running child drains the queue until it is empty.
+    True when a child was spawned.
+    """
+    try:
+        from . import notify
+        from . import summary as summary_mod   # the lock helpers; imported only on a request
+
+        lock = _sampler_path("child.lock")
+        fsutil.ensure_dir(lock)
+        if not summary_mod._take_lock(lock):
+            return False
+        cmd, env = background_command()
+        if notify.spawn_detached(cmd, env):
+            return True
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+    except Exception as exc:
+        _log("statusline.background_request_failed", err=repr(exc))
+    return False
+
+
+def _take_jobs():
+    """The queued jobs, oldest first; a ``.work`` file a dead child left is taken first."""
+    queue = _sampler_path("queue.jsonl")
+    work = queue + ".work"
+    if not os.path.exists(work):
+        try:
+            os.replace(queue, work)
+        except OSError:
+            return []
+    jobs = []
+    try:
+        with open(work, encoding="utf-8", errors="replace") as fh:
+            for raw in fh:
+                try:
+                    job = json.loads(raw)
+                except ValueError:
+                    continue
+                if isinstance(job, dict) and _text(job.get("sid")):
+                    jobs.append(job)
+        os.remove(work)
+    except OSError:
+        return []                           # never loop on a work file that cannot be removed
+    return jobs
+
+
+def _drain_state(sid):
+    """The child's own drain state (``spool_offset``, ``disk_checked_ts``), seeded once from
+    the session state the inline sampler kept before 3.24 T9."""
+    path = _sampler_path("%s.json" % sid)
+    state = fsutil.read_json(path, None)    # uncached: the child rewrites it within a second
+    if not isinstance(state, dict):
+        old = _read_json(paths.session_state_path(sid), None)
+        old = old if isinstance(old, dict) else {}
+        state = {"spool_offset": old.get("spool_offset") or 0,
+                 "disk_checked_ts": old.get("disk_checked_ts") or 0}
+    return {"spool_offset": state.get("spool_offset") or 0,
+            "disk_checked_ts": state.get("disk_checked_ts") or 0}
+
+
+def _run_jobs(jobs, cfg):
+    """Changes in queue order, then per session: account refresh, repair, poll, sweep."""
+    sessions = {}
+    touched, states = set(), {}
+    last = max([i for i, job in enumerate(jobs) if isinstance(job.get("cur"), dict)] or [-1])
+    for i, job in enumerate(jobs):
+        sid = _text(job.get("sid"))
+        if isinstance(job.get("cur"), dict):
+            state = states.get(sid) or _drain_state(sid)
+            states[sid] = state
+            try:                            # one refit pass and one rebuild per batch
+                _on_change(cfg, sid, job.get("prev"), job["cur"], state,
+                           final=(i == last), touched=touched)
+            except Exception as exc:
+                _log("statusline.change_failed", sid=sid, err=repr(exc))
+            try:
+                fsutil.atomic_write_json(_sampler_path("%s.json" % sid), state)
+            except OSError as exc:
+                _log("statusline.state_failed", sid=sid, err=repr(exc))
+        merged = sessions.setdefault(sid, {})
+        merged["project"] = _text(job.get("project")) or merged.get("project")
+        merged["repair"] = bool(merged.get("repair") or job.get("repair"))
+        merged["poll"] = job.get("poll", True)          # the latest payload decides
+    for sid, job in sessions.items():
+        now = time.time()
+        summary = _read_json(paths.summary_path(), None)
+        account = (_dig(summary, "sessions", sid, "account")
+                   or _dig(_read_json(paths.running_path(), None), "sessions", sid, "account"))
+        # a mid-session account switch with no Stop since: re-stamp (cheap when the
+        # credentials key is unchanged; skipped when no stamp exists yet)
+        if account:
+            try:
+                from . import accounts as _accts
+                refreshed, _changed, _prev = _accts.refresh_account(sid, cfg)
+                account = refreshed or account
+            except Exception:
+                pass
+        if job["repair"]:
+            _repair_session({"sid": sid, "summary": summary, "account": account,
+                             "project": job.get("project") or os.getcwd()}, cfg, now)
+        try:
+            if job.get("poll"):
+                from . import usage_api
+                usage_api.poll(cfg, account=account)
+        except Exception:
+            pass
+        # finished agents that missed their SubagentStop (T1.c6, at most once per 60 s)
+        try:
+            from . import liveness
+            liveness.sweep_if_due(sid, cfg)
+        except Exception:
+            pass
+
+
+def run_background():
+    """The child: run the queued jobs until the queue is empty, then release the lock.
+
+    Writes nothing to stdout; failures go to the hooks log.
+    """
+    from . import config as config_mod
+    from . import summary as summary_mod
+
+    lock = _sampler_path("child.lock")
+    try:
+        summary_mod._write_lock(lock, "background")
+        cfg = config_mod.load()
+        while True:
+            jobs = _take_jobs()
+            if not jobs:
+                break
+            _run_jobs(jobs, cfg)
+            summary_mod._write_lock(lock, "background")   # fresh mtime: a long run is not stale
+    except Exception as exc:
+        _log("statusline.background_failed", err=repr(exc))
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
 
 
 def _mismatch(payload, cfg):
@@ -2463,10 +2630,22 @@ def _check_disk(cfg, state):
         pass
 
 
-def _on_change(cfg, sid, prev, cur, state):
-    """The rare path: sqlite, spool drain, instance detection, summary rebuild."""
+def _on_change(cfg, sid, prev, cur, state, final=True, touched=None):
+    """The rare path: sqlite, spool drain, instance detection, summary rebuild.
+
+    The child batches (3.24 T9): ``final=False`` drains and records instances only, adding
+    cur's ``(account, window, resets_at)`` to ``touched``; the batch's last change
+    (``final=True``) refits every touched instance and rebuilds the summary once.
+    """
     from . import db
 
+    touched = set() if touched is None else touched
+    account = _account_key(cur.get("account"))
+    for window, node in (cur.get("windows") or {}).items():
+        resets = parse_epoch(node.get("resets_at"))
+        if resets is not None:
+            touched.add((account, window, int(resets)))
+    readers = None
     conn = db.connect()
     try:
         if db.schema_version(conn) != db.SCHEMA_VERSION:
@@ -2477,8 +2656,10 @@ def _on_change(cfg, sid, prev, cur, state):
             conn.commit()
         except Exception:
             pass
+        if not final:
+            _log("statusline.change", sid=sid, util_rows=rows, instances=made, batched=True)
+            return
         # Build union readers once per change (copy mode; a failure → local only)
-        readers = None
         try:
             from . import config as _config
             extra = _config.extra_root_entries(cfg)
@@ -2487,14 +2668,10 @@ def _on_change(cfg, sid, prev, cur, state):
         except Exception:
             readers = None
         # refit touched instances (lazy import; hot path and module-level imports untouched)
-        account = _account_key(cur.get("account"))
-        for window, node in (cur.get("windows") or {}).items():
-            resets = parse_epoch(node.get("resets_at"))
-            if resets is None:
-                continue
+        for account, window, resets in sorted(touched):
             try:
                 from . import fit as _fit
-                f = _fit.refit_instance(conn, cfg, account, window, int(resets),
+                f = _fit.refit_instance(conn, cfg, account, window, resets,
                                         readers=readers)
                 try:
                     conn.commit()
@@ -2516,7 +2693,8 @@ def _on_change(cfg, sid, prev, cur, state):
             except Exception:
                 pass
         db.close(conn)
-    _check_disk(cfg, state)
+    if final:
+        _check_disk(cfg, state)
 
 
 def _rebuild_summary(conn, cfg, readers=None):
@@ -2591,7 +2769,8 @@ def _emit(text):
 
 
 def main(argv=None):
-    """Print first, sample second (design §D); always return 0."""
+    """Print first, sample second (design §D); always return 0.  ``sample`` only spools and
+    queues: the slow paths run in the detached child, so the process exits in milliseconds."""
     try:                                  # UTF-8 + LF whatever the console default is
         sys.stdout.reconfigure(encoding="utf-8", errors="replace", newline="\n")
     except Exception:
@@ -2626,3 +2805,10 @@ def main(argv=None):
         except Exception as exc:
             _log("statusline.sample_failed", err=repr(exc))
     return 0
+
+
+if __name__ == "__main__":
+    if "--background" in sys.argv[1:]:
+        run_background()
+        raise SystemExit(0)
+    raise SystemExit(main())

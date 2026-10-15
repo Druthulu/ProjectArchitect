@@ -460,22 +460,6 @@ class TestSkillAddCredit(CreditCase):
         self.assertTrue(len(hww) >= 1, "HOW_WE_WORK should be noted")
 
 
-class TestDiscussionCredit(CreditCase):
-
-    def test_off_new_record_notes(self):
-        # turn on first
-        self.tool("discussion.py", "on", "--topic", "test")
-        clear_notes(self.root)
-        p = self.tool("discussion.py", "off", "--new-record")
-        self.assertEqual(p.returncode, 0, p.out)
-        ns = notes(self.root)
-        self.assertTrue(len(ns) >= 2, "off --new-record should note record and index")
-        wholes = [n for n in ns if n["whole"]]
-        self.assertTrue(len(wholes) >= 1, "record should be whole")
-        indexes = [n for n in ns if "INDEX.md" in n["path"]]
-        self.assertTrue(len(indexes) >= 1, "index should be noted")
-
-
 @unittest.skipUnless(BASH, "bash not on PATH")
 class TestCookbookAddCredit(CreditCase):
 

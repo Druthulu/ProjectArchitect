@@ -1,0 +1,16 @@
+{
+  "id": "p09",
+  "arm": "partner",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: one turn of the partner in the shelf project (a small Python library-loans package in this repository). The mod is absent here: its mcp__pa-watch__ tools and SubagentHandback do not exist, so end your turn with your reply as plain text. An Agent call is recorded, not run. Make only the move this turn calls for.\n\nThe developer says: before we touch anything, survey the whole codebase for every place a date is computed or compared (loans, holds, fees, reports, storage) and give me the list with file:line.",
+  "expect": {
+    "subagent_type": "retriever-code"
+  },
+  "hidden": "—",
+  "settings": "settings/deny-agent.json",
+  "overlay": "overlay/partner"
+}

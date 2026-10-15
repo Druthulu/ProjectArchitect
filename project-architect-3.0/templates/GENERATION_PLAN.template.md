@@ -1,7 +1,7 @@
 # Generation {{GENERATION}} — {{GENERATION_NAME}}
 
 Goal: <one line — what this generation delivers>
-Done-criteria: <observable, machine-checkable; the union of the phase milestones>
+Done-criteria: <what the generation delivers; the union of the phase milestones>
 
 ## Phases
 
@@ -9,7 +9,7 @@ Done-criteria: <observable, machine-checkable; the union of the phase milestones
      - <G>.<n> <name> | milestone: … | scope: … | depends: — | status: open|closed | phase-end: phase-ends/PhaseEnd_Phase<N>.md
      Order = build order. `depends:` names phase ids or `—`. Only plan_edit.py gen-close|gen-open flips `status:`. -->
 
-- {{GENERATION}}.1 <name> | milestone: <machine-checkable gate> | scope: <one line> | depends: — | status: open | phase-end: phase-ends/PhaseEnd_Phase{{GENERATION}}.1.md
+- {{GENERATION}}.1 <name> | milestone: <what the phase delivers; a command can go with it> | scope: <one line> | depends: — | status: open | phase-end: phase-ends/PhaseEnd_Phase{{GENERATION}}.1.md
 - {{GENERATION}}.2 <name> | milestone: … | scope: … | depends: {{GENERATION}}.1 | status: open | phase-end: phase-ends/PhaseEnd_Phase{{GENERATION}}.2.md
 
 ## Ordering rationale
@@ -22,4 +22,4 @@ Done-criteria: <observable, machine-checkable; the union of the phase milestones
 
 ## Changes
 
-<!-- - <date> planner|developer: <what> — <why> -->
+<!-- - <date> claude|developer: <what> — <why> -->

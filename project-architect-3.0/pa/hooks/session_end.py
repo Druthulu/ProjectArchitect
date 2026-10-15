@@ -36,6 +36,8 @@ def run(inp, cfg):
         _finish_pending(conn, cfg)
         drain_spool(conn, sid, cfg)
         _refresh_children(conn, cfg, sid)
+        if fresh and harness is not None:      # T30: keyed on a fresh cost-state, not on source
+            _reconcile(conn, sid, path)        # T13l: after every child's turns are booked
         _rebuild(conn, cfg)
         from .. import db
 
@@ -47,11 +49,6 @@ def run(inp, cfg):
     waiting_clear(sid)
     root = governed(inp)
     if root:
-        try:
-            from .. import warmer
-            warmer.stop(root, sid)             # 3.9.5 T4: the session's warmer ends with it
-        except Exception as exc:
-            log.log("warmer_stop_failed", session_id=sid, error=str(exc)[:200])
         # keep run_id/task/attempt/expert_agent_type: the harness kills every subagent with the
         # process (T7.1) -- a later SubagentStart/spawn overwrites the run as today.
         status_patch(root, {"killed_at": now_iso(), "killed_reason": reason})
@@ -123,9 +120,8 @@ def _final_cost(conn, sid, path):
 
 
 def _close_session(conn, sid, reason, cost, source, inp, harness=None, fresh=False):
-    from .. import accounts, db, runs
+    from .. import db
 
-    account, _src = accounts.account_for(sid)
     now = now_iso()
     row = {"session_id": sid, "ended": now, "end_reason": reason,
            "cost_usd": cost, "cost_source": source, "cost_updated": now}
@@ -136,9 +132,28 @@ def _close_session(conn, sid, reason, cost, source, inp, harness=None, fresh=Fal
                                "status": "completed", "locked": 1,
                                "lock_source": "session_end"})
     _sum_main_run(conn, sid)
-    if fresh and harness is not None:          # T30: keyed on a fresh cost-state, not on source
-        runs.residual_row(conn, sid, harness, account=account, ts=now)
     return cost
+
+
+def _reconcile(conn, sid, path):
+    """3.24 T13l: scale each model's estimated output to the fresh cost-state and book the rest as
+    unattributed residual rows (``runs.reconcile_models``); the session cost is the turns sum."""
+    from .. import accounts, db, runs, transcript
+
+    account, _src = accounts.account_for(sid)
+    now = now_iso()
+    try:
+        rec, fresh, _offset = transcript.cost_state_fresh(path)
+    except Exception:
+        rec, fresh = None, False
+    if not (fresh and isinstance(rec, dict)):
+        return None
+    done = runs.reconcile_models(conn, sid, rec, account=account, ts=now)
+    if done is None:                           # no modelUsage: one session-level residual row
+        total = rec.get("totalCostUSD")
+        return runs.residual_row(conn, sid, total, account=account, ts=now)
+    db.upsert_session(conn, {"session_id": sid, "cost_usd": runs.session_turn_cost(conn, sid)})
+    return done
 
 
 def _interrupt_running(conn, sid, inp=None):

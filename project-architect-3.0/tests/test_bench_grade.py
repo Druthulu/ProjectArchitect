@@ -347,15 +347,7 @@ class GradeRetriever(unittest.TestCase):
         self.assertIn("missing ref shelf/fees.py:10", detail)
 
     def test_every_alt_passes(self):
-        def planner(text, expect):   # planner: 3.9.6 T7; grade_planner takes a draft path, lint runs inside
-            tmp = SCRATCH / "alt-planner"
-            shutil.rmtree(tmp, ignore_errors=True)
-            (tmp / ".run").mkdir(parents=True)
-            draft = tmp / ".run" / "PHASE_PLAN.draft.md"
-            draft.write_text(text.split("\n", 1)[1], encoding="utf-8", newline="\n")
-            return grade.grade_planner(draft, expect)
-        graders = {"retriever": grade.grade_retriever, "expert": grade.grade_expert,   # expert: 3.9.7 T3
-                   "critic": grade.grade_critic, "planner": planner}   # critic: 3.9.7 T4
+        graders = {"retriever": grade.grade_retriever, "expert": grade.grade_expert}   # expert: 3.9.7 T3; 3.24: critic, planner left
         alts = sorted((BENCH / "tasks").glob("*/*.alt*.md"))
         self.assertGreaterEqual(len([a for a in alts if a.parent.name == "retriever"]), 5)
         for alt in alts:

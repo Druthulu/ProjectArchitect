@@ -1,8 +1,8 @@
 """pa.guard + pa.hooks.pre_tool_use: the read-only allowlist and PHASE_PLAN rules (T11).
 
 The command table below is the fixture design report A section C.3 asks for: every
-row is a command the developer or an agent might actually run during a
-``/discuss`` discussion, with the verdict the guard must reach.  Unknown means
+row is a command the developer or an agent might actually run, with the verdict
+``is_read_only`` must reach (3.24 T3.2: the ``/discuss`` guard that used it left).  Unknown means
 deny, so the DENY list is deliberately full of near-misses (``git checkout --``
 next to ``git diff``, ``curl -o f`` next to ``curl -s``).
 """
@@ -16,7 +16,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pa import config, guard  # noqa: E402
+from pa import config, guard, paths  # noqa: E402
 from pa import hooks  # noqa: E402
 from pa.hooks import pre_tool_use  # noqa: E402
 
@@ -93,20 +93,18 @@ class ReadOnlyTableTest(unittest.TestCase):
         self.assertTrue(guard.is_read_only(
             "python Z:/repo/tools/analysis/session_decompose.py x", cfg=config.defaults()))
 
-    def test_discussion_default_allows_subcommand_entries(self):
+    def test_default_allows_subcommand_entries(self):
         """3.9.7 T9: `<glob> <a|b>` entries gate the first positional arg."""
         cfg = config.defaults()
         py = "C:/Users/u/AppData/Local/Programs/Python/Python314/python.exe"
-        for cmd in ("%s tools/discussion.py off" % py, "%s tools/card.py slice expert" % py,
+        for cmd in ("%s tools/discussion.py triage D1 dropped" % py, "%s tools/card.py slice expert" % py,
                     "%s tools/plan_edit.py show --task T1" % py):
             with self.subTest(cmd=cmd):
-                self.assertIsNone(guard.decide("Bash", {"command": cmd}, discussion=True, cfg=cfg))
+                self.assertTrue(guard.is_read_only(cmd, cfg=cfg))
         for cmd in ("%s tools/plan_edit.py set-status T1 done --by x" % py,
                     "%s tools/card.py interview" % py):
             with self.subTest(cmd=cmd):
-                self.assertTrue(guard.decide("Bash", {"command": cmd}, discussion=True, cfg=cfg))
-        self.assertTrue(guard.decide("Edit", {"file_path": "x.py", "old_string": "a",
-                                              "new_string": "b"}, discussion=True, cfg=cfg))
+                self.assertFalse(guard.is_read_only(cmd, cfg=cfg))
 
     def test_powershell_detection(self):
         self.assertTrue(guard.looks_like_powershell("Get-ChildItem -Path x"))
@@ -144,15 +142,7 @@ class ProjectGuardTest(unittest.TestCase):
         return pre_tool_use.run({"session_id": "s1", "cwd": self.root, "tool_name": tool,
                                  "tool_input": tool_input}, self.cfg)
 
-    def _discussion(self, on=True):
-        flag = os.path.join(self.root, ".run", "DISCUSSION")
-        if on:
-            with open(flag, "w", encoding="utf-8") as fh:
-                fh.write("on\n")
-        elif os.path.exists(flag):
-            os.remove(flag)
-
-    # ---- PHASE_PLAN (always, discussion or not)
+    # ---- PHASE_PLAN (always)
 
     def test_edit_phase_plan_always_denied(self):
         out = self._call("Edit", {"file_path": os.path.join(self.root, "phase-ends",
@@ -172,6 +162,23 @@ class ProjectGuardTest(unittest.TestCase):
         out = self._call("Bash", {"command": "sed -i s/next/done/ phase-ends/current/PHASE_PLAN.md"})
         self.assertIsNotNone(out)
         self.assertIn("frozen", out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    # ---- whole-disk searches (3.24 T13D: round 2's curator ran `find /` past the 600 s limit)
+
+    def test_search_from_a_filesystem_root_denied(self):
+        for cmd in ("find / -name MEMORY.md", "find C:/ -name x", "find 'C:\\' -name x", "find /c/ -name x",
+                    "find /mnt/c -name x", "ls -R /", "ls -lR C:/", "dir /s C:\\", "grep -rn MEMORY /",
+                    "grep -r -e x /c", "rg MEMORY /", "Get-ChildItem -Path C:\\ -Recurse",
+                    "cd src && find / -type f | head -n 5", "echo $(find / -name y)"):
+            out = self._call("Bash", {"command": cmd})
+            self.assertIsNotNone(out, cmd)
+            self.assertIn("inside the project", out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_search_inside_the_project_allowed(self):
+        for cmd in ("find . -name MEMORY.md", "find src -path /c", "find " + self.root + " -name x",
+                    "ls /", "ls -la C:/", "ls -R src", "dir /b", "grep -rn / src", "grep -n x /c",
+                    "rg MEMORY .", "Get-ChildItem C:\\", "Get-ChildItem -Recurse src"):
+            self.assertIsNone(self._call("Bash", {"command": cmd}), cmd)
 
     def test_plan_edit_py_is_the_exception(self):
         self.assertIsNone(self._call(
@@ -223,29 +230,8 @@ class ProjectGuardTest(unittest.TestCase):
     def test_other_files_are_not_protected(self):
         self.assertIsNone(self._call("Edit", {"file_path": os.path.join(self.root, "a.py")}))
 
-    # ---- discussion mode
-
-    def test_discussion_denies_edits_allows_grep_denies_commit(self):
-        self._discussion(True)
-        denied = self._call("Edit", {"file_path": os.path.join(self.root, "a.py")})
-        self.assertIsNotNone(denied)
-        self.assertIn("discussion mode",
-                      denied["hookSpecificOutput"]["permissionDecisionReason"])
-        self.assertIsNone(self._call("Bash", {"command": "grep -rn TODO src"}))
-        self.assertIsNotNone(self._call("Bash", {"command": "git commit -m x"}))
-        self.assertIsNotNone(self._call("PowerShell", {"command": "Set-Content a.py x"}))
-        self.assertIsNone(self._call("PowerShell", {"command": "Get-Content a.py"}))
-
-    def test_discussion_off_allows_edits_again(self):
-        self._discussion(True)
-        self.assertIsNotNone(self._call("Edit", {"file_path": "a.py"}))
-        self._discussion(False)
-        self.assertIsNone(self._call("Edit", {"file_path": "a.py"}))
-        self.assertIsNone(self._call("Bash", {"command": "git commit -m x"}))
-
     def test_denial_is_spooled_not_written_to_sqlite(self):
-        self._discussion(True)
-        self._call("Bash", {"command": "rm -rf build"})
+        self._call("Bash", {"command": "rm phase-ends/current/PHASE_PLAN.md"})
         spool = os.path.join(self.ledger, "spool", "s1.jsonl")
         self.assertTrue(os.path.exists(spool))
         with open(spool, encoding="utf-8") as fh:
@@ -310,21 +296,25 @@ class RoleGuardTest(unittest.TestCase):
         out = self._call_as("expert-fable", "Read", {"file_path": path, "offset": 100})
         self.assertIsNone(out)
 
-    # ---- whole-plan role (guard.whole_plan_roles: review, critic)
+    # ---- whole-plan role (guard.whole_plan_roles). 3.24 T3.2: the review and critic agents
+    # are gone; 3.24 T3.6: the default is [] (no 3.2 role is limited), so the cases set a role.
 
-    def test_whole_plan_read_denied_for_review_and_critic(self):
-        """A Read of PHASE_PLAN.md without offset/limit is denied for review and critic."""
-        for agent_type in ("review", "critic"):
-            with self.subTest(agent_type=agent_type):
-                out = self._call_as(agent_type, "Read",
-                                    {"file_path": "/proj/phase-ends/current/PHASE_PLAN.md"})
-                self.assertIsNotNone(out, "whole-plan read denied for %s" % agent_type)
-                self.assertIn("plan_edit.py show",
-                              out["hookSpecificOutput"]["permissionDecisionReason"])
+    def _whole_plan_role(self):
+        self.cfg["guard"]["whole_plan_roles"] = ["retriever"]
 
-    def test_whole_plan_unscoped_show_denied_for_review(self):
-        """A plan_edit.py show without --task or --section is denied for review."""
-        out = self._call_as("review", "Bash",
+    def test_whole_plan_read_denied_for_listed_role(self):
+        """A Read of PHASE_PLAN.md without offset/limit is denied for a listed role."""
+        self._whole_plan_role()
+        out = self._call_as("retriever-code", "Read",
+                            {"file_path": "/proj/phase-ends/current/PHASE_PLAN.md"})
+        self.assertIsNotNone(out, "whole-plan read denied for retriever-code")
+        self.assertIn("plan_edit.py show",
+                      out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_whole_plan_unscoped_show_denied_for_listed_role(self):
+        """A plan_edit.py show without --task or --section is denied for a listed role."""
+        self._whole_plan_role()
+        out = self._call_as("retriever-code", "Bash",
                             {"command": "python tools/plan_edit.py show"})
         self.assertIsNotNone(out)
         self.assertIn("plan_edit.py show",
@@ -336,21 +326,57 @@ class RoleGuardTest(unittest.TestCase):
                             {"file_path": "/proj/phase-ends/current/PHASE_PLAN.md"})
         self.assertIsNone(out)
 
-    def test_whole_plan_scoped_show_allowed_for_review(self):
-        """A plan_edit.py show --task T1 is allowed for review."""
-        out = self._call_as("review", "Bash",
+    def test_whole_plan_scoped_show_allowed_for_listed_role(self):
+        """A plan_edit.py show --task T1 is allowed for a listed role."""
+        self._whole_plan_role()
+        out = self._call_as("retriever-code", "Bash",
                             {"command": "python tools/plan_edit.py show --task T1"})
         self.assertIsNone(out)
 
-    # ---- tool-source role (guard.tool_source_roles: expert)
+    def test_spilled_read_toolu_name_denied(self):
+        """3.24 T12f: a tool spill named toolu_<base62>.txt is denied whole, allowed ranged."""
+        path = "C:/Users/you/.claude/projects/test/sess1/tool-results/toolu_01AbCdEf9XyZ.txt"
+        out = self._call_as("coder-opus46", "Read", {"file_path": path})
+        self.assertIsNotNone(out)
+        self.assertIn("grepped or tailed", out["hookSpecificOutput"]["permissionDecisionReason"])
+        self.assertIsNone(self._call_as("coder-opus46", "Read", {"file_path": path, "limit": 40}))
+
+    # ---- tool-source role (guard.tool_source_roles: expert). 3.24 T12f: only PA-shipped files
+    # (the managed record's paths, the install dir) are tool source; T12g: code files only.
+
+    def _managed(self, *rels):
+        with open(os.path.join(self.root, ".claude", "pa3-managed.json"), "w", encoding="utf-8") as fh:
+            json.dump({"format": 1, "files": {r: {"version": "1", "sha": "x"} for r in rels}}, fh)
 
     def test_tool_source_read_denied_for_expert_outside_pa(self):
-        """An expert reading tools/*.py outside PA is denied."""
-        out = self._call_as("expert-fable", "Read",
-                            {"file_path": "/proj/tools/plan_edit.py"})
-        self.assertIsNotNone(out, "tool-source read denied for expert outside PA")
-        self.assertIn("--help",
-                      out["hookSpecificOutput"]["permissionDecisionReason"])
+        """An expert reading a PA-shipped tools/*.py outside PA is denied, ranged too."""
+        self._managed("tools/plan_edit.py")
+        for ti in ({"file_path": os.path.join(self.root, "tools", "plan_edit.py")},
+                   {"file_path": "tools/plan_edit.py", "offset": 10, "limit": 20}):
+            out = self._call_as("expert-fable", "Read", ti)
+            self.assertIsNotNone(out, "tool-source read denied for expert outside PA")
+            self.assertIn("--help",
+                          out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_tool_source_project_own_files_allowed(self):
+        """TerrainDiffusion's own tools/ and .claude/skills/ files are never tool source."""
+        self._managed("tools/plan_edit.py", ".claude/skills/project-architect/SKILL.md")
+        for rel in ("tools/rwgsim/wilderness.py", "tools/poi_census.py", "tools/validate.sh",
+                    ".claude/skills/handoff-live-coder/SKILL.md"):
+            with self.subTest(rel=rel):
+                self.assertIsNone(self._call_as("expert-fable", "Read",
+                                                {"file_path": os.path.join(self.root, rel)}))
+                self.assertIsNone(self._call_as("expert-fable", "Read",
+                                                {"file_path": rel, "offset": 1, "limit": 50}))
+                self.assertIsNone(self._call_as("expert-fable", "Bash", {"command": "cat " + rel}))
+
+    def test_tool_source_install_dir_denied_without_record(self):
+        """No managed record: the install dir still counts, a project tools/ file does not."""
+        inst = os.path.join(paths.install_dir(), "pa", "guard.py")
+        out = self._call_as("expert-fable", "Read", {"file_path": inst})
+        self.assertIsNotNone(out)
+        self.assertIsNone(self._call_as("expert-fable", "Read",
+                                        {"file_path": os.path.join(self.root, "tools", "plan_edit.py")}))
 
     def test_tool_source_read_allowed_inside_pa(self):
         """When the project IS ProjectArchitect, tool-source reads are allowed."""
@@ -373,6 +399,7 @@ class RoleGuardTest(unittest.TestCase):
 
     def test_tool_source_bash_cat_denied_for_expert(self):
         """A cat of a tool source file is denied for experts outside PA."""
+        self._managed("tools/plan_edit.py")
         out = self._call_as("expert-fable", "Bash",
                             {"command": "cat tools/plan_edit.py"})
         self.assertIsNotNone(out)
@@ -380,12 +407,43 @@ class RoleGuardTest(unittest.TestCase):
                       out["hookSpecificOutput"]["permissionDecisionReason"])
 
     def test_tool_source_bash_head_denied_for_expert(self):
-        """A head of .claude/** is denied for experts outside PA."""
+        """A head of a PA-shipped code file is denied for experts outside PA."""
+        self._managed("tools/plan_edit.py")
         out = self._call_as("expert-fable", "Bash",
-                            {"command": "head -20 .claude/settings.json"})
+                            {"command": "head -20 tools/plan_edit.py"})
         self.assertIsNotNone(out)
         self.assertIn("--help",
                       out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def _assert_readable(self, rel):
+        self.assertIsNone(self._call_as("expert-fable", "Read",
+                                        {"file_path": os.path.join(self.root, rel)}))
+        self.assertIsNone(self._call_as("expert-fable", "Read",
+                                        {"file_path": rel, "offset": 1, "limit": 50}))
+        self.assertIsNone(self._call_as("expert-fable", "Bash", {"command": "cat " + rel}))
+
+    def test_tool_source_managed_templates_allowed(self):
+        """3.24 T12g: managed templates are not tool source: whole, ranged and cat allowed."""
+        rels = ("templates/task.template.md", "templates/REVIEW.template.md")
+        self._managed(*rels)
+        for rel in rels:
+            with self.subTest(rel=rel):
+                self._assert_readable(rel)
+
+    def test_tool_source_managed_skill_and_doc_allowed(self):
+        """3.24 T12g: a managed SKILL.md and docs/project-architect.md stay readable."""
+        rels = (".claude/skills/project-architect/SKILL.md", "docs/project-architect.md")
+        self._managed(*rels)
+        for rel in rels:
+            with self.subTest(rel=rel):
+                self._assert_readable(rel)
+
+    def test_tool_source_install_dir_only_code_denied(self):
+        """3.24 T12g: under the install dir an agent .md is allowed, a .py is denied."""
+        md = os.path.join(paths.install_dir(), "agents", "expert-opus55.md")
+        self.assertIsNone(self._call_as("expert-fable", "Read", {"file_path": md}))
+        py = os.path.join(paths.install_dir(), "pa", "hooks.py")
+        self.assertIsNotNone(self._call_as("expert-fable", "Read", {"file_path": py}))
 
     # ---- whole-read guard (guard.whole_read_chars, every role)
 
@@ -645,82 +703,6 @@ class RereadDenyTest(unittest.TestCase):
 
     def test_default_on(self):
         self.assertIs(config.defaults()["guard"]["reread_deny"], True)
-
-
-class HandbackDenyTest(unittest.TestCase):
-    """3.15 T18: a discuss agent's SubagentHandback needs a RECORD line naming an existing file."""
-
-    def setUp(self):
-        self.dir = tempfile.mkdtemp(prefix="pa3-handback-")
-        self.ledger = os.path.join(self.dir, "ledger")
-        self.root = os.path.join(self.dir, "proj")
-        os.makedirs(os.path.join(self.root, ".claude"))
-        os.makedirs(os.path.join(self.root, "phase-ends", "current", "discussions"))
-        with open(os.path.join(self.root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
-            fh.write('{"pa_version": "3.0.0", "project": "handback-test"}')
-        self.rec = "phase-ends/current/discussions/D1.md"
-        os.environ["PA_LEDGER_DIR"] = self.ledger
-        hooks._PROJECT_ROOTS.clear()
-        self.cfg = config.defaults()
-
-    def tearDown(self):
-        os.environ.pop("PA_LEDGER_DIR", None)
-        hooks._PROJECT_ROOTS.clear()
-        shutil.rmtree(self.dir, ignore_errors=True)
-
-    def _write_record(self):
-        with open(os.path.join(self.root, self.rec), "w", encoding="utf-8") as fh:
-            fh.write("# D1\n")
-
-    def _deny(self, msg, agent="discuss", tool="SubagentHandback"):
-        return guard.handback_deny(tool, {"message": msg}, agent, self.root)
-
-    def test_discuss_agents_denied_without_record_line(self):
-        for agent in ("discuss", "discuss-high", "discuss-max", " Discuss-High ", "pa:discuss-max"):
-            self.assertEqual(self._deny("Here is my answer.", agent), guard.HANDBACK_REASON, agent)
-
-    def test_denied_when_record_file_missing(self):
-        msg = "DECISIONS: a\nEDITS: \u2014\nRECORD: %s\n" % self.rec
-        for agent in ("discuss", "discuss-high", "discuss-max"):
-            self.assertEqual(self._deny(msg, agent), guard.HANDBACK_REASON, agent)
-
-    def test_allowed_when_record_exists(self):
-        self._write_record()
-        for agent in ("discuss", "discuss-high", "discuss-max"):
-            self.assertIsNone(self._deny("DECISIONS: a\nEDITS: \u2014\n  RECORD: %s\n" % self.rec, agent))
-        absolute = os.path.join(self.root, self.rec)
-        self.assertIsNone(self._deny("RECORD: %s" % absolute))
-
-    def test_other_agents_and_tools_untouched(self):
-        for agent in ("coder-opus55", "expert-opus55", "pa-session", "", None):
-            self.assertIsNone(self._deny("STATUS: done", agent))
-        for tool in ("Bash", "Write", "Read", "SendMessage"):
-            self.assertIsNone(self._deny("hi", "discuss", tool))
-
-    def test_hook_denies_and_spools(self):
-        inp = {"session_id": "s1", "cwd": self.root, "tool_name": "SubagentHandback",
-               "agent_type": "discuss", "agent_id": "a1", "tool_input": {"message": "my reply"}}
-        out = pre_tool_use.run(inp, self.cfg)
-        hso = out["hookSpecificOutput"]
-        self.assertEqual(hso["permissionDecision"], "deny")
-        self.assertEqual(hso["permissionDecisionReason"], guard.HANDBACK_REASON)
-        self._write_record()
-        inp["tool_input"] = {"message": "DECISIONS: a\nEDITS: \u2014\nRECORD: %s" % self.rec}
-        self.assertIsNone(pre_tool_use.run(inp, self.cfg))
-        inp["agent_type"], inp["tool_input"] = "coder-opus55", {"message": "STATUS: done"}
-        self.assertIsNone(pre_tool_use.run(inp, self.cfg))
-
-    def test_agent_texts_carry_the_rules(self):
-        pkg = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        for name in ("discuss", "discuss-high", "discuss-max"):
-            with open(os.path.join(pkg, "agents", name + ".md"), encoding="utf-8") as fh:
-                body = " ".join(fh.read().split())
-            self.assertIn("Never call SubagentHandback for a reply", body, name)
-            self.assertIn("call SubagentHandback with exactly this block as its message", body, name)
-        with open(os.path.join(pkg, "agents", "pa-session.md"), encoding="utf-8") as fh:
-            body = " ".join(fh.read().split())
-        self.assertIn("A discuss hand-back with no `RECORD:` line is a reply the developer has not seen", body)
-        self.assertIn("relay its text to the developer verbatim", body)
 
 
 if __name__ == "__main__":

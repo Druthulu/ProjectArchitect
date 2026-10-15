@@ -245,6 +245,26 @@ class TestTaskLogAssemble(unittest.TestCase):
         p = self.tool("finish", "T1")
         self.assertEqual(p.returncode, 0, p.out)
 
+    def test_finish_accepts_summary_line_without_requiring_it(self):
+        """3.23 T13b: a `Summary:` line passes finish; its absence neither fails nor warns."""
+        self.tool("assemble", "T1")
+        log_path = os.path.join(self.cur, "logs", "T1.md")
+        log = read(log_path)
+        log = log.replace("{{AUTHORED:hypotheses}}", "- none")
+        log = log.replace("{{AUTHORED:state}}", "- none")
+        write(log_path, log)
+        with_summary = SUMMARY_WITH_REVIEW.replace(
+            "Done: masks build\n",
+            "Done: masks build\nSummary: The game now builds its terrain masks. Every biome passes.\n")
+        write(os.path.join(self.cur, "tasks", "T1.md"), with_summary)
+        p = self.tool("finish", "T1")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertNotIn("Summary", p.out)
+        write(os.path.join(self.cur, "tasks", "T1.md"), SUMMARY_WITH_REVIEW)
+        p = self.tool("finish", "T1")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertNotIn("Summary", p.out)
+
     # -- review ----------------------------------------------------------- #
     def test_review_yields_five_fields(self):
         """A summary with a Review: block yields REVIEW.md with five fields."""
@@ -271,6 +291,50 @@ class TestTaskLogAssemble(unittest.TestCase):
         p = self.tool("review", "T1")
         self.assertEqual(p.returncode, 1, p.out)
         self.assertIn("Review:", p.out)
+
+
+class TestReviewBlockVariants(unittest.TestCase):
+    """3.24 T8: the Review: block parses in its heading and bold variants, not only the plain indented form."""
+
+    @classmethod
+    def setUpClass(cls):
+        sys.path.insert(0, TOOLS)
+        import task_log
+        cls.parse = staticmethod(task_log._parse_review_block)
+
+    FIVE = {"ran": "the gate", "results": ".run/logs/gate.log", "seen": "masks pass",
+            "decisions": "- accept the merge", "edits": "- plan_edit.py set-status T1 done"}
+
+    def check(self, text):
+        self.assertEqual(self.parse(text.split("\n")), self.FIVE)
+
+    def test_plain(self):
+        self.check("Done: x\nReview:\n  ran: the gate\n  results: .run/logs/gate.log\n  seen: masks pass\n"
+                   "  decisions:\n  - accept the merge\n  edits:\n  - plan_edit.py set-status T1 done\nFull log: y\n")
+
+    def test_plain_ends_at_flush_left_line(self):
+        r = self.parse("Review:\n  ran: the gate\nseen: not in the block\n".split("\n"))
+        self.assertEqual(r, {"ran": "the gate"})
+
+    def test_heading(self):
+        self.check("## Review\nran: the gate\nresults: .run/logs/gate.log\nseen: masks pass\n"
+                   "decisions:\n- accept the merge\nedits:\n- plan_edit.py set-status T1 done\n\n## Gotchas\nran: no\n")
+
+    def test_bold_header_and_bold_keys(self):
+        self.check("**Review:**\n- **ran:** the gate\n- **results:** .run/logs/gate.log\n- **seen:** masks pass\n"
+                   "**decisions:**\n- accept the merge\n**edits:**\n- plan_edit.py set-status T1 done\n"
+                   "**Gotchas:** none\n- not an edit\n")
+
+    def test_bold_outside_colon_and_indented(self):
+        self.check("**Review**:\n  ran: the gate\n  results: .run/logs/gate.log\n  seen: masks pass\n"
+                   "  decisions:\n  - accept the merge\n  edits:\n  - plan_edit.py set-status T1 done\nDone: x\n")
+
+    def test_marked_ends_at_other_label(self):
+        r = self.parse("### Review:\nran: the gate\nFull log: phase-ends/current/logs/T1.md\nseen: after\n".split("\n"))
+        self.assertEqual(r, {"ran": "the gate"})
+
+    def test_absent(self):
+        self.assertEqual(self.parse("Done: x\nReviewed by: nobody\n## Reviews elsewhere\n".split("\n")), {})
 
 
 class TestFinishAdoptsPending(unittest.TestCase):

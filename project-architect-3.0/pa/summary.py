@@ -29,7 +29,7 @@ import time
 SCHEMA = 1
 SESSION_WINDOW_H = 48
 # a session's last activity: the latest of its start, its end and its last turn (3.15.3; was
-# COALESCE(ended, started): an open router busy for three days aged out by its start at 48 h)
+# COALESCE(ended, started): an open session busy for three days aged out by its start at 48 h)
 LAST_ACTIVE_SQL = ("MAX(COALESCE(started, ''), COALESCE(ended, ''), COALESCE((SELECT MAX(ts)"
                    " FROM turns WHERE turns.session_id = sessions.session_id), ''))")
 WEEKS_FIELDS = ("weeks_used", "weeks_saved", "unrated_usd", "unrated_saved_usd")  # fix-9
@@ -460,25 +460,27 @@ def accounts_block(conn, cfg=None, readers=None):
             csm = None
             csm_by_family = None
             started_iso = _iso(started) if started else None
+            # I44: an expired window ends at its resets_at (T20's test in projects_block);
+            # open-ended only while it is live
+            _ra = _epoch(last["resets_at"])
+            end_iso = _iso(_ra) if _ra is not None and _ra <= time.time() else None
             if started_iso:
                 try:
                     from . import savings as _savings
-                    csm = _savings.window_saved_measured(conn, email, started_iso, None)
+                    csm = _savings.window_saved_measured(conn, email, started_iso, end_iso)
                     csm_by_family = _savings.window_saved_measured(
-                        conn, email, started_iso, None, by_family=True)
+                        conn, email, started_iso, end_iso, by_family=True)
                     for _rd in (readers or []):
                         _rc = _rd.get("conn")
                         if _rc is None or _rc is conn:
                             continue
                         try:
-                            _da = _rd.get("account")
                             _v = _savings.window_saved_measured(
-                                _rc, _da if _da == email else email, started_iso, None)
+                                _rc, email, started_iso, end_iso)
                             if _v:
                                 csm = (csm or 0.0) + _v
                             _vf = _savings.window_saved_measured(
-                                _rc, _da if _da == email else email, started_iso, None,
-                                by_family=True)
+                                _rc, email, started_iso, end_iso, by_family=True)
                             if _vf:
                                 if csm_by_family is None:
                                     csm_by_family = {}
@@ -1034,9 +1036,9 @@ def projects_block(conn, cfg=None, readers=None, accounts=None):
                             rc = rd.get("conn")
                             if rc is None or rc is conn:
                                 continue
+                            # I43: the slice's account, never the root's default account
                             v = _savings.window_saved_measured(
-                                rc, rd.get("account") or email, started_iso, None,
-                                project=pkey)
+                                rc, email, started_iso, None, project=pkey)
                             if v:
                                 csm = (csm or 0.0) + v
                     except Exception:
@@ -1441,7 +1443,6 @@ def _seed_for_projects(conn, projects, cfg=None):
 
     from . import config as _config
     max_tokens = int(_config.get(cfg, "seed.max_tokens", 40000) or 40000)
-    growth_threshold = float(_config.get(cfg, "seed.growth_pct", 20) or 20)
     alerts = []
 
     for pkey, phases in grouped.items():
@@ -1454,21 +1455,12 @@ def _seed_for_projects(conn, projects, cfg=None):
         mx = max(vals)
         n = len(vals)
 
-        prev_phase = sorted_phases[-2] if len(sorted_phases) > 1 else None
-        prev_median = None
-        growth = None
-        if prev_phase is not None:
-            prev_vals = phases[prev_phase]
-            prev_median = _median_int(prev_vals)
-            if prev_median > 0:
-                growth = round((med - prev_median) / prev_median * 100, 1)
-
         projects[pkey]["seed"] = {
             "phase": current_phase, "median": med, "max": mx, "n": n,
-            "prev_phase": prev_phase, "prev_median": prev_median, "growth_pct": growth,
         }
 
-        if mx > max_tokens or (growth is not None and growth >= growth_threshold):
+        # 3.28 T4e: only the cap; the phase-over-phase growth rule was deleted
+        if mx > max_tokens:
             suspects = _seed_suspects(dirs.get(pkey, pkey))
             alerts.append({
                 "kind": "seed_growth", "project": pkey,
@@ -1540,23 +1532,26 @@ def _modeled_block(conn, cfg, doc):
                 sessions[str(sid)]["saved_modeled"] = round(modeled, 6)
 
 
-def _windows_with_extra_roots(conn, cfg, new):
+def _windows_with_extra_roots(conn, cfg, new, readers=None):
     """Compute the windows group into ``new`` over the local ledger plus the config's
     ``extra_roots`` (T17).  Returns True on success, False when the read rule gave up
     (a root still yields no reader, or the compute still raises DatabaseError after one
     invalidate-and-retry); ``summary_extra_root_failed`` is logged then.
+    ``readers``: a caller's own ``db.union_readers`` list (I45, 3.24), used for the first
+    attempt and checked like ours (every configured root present); the caller closes them.
     """
     from . import config as _config
     from . import db, log
 
     extra = _config.extra_root_entries(cfg or {})
     if not extra:
-        new["accounts"] = accounts_block(conn, cfg, readers=None)
-        new["projects"] = projects_block(conn, cfg, readers=None, accounts=new["accounts"])
+        new["accounts"] = accounts_block(conn, cfg, readers=readers)
+        new["projects"] = projects_block(conn, cfg, readers=readers, accounts=new["accounts"])
         return True
     failed = []
     for attempt in (0, 1):
-        rds = db.union_readers(extra, include_local=False)
+        own = not (attempt == 0 and readers is not None)
+        rds = db.union_readers(extra, include_local=False) if own else list(readers)
         got = set(r.get("path") for r in rds)
         failed = [(e["path"], "no reader") for e in extra if e["path"] not in got]
         try:
@@ -1569,7 +1564,7 @@ def _windows_with_extra_roots(conn, cfg, new):
             err = ("%s: %s" % (type(exc).__name__, exc))[:200]
             failed = [(e["path"], err) for e in extra]
         finally:
-            for r in rds:
+            for r in (rds if own else ()):
                 db.close(r.get("conn"))
         if attempt == 0:
             for root, _err in failed:
@@ -1587,6 +1582,8 @@ def rebuild(conn, cfg=None, windows_only=False, sessions_only=False, readers=Non
     The sampler's change path and ``recalc``/``report`` pass them; hooks call
     without, and a windows recompute then opens the config's ``extra_roots`` itself
     (T17, 3.15: the hook path and the CLI path give the same fit), closing them after.
+    Passed readers go through the same rule (I45, 3.24): a configured root missing from
+    them, or a DatabaseError, retries once on fresh readers and logs as below.
     Read rule: a configured root with no reader, or a windows compute raising
     ``sqlite3.DatabaseError``, invalidates that root's union copy and retries once;
     still failing, the windows group is not written (the one on disk and its stamp
@@ -1667,15 +1664,10 @@ def rebuild(conn, cfg=None, windows_only=False, sessions_only=False, readers=Non
         snap = snap if isinstance(snap, dict) else {}
         new = {}
         if win:
-            if readers is None:
-                win = _windows_with_extra_roots(conn, cfg, new)
-                if not win:                     # read rule failed: sessions ride on the disk's accounts
-                    snap = fsutil.read_json(path, {})
-                    snap = snap if isinstance(snap, dict) else {}
-            else:
-                new["accounts"] = accounts_block(conn, cfg, readers=readers)
-                new["projects"] = projects_block(conn, cfg, readers=readers,
-                                                 accounts=new["accounts"])
+            win = _windows_with_extra_roots(conn, cfg, new, readers=readers)
+            if not win:                         # read rule failed: sessions ride on the disk's accounts
+                snap = fsutil.read_json(path, {})
+                snap = snap if isinstance(snap, dict) else {}
         if not win:
             new["accounts"] = snap.get("accounts") if isinstance(snap.get("accounts"), dict) else {}
         if ses:
@@ -1750,9 +1742,9 @@ def _lock_stale(lock):
         pid = int(parts[0])
     except (IndexError, ValueError):
         return True
-    from . import warmer
+    from . import fsutil
 
-    if warmer.pid_alive(pid):
+    if fsutil.pid_alive(pid):
         return False
     role = parts[1] if len(parts) > 1 else "rebuild"
     return role != "requester" or age > _START_GRACE_S

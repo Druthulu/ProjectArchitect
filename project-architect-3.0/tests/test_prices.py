@@ -102,40 +102,57 @@ class CostStateReconciliationTest(unittest.TestCase):
         self.assertFalse(parts["priced"])
         self.assertIsNone(prices.price_for("<synthetic>"))
 
-    def test_long_context_tier_at_250k_context(self):
-        # T8: 100k input + 100k cache write + 50k cache read = 250k context,
-        # past LONG_CONTEXT_TOKENS, on a 1M-window model (opus-5).
-        usage = {"input_tokens": 100000, "cache_creation_input_tokens": 100000,
-                 "cache_read_input_tokens": 50000, "output_tokens": 1000,
-                 "cache_creation": {"ephemeral_5m_input_tokens": 0,
-                                    "ephemeral_1h_input_tokens": 100000}}
-        self.assertGreater(100000 + 100000 + 50000, prices.LONG_CONTEXT_TOKENS)
-        base, base_parts = prices.cost_of(usage, "claude-opus-5", ttl_default="1h")
-        tiered, tiered_parts = prices.cost_of(usage, "claude-opus-5", ttl_default="1h",
-                                              long_context=True)
-        self.assertFalse(base_parts["long_context"])
-        self.assertTrue(tiered_parts["long_context"])
-        p = prices.price_for("claude-opus-5")
-        want = (100000 * p["input"] * 2.0 + 100000 * p["write_1h"] * 2.0
-                + 50000 * p["read"] * 2.0 + 1000 * p["output"] * 1.5) / 1e6
-        self.assertAlmostEqual(tiered, want, places=9)
-        self.assertGreater(tiered, base)
 
-    def test_long_context_tier_needs_a_1m_window_model(self):
-        # sonnet-4-6 has no 1M window: long_context=True is a no-op for it.
-        usage = {"input_tokens": 300000, "output_tokens": 100}
-        cost, parts = prices.cost_of(usage, "claude-sonnet-4-6", long_context=True)
-        self.assertFalse(parts["long_context"])
-        self.assertAlmostEqual(cost, prices.cost_of(usage, "claude-sonnet-4-6")[0], places=12)
+class PromptTierTest(unittest.TestCase):
+    """3.22: Haiku 5.5 is priced by prompt length, stepping at 100,000 tokens."""
 
-    def test_long_context_never_auto_applies_to_a_pooled_total(self):
-        # A cost-state modelUsage entry is a whole-session total, not one
-        # request; cost_of must not infer the tier from its own summed ctx.
-        pooled = {"inputTokens": 3406374, "cacheCreationInputTokens": 19894142,
-                  "cacheReadInputTokens": 1588232885, "outputTokens": 6430309,
-                  "cache_write_5m": 0, "cache_write_1h": 19894142}
-        cost, parts = prices.cost_of(pooled, "claude-opus-5", ttl_default="1h")
-        self.assertFalse(parts["long_context"])
+    LOW = (0.10, 0.125, 0.20, 0.01, 0.50)
+    HIGH = (0.50, 0.625, 1.00, 0.05, 2.50)
+
+    @staticmethod
+    def _usage(inp, w1, read, out):
+        return {"input_tokens": inp, "cache_read_input_tokens": read, "output_tokens": out,
+                "cache_creation_input_tokens": w1,
+                "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": w1}}
+
+    def _want(self, rates, inp, w1, read, out):
+        return (inp * rates[0] + w1 * rates[2] + read * rates[3] + out * rates[4]) / 1e6
+
+    def test_haiku_5_5_has_its_own_key(self):
+        self.assertEqual(prices.model_key("claude-haiku-5-5"), "haiku-5-5")
+        self.assertEqual(prices.model_key("claude-haiku-5-5-20261001"), "haiku-5-5")
+        self.assertEqual(prices.prompt_tier("claude-haiku-5-5"), prices.PROMPT_TIERS["haiku-5-5"])
+        self.assertIsNone(prices.prompt_tier("claude-haiku-4-5"))
+
+    def test_below_and_at_100k_bills_the_base_rates(self):
+        for inp, w1, read in ((1000, 2000, 50000), (10000, 40000, 50000)):   # 53k, exactly 100k
+            with self.subTest(ctx=inp + w1 + read):
+                cost, parts = prices.cost_of(self._usage(inp, w1, read, 500), "claude-haiku-5-5")
+                self.assertFalse(parts["prompt_tier"])
+                self.assertAlmostEqual(cost, self._want(self.LOW, inp, w1, read, 500), places=12)
+
+    def test_over_100k_bills_the_whole_request_at_the_tier(self):
+        cost, parts = prices.cost_of(self._usage(10000, 40000, 50001, 500), "claude-haiku-5-5")
+        self.assertTrue(parts["prompt_tier"])
+        self.assertAlmostEqual(cost, self._want(self.HIGH, 10000, 40000, 50001, 500), places=12)
+
+    def test_the_tier_at_300k(self):
+        u = self._usage(100000, 100000, 100000, 1000)                       # 300k
+        tiered = prices.cost_of(u, "claude-haiku-5-5")
+        self.assertAlmostEqual(tiered[0], self._want(self.HIGH, 100000, 100000, 100000, 1000),
+                               places=12)
+
+    def test_explicit_ctx_overrides_the_usage(self):
+        u = self._usage(10000, 40000, 60000, 500)                            # 110k by usage
+        self.assertFalse(prices.cost_of(u, "claude-haiku-5-5", ctx=0)[1]["prompt_tier"])
+        small = self._usage(100, 0, 0, 10)
+        self.assertTrue(prices.cost_of(small, "claude-haiku-5-5", ctx=150000)[1]["prompt_tier"])
+
+    def test_rates_for(self):
+        row = prices.price_for("claude-haiku-5-5")
+        self.assertEqual(prices.rates_for(row, 100000), ({"input": 0.10, "write_5m": 0.125,
+                         "write_1h": 0.20, "read": 0.01, "output": 0.50}, None))
+        self.assertEqual(prices.rates_for(row, 100001)[1], "prompt")   # 3.24 T3.2: warmer._rates left
 
 
 class NormalizeModelTest(unittest.TestCase):
@@ -172,7 +189,8 @@ class NormalizeModelTest(unittest.TestCase):
             "claude-opus-4-6": (5, 6.25, 10, 0.50, 25, "old"),
             "claude-opus-5-5": (4, 5.00, 8, 0.20, 20, "new"),
             "claude-opus-5": (5, 6.25, 10, 0.50, 25, "new"),
-            "claude-sonnet-5-5": (2, 2.50, 4, 0.20, 10, "new"),
+            "claude-sonnet-5-5": (2, 2.50, 4, 0.10, 10, "new"),
+            "claude-haiku-5-5": (0.10, 0.125, 0.20, 0.01, 0.50, "new"),
             "claude-sonnet-5": (2, 2.50, 4, 0.20, 10, "new"),
             "claude-sonnet-4-6": (3, 3.75, 6, 0.30, 15, "old"),
             "claude-haiku-4-5": (1, 1.25, 2, 0.10, 5, "old"),
@@ -191,6 +209,15 @@ class NormalizeModelTest(unittest.TestCase):
         self.assertEqual(p_now["effective_from"], p_then["effective_from"])
         # a date before every row still prices (oldest row), never returns None
         self.assertIsNotNone(prices.price_for("claude-fable-5-1", at="2020-01-01"))
+
+    def test_sonnet_5_5_cache_read_halves_from_2026_10_07(self):
+        self.assertEqual(prices.price_for("claude-sonnet-5-5", at="2026-10-06")["read"], 0.20)
+        self.assertEqual(prices.price_for("claude-sonnet-5-5", at="2026-10-07T00:01:00Z")["read"], 0.10)
+        self.assertEqual(prices.price_for("claude-sonnet-5-5")["read"], 0.10)
+        self.assertEqual(prices.price_for("claude-opus-5-5")["read"], 0.20)
+        usage = {"input_tokens": 0, "cache_read_input_tokens": 1000000, "output_tokens": 0}
+        self.assertAlmostEqual(prices.cost_of(usage, "claude-sonnet-5-5", at="2026-10-01")[0], 0.20)
+        self.assertAlmostEqual(prices.cost_of(usage, "claude-sonnet-5-5", at="2026-10-07")[0], 0.10)
 
     def test_rows_for_db_shape(self):
         rows = prices.rows_for_db()

@@ -1,13 +1,20 @@
 #!/usr/bin/env python
 """curate.py -- generation-start curator: demote memories, cookbook, rules; trim HOW_WE_WORK.
 
-Subcommands: memory, cookbook, rules, how-we-work, discussions, ops.
+Subcommands: memory, cookbook, rules, claude-md, card, how-we-work, discussions, ops.
 memory --route FILE=STORE: write each memory's fact to its store (developer and
 how-we-work: a bullet in that HOW_WE_WORK.md section, within card.max_chars; rule:
 rules_add.py; cookbook: cookbook_add.sh; ops: docs/ops/<stem>.md + its index row;
 archive: nothing), then demote it to gen<G>.md. Every route is validated first;
 any refusal writes nothing and exits 1. `memory --route --gen legacy` with no specs:
 nothing left to route (all kept); only sets the pa.json `memory_routed` marker.
+3.24 T7b, a project's first run in 3.2: `memory --route ... --gen 3.2` adds the `memory` store
+(kept as a memory) and `gen<X>.md#<stem>` sources (a restore from that archive; nothing is
+demoted), and a real run writes pa.json `migrated: "3.2"` and drops `first_run`, specs or not;
+memory --reindex: MEMORY.md as one line per memory file (frontmatter name, description);
+rules --reseed ID... --gen G: the project's rule to rules/gen<G>/, the current seed under its id;
+claude-md --refresh / card --refresh: lines equal to a past shipped template line (after the
+fills; templates/HISTORY.json) take the current template's; the rest are listed.
 ops --sunset --gen G: retire unreferenced ops topics; ops --reindex: refresh the
 docs/ops/INDEX.md line counts and append rows for unindexed docs/ops/*.md.
 Every subcommand takes --dry-run and prints a table of what it would do.
@@ -117,7 +124,12 @@ def _count_gen_entries(text):
     return sum(1 for line in text.split("\n") if line.startswith("## "))
 
 
-_ROUTE_STORES = ("developer", "how-we-work", "rule", "cookbook", "ops", "archive")
+_ROUTE_STORES = ("developer", "how-we-work", "rule", "cookbook", "ops", "archive",
+                 "memory")                     # 3.24 T7b: memory = kept as a memory
+# 3.24 T7b: the first-run marker, mirroring pa/install/project.py FIRST_RUN / FIRST_RUN_DONE
+FIRST_RUN = "first_run"
+FIRST_RUN_DONE = ("migrated", "3.2")
+_ARCHIVE_SRC_RE = re.compile(r"^(gen[\w.-]*\.md)#(.+)$")
 _CARD_SECTIONS = {"developer": r"^## Developer\b",
                   "how-we-work": r"^## Conventions & house style\b"}
 
@@ -175,6 +187,29 @@ def _card_add_bullet(text, pattern, bullet):
     return "\n".join(lines)
 
 
+def _archive_section(text, stem):
+    """The ``## <stem>`` section of a gen archive (the archived memory file), or None. A section
+    ends at the next ``## `` heading whose next non-blank line opens a frontmatter block, so a
+    memory's own ``## `` subheadings stay inside it."""
+    lines = text.replace("\r\n", "\n").split("\n")
+
+    def is_entry(i):
+        if not lines[i].startswith("## "):
+            return False
+        j = i + 1
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        return j < len(lines) and lines[j].rstrip() == "---"
+
+    start = next((i for i, ln in enumerate(lines) if ln.rstrip() == "## " + stem), None)
+    if start is None:
+        return None
+    entry = is_entry(start)
+    end = next((j for j in range(start + 1, len(lines))
+                if (is_entry(j) if entry else lines[j].startswith("## "))), len(lines))
+    return "\n".join(lines[start + 1:end]).strip("\n")
+
+
 def _plan_routes(specs, root, memdir, index_lines, gen):
     """Validate every --route spec; -> (routes, refusals, card). Nothing is written."""
     routes, refusals, seen = [], [], set()
@@ -208,25 +243,56 @@ def _plan_routes(specs, root, memdir, index_lines, gen):
             refusals.append((fname, "routed twice"))
             continue
         seen.add(fname)
-        fpath = os.path.join(memdir, fname)
-        if not os.path.isfile(fpath):
-            refusals.append((fname, "no memory file at %s" % fpath))
-            continue
-        entry = None
-        for line in index_lines:
-            m = re.match(r"^-\s+\[([^\]]+)\]\(([^)]+)\)\s*(?:[—–-]\s*)?(.*)$", line)
-            if m and m.group(2) == fname:
-                entry = m
-                break
-        if entry is None:
-            refusals.append((fname, "no index line in MEMORY.md"))
-            continue
-        fm, body = _split_frontmatter(read_text(fpath))
-        title = _one_line(fm.get("name") or entry.group(1))
-        summary = _one_line(fm.get("description") or entry.group(3))
-        r = {"file": fname, "store": store, "title": title, "summary": summary, "body": body}
-        stem = os.path.splitext(fname)[0]
-        if store in _CARD_SECTIONS:
+        arch = _ARCHIVE_SRC_RE.match(fname)
+        if arch:                                   # 3.24 T7b: a restore from an archive
+            apath = os.path.join(memdir, arch.group(1))
+            if not os.path.isfile(apath):
+                refusals.append((fname, "no archive at %s" % apath))
+                continue
+            section = _archive_section(read_text(apath), arch.group(2))
+            if section is None:
+                refusals.append((fname, "no section '## %s' in %s" % (arch.group(2),
+                                                                      arch.group(1))))
+                continue
+            stem = arch.group(2)
+            fm, body = _split_frontmatter(section)
+            title = _one_line(fm.get("name") or stem)
+            summary = _one_line(fm.get("description") or body.split("\n", 1)[0])
+            r = {"file": fname, "store": store, "title": title, "summary": summary,
+                 "body": body, "restore": section, "demote": False}
+        else:
+            if "#" in fname:
+                refusals.append((fname, "expected gen<X>.md#<stem> for an archive source"))
+                continue
+            fpath = os.path.join(memdir, fname)
+            if not os.path.isfile(fpath):
+                refusals.append((fname, "no memory file at %s" % fpath))
+                continue
+            entry = None
+            for line in index_lines:
+                m = re.match(r"^-\s+\[([^\]]+)\]\(([^)]+)\)\s*(?:[—–-]\s*)?(.*)$", line)
+                if m and m.group(2) == fname:
+                    entry = m
+                    break
+            if entry is None and str(gen) != "3.2":    # 3.2: memory --reindex rebuilds it
+                refusals.append((fname, "no index line in MEMORY.md"))
+                continue
+            fm, body = _split_frontmatter(read_text(fpath))
+            title = _one_line(fm.get("name") or (entry.group(1) if entry else "")
+                              or os.path.splitext(fname)[0])
+            summary = _one_line(fm.get("description") or (entry.group(3) if entry else ""))
+            r = {"file": fname, "store": store, "title": title, "summary": summary,
+                 "body": body, "demote": store != "memory"}
+            stem = os.path.splitext(fname)[0]
+        if store == "memory":
+            if r.get("restore") is None:
+                r["target"] = rel(root, os.path.join(memdir, fname))    # kept as it is
+            else:
+                r["target"] = rel(root, os.path.join(memdir, stem + ".md"))
+                if os.path.exists(os.path.join(memdir, stem + ".md")):
+                    refusals.append((fname, "%s exists" % r["target"]))
+                    continue
+        elif store in _CARD_SECTIONS:
             if card_text is None:
                 refusals.append((fname, "no HOW_WE_WORK.md"))
                 continue
@@ -266,6 +332,8 @@ def _plan_routes(specs, root, memdir, index_lines, gen):
             if os.path.exists(os.path.join(root, r["target"])):
                 refusals.append((fname, "%s exists" % r["target"]))
                 continue
+        elif r.get("restore") is not None:
+            r["target"] = rel(root, os.path.join(memdir, arch.group(1)))     # stays archived
         else:
             r["target"] = rel(root, _gen_archive_path(memdir, gen))
         routes.append(r)
@@ -275,7 +343,7 @@ def _plan_routes(specs, root, memdir, index_lines, gen):
     return routes, refusals, card
 
 
-def _apply_routes(routes, card, root):
+def _apply_routes(routes, card, root, gen="legacy"):
     """Write each route's fact to its store (the demote follows in cmd_memory)."""
     if card:
         write_text(card[0], card[1])
@@ -285,18 +353,24 @@ def _apply_routes(routes, card, root):
     scratch = os.path.join(root, ".run")
     ops = False
     for r in routes:
-        origin = "legacy memory %s" % r["file"]
-        if r["store"] in ("rule", "cookbook"):
-            body = os.path.join(scratch, "curate-route-%s" % r["file"])
+        first = str(gen) == FIRST_RUN_DONE[1]                 # 3.24 T7b: a 3.2 first run
+        origin = "%s memory %s" % ("gen3.2" if first else "legacy", r["file"])
+        tags = "memory" if first else "legacy,memory"
+        if r["store"] == "memory" and r.get("restore") is not None:      # 3.24 T7b
+            path = os.path.join(root, r["target"])
+            write_text(path, r["restore"] + "\n")
+            _cnote(path, script="curate.py", sub="memory", whole=True, root=root)
+        elif r["store"] in ("rule", "cookbook"):
+            body = os.path.join(scratch, "curate-route-%s" % r["file"].replace("#", "-"))
             write_text(body, r["body"] + "\n")
             if r["store"] == "rule":
                 cmd = [sys.executable, os.path.join(here, "rules_add.py"), "add",
                        "--id", r["id"], "--title", r["title"], "--file", body,
-                       "--origin", origin, "--tags", "legacy,memory"]
+                       "--origin", origin, "--tags", tags]
             else:
                 cmd = [shutil.which("bash"),
                        os.path.join(here, "cookbook_add.sh").replace("\\", "/"),
-                       "--title", r["title"], "--tags", "legacy,memory",
+                       "--title", r["title"], "--tags", tags,
                        "--origin", origin, "--file", body.replace("\\", "/")]
             res = subprocess.run(cmd, cwd=root, env=env, capture_output=True, text=True)
             os.remove(body)
@@ -313,17 +387,23 @@ def _apply_routes(routes, card, root):
 
 
 def cmd_memory(args, root):
+    if args.reindex:
+        if args.demote or args.route is not None:
+            die("--reindex takes no --demote or --route")
+        return _memory_reindex(args, root)
     if not args.demote and args.route is None:
-        die("--demote or --route is required")
+        die("--demote, --route or --reindex is required")
+    if not args.gen:
+        die("--gen is required with --demote or --route")
     if args.route == [] and not args.demote:
-        if str(args.gen) != "legacy":
-            die("--route with no FILE=STORE needs --gen legacy")
+        if str(args.gen) not in ("legacy", "3.2"):
+            die("--route with no FILE=STORE needs --gen legacy or --gen 3.2")
         # every memory kept: nothing left to route; only the marker is written
-        sys.stdout.write("memory --route --gen legacy\n  route: nothing left to route\n")
+        sys.stdout.write("memory --route --gen %s\n  route: nothing left to route\n" % args.gen)
         if args.dry_run:
             sys.stdout.write("dry-run: no changes\n")
             return 0
-        _mark_memory_routed(root)
+        _mark_routed(root, args.gen)
         return 0
     memdir = args.dir or os.path.join(root, ".claude-state", "memory")
     gen = args.gen
@@ -336,7 +416,7 @@ def cmd_memory(args, root):
 
     demote = list(args.demote or [])
     routes, refusals, card = _plan_routes(args.route or [], root, memdir, index_lines, gen)
-    demote += [r["file"] for r in routes if r["file"] not in demote]
+    demote += [r["file"] for r in routes if r["demote"] and r["file"] not in demote]
 
     for fname in demote:
         fpath = os.path.join(memdir, fname)
@@ -349,7 +429,7 @@ def cmd_memory(args, root):
             if parsed and parsed[0] == fname:
                 idx = i
                 break
-        if idx is None:
+        if idx is None and not (args.route and str(gen) == "3.2"):
             die("no index line for %s in MEMORY.md" % fname)
         actions.append({"file": fname, "path": fpath, "index_line": idx})
 
@@ -368,10 +448,11 @@ def cmd_memory(args, root):
         sys.stdout.write("  route: %s -> %s (%s)\n" % (r["file"], r["store"], r["target"]))
     for a in actions:
         sys.stdout.write("  demote: %s -> gen%s.md\n" % (a["file"], gen))
-    sys.stdout.write("  archive: %s (%d entries after)\n"
-                     % (rel(root, archive_path), new_count))
     link_line = "- [Generation %s memories](gen%s.md) — %d entries" % (gen, gen, new_count)
-    sys.stdout.write("  link: %s\n" % link_line)
+    if actions or not args.route:
+        sys.stdout.write("  archive: %s (%d entries after)\n"
+                         % (rel(root, archive_path), new_count))
+        sys.stdout.write("  link: %s\n" % link_line)
     for fname, why in refusals:
         sys.stdout.write("refused: %s: %s\n" % (fname, why))
     if refusals:
@@ -381,7 +462,18 @@ def cmd_memory(args, root):
         sys.stdout.write("dry-run: no changes\n")
         return 0
 
-    _apply_routes(routes, card, root)
+    _apply_routes(routes, card, root, gen)
+    restored = ["- [%s](%s) — %s" % (r["title"], os.path.basename(r["target"]), r["summary"])
+                for r in routes if r["store"] == "memory" and r.get("restore") is not None]
+    if not actions:                            # 3.24 T7b: restores and kept memories only
+        if restored:
+            index_lines.extend(restored)
+            write_text(index_path, "\n".join(index_lines) + "\n")
+            _cnote(index_path, script="curate.py", sub="memory",
+                   added=sum(len(x) for x in restored), root=root)
+        if args.route:
+            _mark_routed(root, gen)
+        return 0
 
     # append each memory to the archive
     archive_parts = []
@@ -396,10 +488,14 @@ def cmd_memory(args, root):
     _cnote(archive_path, script="curate.py", sub="memory", whole=True, root=root)
 
     # remove demoted files and their index lines (reverse order to keep indices valid)
-    _removed_chars = sum(len(index_lines[a["index_line"]]) for a in actions)
-    for a in sorted(actions, key=lambda x: x["index_line"], reverse=True):
-        index_lines.pop(a["index_line"])
+    _removed_chars = sum(len(index_lines[a["index_line"]]) for a in actions
+                         if a["index_line"] is not None)
+    for a in sorted(actions, key=lambda x: -1 if x["index_line"] is None else x["index_line"],
+                    reverse=True):
+        if a["index_line"] is not None:
+            index_lines.pop(a["index_line"])
         os.remove(a["path"])
+    index_lines.extend(restored)
 
     # update or add the link line for this generation
     gen_link_idx = None
@@ -415,9 +511,64 @@ def cmd_memory(args, root):
 
     write_text(index_path, "\n".join(index_lines) + "\n")
     _cnote(index_path, script="curate.py", sub="memory",
-           removed=_removed_chars, added=len(link_line), root=root)
-    if args.route and str(gen) == "legacy":
+           removed=_removed_chars, added=len(link_line) + sum(len(x) for x in restored),
+           root=root)
+    if args.route:
+        _mark_routed(root, gen)
+    return 0
+
+
+def _mark_routed(root, gen):
+    """The marker a real `memory --route` run leaves: `memory_routed` for legacy (3.14),
+    `migrated: "3.2"` with `first_run` dropped for 3.2 (3.24 T7b); none for other gens."""
+    if str(gen) == "legacy":
         _mark_memory_routed(root)
+    elif str(gen) == FIRST_RUN_DONE[1]:
+        path = os.path.join(root, ".claude", "pa.json")
+        if not os.path.isfile(path):
+            return
+        with open(path, encoding="utf-8") as fh:
+            conf = json.load(fh)
+        conf[FIRST_RUN_DONE[0]] = FIRST_RUN_DONE[1]
+        conf.pop(FIRST_RUN, None)
+        write_text(path, json.dumps(conf, indent=2) + "\n")
+
+
+def _memory_reindex(args, root):
+    """3.24 T7b: MEMORY.md as one line per memory file, from its frontmatter `name` and
+    `description`, then a pointer per gen archive (its existing line kept): the lean index."""
+    memdir = args.dir or os.path.join(root, ".claude-state", "memory")
+    index_path = _memory_index_path(memdir)
+    if not os.path.isdir(memdir):
+        die("no memory directory at %s" % memdir)
+    old = read_text(index_path).rstrip("\n").split("\n") if os.path.isfile(index_path) else []
+    names = sorted(n for n in os.listdir(memdir) if n.endswith(".md")
+                   and os.path.isfile(os.path.join(memdir, n)))
+    lines, archives = [], []
+    for n in names:
+        if n in ("MEMORY.md", "INVENTORY.md"):
+            continue
+        if re.match(r"^gen[\w.-]*\.md$", n):
+            have = next((ln for ln in old if (_parse_index_line(ln) or ("",))[0] == n), None)
+            archives.append(have or "- [Generation %s memories](%s) — %d entries"
+                            % (n[3:-3], n, _count_gen_entries(read_text(os.path.join(memdir, n)))))
+            continue
+        fm, body = _split_frontmatter(read_text(os.path.join(memdir, n)))
+        name = _one_line(fm.get("name") or os.path.splitext(n)[0])
+        desc = _one_line(fm.get("description") or "")
+        lines.append("- [%s](%s)%s" % (name, n, " — " + desc if desc else ""))
+    new = lines + archives
+    sys.stdout.write("memory --reindex: %d lines (was %d)\n" % (len(new), len(old)))
+    for ln in new:
+        sys.stdout.write("  index: %s\n" % ln)
+    for ln in old:
+        if ln.strip() and ln not in new:
+            sys.stdout.write("  drop: %s\n" % ln)
+    if args.dry_run:
+        sys.stdout.write("dry-run: no changes\n")
+        return 0
+    write_text(index_path, "\n".join(new) + "\n")
+    _cnote(index_path, script="curate.py", sub="memory", whole=True, root=root)
     return 0
 
 
@@ -535,11 +686,15 @@ def cmd_cookbook(args, root):
 # --------------------------------------------------------------------------- #
 
 def cmd_rules(args, root):
+    if bool(args.demote) == bool(args.reseed):
+        die("one of --demote or --reseed is required")
     gen = args.gen
     rules_dir = os.path.join(root, "rules")
     index_path = os.path.join(rules_dir, "INDEX.md")
     if not os.path.isfile(index_path):
         die("no rules/INDEX.md")
+    if args.reseed:
+        return _rules_reseed(args, root, rules_dir, index_path)
 
     index_lines = read_text(index_path).rstrip("\n").split("\n")
     gen_dir = os.path.join(rules_dir, "gen%s" % gen)
@@ -611,6 +766,251 @@ def cmd_rules(args, root):
            removed=_rm_rl, added=len(link_text) if not has_link else 0, root=root)
     write_text(gen_index, "\n".join(gen_index_lines) + "\n")
     _cnote(gen_index, script="curate.py", sub="rules", whole=True, root=root)
+    return 0
+
+
+def _pkg_home():
+    """The package root holding rules-seed/ and templates/: this script's parent when it has
+    pa/ (the package work tree), else ~/.claude/pa3 (the installed root)."""
+    up = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.isdir(os.path.join(up, "pa")):
+        return up
+    return os.path.join(os.path.expanduser("~"), ".claude", "pa3")
+
+
+_SEED_INDEX_RE = re.compile(r"^(\S+)\s*\|\s*([^|]*?)\s*\|")
+
+
+def _rules_reseed(args, root, rules_dir, index_path):
+    """3.24 T7b: rules --reseed ID... --gen G: the project's rules/<id>.md moves to
+    rules/gen<G>/<id>.md (its INDEX line copied to rules/gen<G>/INDEX.md), the current
+    rules-seed/<id>.md takes the id, and the INDEX line stays, its headline the seed's."""
+    gen = args.gen
+    seed_dir = os.path.join(_pkg_home(), "rules-seed")
+    seed_index = os.path.join(seed_dir, "INDEX.seed.md")
+    seed_titles = {}
+    if os.path.isfile(seed_index):
+        for ln in read_text(seed_index).split("\n"):
+            m = _SEED_INDEX_RE.match(ln)
+            if m:
+                seed_titles[m.group(1)] = m.group(2)
+    index_lines = read_text(index_path).rstrip("\n").split("\n")
+    gen_dir = os.path.join(rules_dir, "gen%s" % gen)
+    actions, refusals = [], []
+    for rid in args.reseed:
+        src = os.path.join(rules_dir, "%s.md" % rid)
+        seed = os.path.join(seed_dir, "%s.md" % rid)
+        idx = next((i for i, ln in enumerate(index_lines)          # a commented line counts
+                    if re.match(r"^(<!--\s*)?%s\s*\|" % re.escape(rid), ln.strip())), None)
+        why = (not os.path.isfile(src) and "no rules/%s.md" % rid
+               or not os.path.isfile(seed) and "no rules-seed/%s.md in %s" % (rid, seed_dir)
+               or idx is None and "no index line for %s in rules/INDEX.md" % rid
+               or os.path.exists(os.path.join(gen_dir, "%s.md" % rid))
+               and "rules/gen%s/%s.md exists" % (gen, rid))
+        if why:
+            refusals.append((rid, why))
+            continue
+        line = index_lines[idx]
+        cells = line.split("|")
+        title = seed_titles.get(rid)
+        if title and len(cells) > 1 and cells[1].strip() != title:
+            new_line = "|".join([cells[0], " %s " % title] + cells[2:])
+        else:
+            new_line = line
+        actions.append({"id": rid, "src": src, "seed": seed, "index_line": idx,
+                        "line": line, "new_line": new_line})
+    sys.stdout.write("rules --reseed --gen %s\n" % gen)
+    for a in actions:
+        sys.stdout.write("  reseed: %s -> rules/gen%s/%s.md; rules-seed/%s.md -> rules/%s.md\n"
+                         % (a["id"], gen, a["id"], a["id"], a["id"]))
+        if a["new_line"] != a["line"]:
+            sys.stdout.write("  index: %s\n" % a["new_line"])
+    for rid, why in refusals:
+        sys.stdout.write("refused: %s: %s\n" % (rid, why))
+    if refusals:
+        return 1
+    if args.dry_run:
+        sys.stdout.write("dry-run: no changes\n")
+        return 0
+    os.makedirs(gen_dir, exist_ok=True)
+    gen_index = os.path.join(gen_dir, "INDEX.md")
+    gen_lines = (read_text(gen_index).rstrip("\n").split("\n") if os.path.isfile(gen_index)
+                 else [])
+    for a in actions:
+        dest = os.path.join(gen_dir, "%s.md" % a["id"])
+        res = subprocess.run(["git", "mv", a["src"], dest], cwd=root,
+                             capture_output=True, text=True)
+        if res.returncode != 0 or os.path.exists(a["src"]):
+            shutil.move(a["src"], dest)
+        shutil.copyfile(a["seed"], a["src"])
+        _cnote(a["src"], script="curate.py", sub="rules", whole=True, root=root)
+        gen_lines.append(a["line"])
+        index_lines[a["index_line"]] = a["new_line"]
+    write_text(gen_index, "\n".join(gen_lines) + "\n")
+    write_text(index_path, "\n".join(index_lines) + "\n")
+    _cnote(index_path, script="curate.py", sub="rules", whole=True, root=root)
+    return 0
+
+
+# --------------------------------------------------------------------------- #
+# claude-md --refresh / card --refresh (3.24 T7b)
+# --------------------------------------------------------------------------- #
+
+_PH_RE = re.compile(r"\{\{(\w+)\}\}")
+_GENERIC_CHARS = 10        # a template line with fewer literal chars matches only in place
+# HOW_WE_WORK.md's package-owned lines: these sections' bodies and role-tagged headings
+_CARD_OWNED_RE = re.compile(r"^## (Tools|Rhythm|Docs map)\b")
+
+
+def _template_file(root, name):
+    """The project's managed copy of a package template, else the package's."""
+    for base in (os.path.join(root, "templates"), os.path.join(_pkg_home(), "templates")):
+        if os.path.isfile(os.path.join(base, name)):
+            return os.path.join(base, name)
+    return None
+
+
+def _generic(line):
+    return len(_PH_RE.sub("", line).strip()) < _GENERIC_CHARS
+
+
+def _line_re(line):
+    """A template line as a full-match regex: each {{KEY}} captures its fill."""
+    out, seen, pos = [], set(), 0
+    for m in _PH_RE.finditer(line):
+        out.append(re.escape(line[pos:m.start()]))
+        key = m.group(1)
+        out.append("(?P=%s)" % key if key in seen else "(?P<%s>.*?)" % key)
+        seen.add(key)
+        pos = m.end()
+    out.append(re.escape(line[pos:]))
+    return re.compile("".join(out) + r"\s*$")
+
+
+def _fill_line(line, fills):
+    """``line`` with its placeholders filled, or None when one has no fill."""
+    keys = _PH_RE.findall(line)
+    if any(k not in fills for k in keys):
+        return None
+    return _PH_RE.sub(lambda m: fills[m.group(1)], line)
+
+
+def _refresh(args, root, rel_path, tmpl_name, owned):
+    """Replace each block of ``rel_path`` equal to a past template block (after the fills;
+    templates/HISTORY.json) with the current template's, and list the rest. ``owned(lines)``
+    gives the line numbers the refresh may touch and list (None: every line)."""
+    path = os.path.join(root, rel_path)
+    if not os.path.isfile(path):
+        die("no %s" % rel_path)
+    tmpl_path = _template_file(root, tmpl_name)
+    hist_path = _template_file(root, "HISTORY.json")
+    if not tmpl_path or not hist_path:
+        die("no templates/%s or templates/HISTORY.json" % tmpl_name)
+    with open(hist_path, encoding="utf-8") as fh:
+        pairs = json.load(fh).get(tmpl_name, [])
+    cur = read_text(tmpl_path).replace("\r\n", "\n").rstrip("\n").split("\n")
+    raw = read_text(path)
+    crlf = "\r\n" in raw
+    lines = raw.replace("\r\n", "\n").split("\n")
+    allowed = owned(lines)
+    ok = (lambda i: True) if allowed is None else (lambda i: i in allowed)
+    # the project's fills, from every template line (current and past) that matches one of its lines
+    fills = {}
+    tmpl_lines = [ln for ln in cur + [x for old, new in pairs for x in old + new]
+                  if _PH_RE.search(ln) and not _generic(ln)]
+    for ln in lines:
+        for tl in tmpl_lines:
+            m = _line_re(tl).match(ln)
+            if m:
+                for k, v in m.groupdict().items():
+                    fills.setdefault(k, v)
+    replaced = []
+    for old, new in pairs:
+        if not old:
+            continue
+        res = [_line_re(x) for x in old]
+        i = 0
+        while i + len(old) <= len(lines):
+            got = {}
+            for k, rx in enumerate(res):
+                m = rx.match(lines[i + k]) if ok(i + k) else None
+                if not m or any(got.get(n, v) != v for n, v in m.groupdict().items()):
+                    break
+                got.update(m.groupdict())
+            else:
+                filled = [_fill_line(x, dict(fills, **got)) for x in new]
+                if None not in filled:
+                    replaced.append((i + 1, lines[i:i + len(old)], filled))
+                    lines[i:i + len(old)] = filled
+                    if allowed is not None:       # shift the owned set past the swap
+                        d = len(filled) - len(old)
+                        allowed = {j if j < i else j + d for j in allowed if not i <= j < i + len(old)}
+                        allowed |= set(range(i, i + len(filled)))
+                        ok = (lambda a: lambda j: j in a)(allowed)
+                    i += len(filled)
+                    continue
+            i += 1
+    cur_res = [(t, _line_re(ln), _generic(ln)) for t, ln in enumerate(cur) if ln.strip()]
+    yours = []
+    for i, ln in enumerate(lines):
+        if not ln.strip() or not ok(i):
+            continue
+        if not any((i == t) if gen else bool(rx.match(ln)) for t, rx, gen in cur_res):
+            yours.append((i + 1, ln))
+    new_text = "\n".join(lines)
+    if crlf:
+        new_text = new_text.replace("\n", "\r\n")
+    sys.stdout.write("%s --refresh\n" % args.cmd)
+    for n, old, new in replaced:
+        sys.stdout.write("  replace: line %d: %s -> %s\n"
+                         % (n, " / ".join(old), " / ".join(new) or "(removed)"))
+    for n, ln in yours:
+        sys.stdout.write("  yours: line %d: %s\n" % (n, ln))
+    return path, raw, new_text, replaced
+
+
+def cmd_claude_md(args, root):
+    if not args.refresh:
+        die("--refresh is required")
+    path, raw, new, replaced = _refresh(args, root, "CLAUDE.md", "CLAUDE.template.md",
+                                        lambda lines: None)
+    if args.dry_run:
+        sys.stdout.write("dry-run: no changes\n")
+        return 0
+    if new != raw:
+        write_text(path, new)
+        _cnote(path, script="curate.py", sub="claude-md", whole=True, root=root)
+    return 0
+
+
+def _card_owned(lines):
+    owned, inside = set(), False
+    for i, ln in enumerate(lines):
+        if ln.startswith("## "):
+            inside = bool(_CARD_OWNED_RE.match(ln))
+            if "<!-- roles:" in ln:
+                owned.add(i)
+            continue
+        if inside:
+            owned.add(i)
+    return owned
+
+
+def cmd_card(args, root):
+    if not args.refresh:
+        die("--refresh is required")
+    path, raw, new, replaced = _refresh(args, root, "HOW_WE_WORK.md",
+                                        "HOW_WE_WORK.template.md", _card_owned)
+    cap = _card_cap(root)
+    if len(new) > cap:
+        sys.stdout.write("refused: HOW_WE_WORK.md would be %d/%d chars\n" % (len(new), cap))
+        return 1
+    if args.dry_run:
+        sys.stdout.write("dry-run: no changes\n")
+        return 0
+    if new != raw:
+        write_text(path, new)
+        _cnote(path, script="curate.py", sub="card", whole=True, root=root)
     return 0
 
 
@@ -1053,7 +1453,13 @@ def main(argv=None):
                         "archive (demote only). All routes are checked first; any refusal "
                         "writes nothing and exits 1. No specs with --gen legacy: nothing "
                         "left to route; sets only the pa.json memory_routed marker")
-    s.add_argument("--gen", required=True, help="generation id (e.g. 3 or legacy)")
+    s.add_argument("--reindex", action="store_true",
+                   help="rebuild MEMORY.md as one line per memory file (frontmatter name, "
+                        "description), then the gen archive pointers")
+    s.add_argument("--gen", help="generation id (e.g. 3, legacy or 3.2; required with --demote "
+                                 "and --route). 3.2: STORE memory keeps it; a gen<X>.md#<stem> "
+                                 "source restores from that archive; a real run writes pa.json "
+                                 "migrated: \"3.2\" and drops first_run")
     s.add_argument("--dir", help="memory directory (default: <root>/.claude-state/memory)")
 
     s = sub.add_parser("cookbook", help="demote cookbook entries to a generation archive")
@@ -1062,11 +1468,26 @@ def main(argv=None):
                    help="cookbook ids to demote (e.g. C0012)")
     s.add_argument("--gen", required=True, help="generation id")
 
-    s = sub.add_parser("rules", help="demote rules to a generation archive")
+    s = sub.add_parser("rules", help="demote rules to a generation archive; reseed seed rules")
     _add_dry_run(s)
-    s.add_argument("--demote", nargs="+", required=True, metavar="ID",
+    s.add_argument("--demote", nargs="+", metavar="ID",
                    help="rule ids to demote (e.g. M4)")
+    s.add_argument("--reseed", nargs="+", metavar="ID",
+                   help="move rules/<id>.md to rules/gen<G>/ and put the current "
+                        "rules-seed/<id>.md under the same id (INDEX line kept)")
     s.add_argument("--gen", required=True, help="generation id")
+
+    s = sub.add_parser("claude-md", help="refresh CLAUDE.md lines a past template shipped")
+    _add_dry_run(s)
+    s.add_argument("--refresh", action="store_true",
+                   help="replace lines equal to a past template line (after the fills) with "
+                        "the current template's; list the rest")
+
+    s = sub.add_parser("card", help="refresh HOW_WE_WORK.md's package-owned lines")
+    _add_dry_run(s)
+    s.add_argument("--refresh", action="store_true",
+                   help="the same for the Tools, Rhythm and Docs map sections and the "
+                        "role-tagged headings; refused past card.max_chars")
 
     s = sub.add_parser("how-we-work", help="report or retire HOW_WE_WORK.md lines")
     _add_dry_run(s)
@@ -1100,6 +1521,8 @@ def main(argv=None):
         "memory": cmd_memory,
         "cookbook": cmd_cookbook,
         "rules": cmd_rules,
+        "claude-md": cmd_claude_md,
+        "card": cmd_card,
         "how-we-work": cmd_how_we_work,
         "discussions": cmd_discussions,
         "ops": cmd_ops,

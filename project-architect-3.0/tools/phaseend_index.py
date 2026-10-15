@@ -1,20 +1,18 @@
 #!/usr/bin/env python
-"""phaseend_index.py -- assemble, archive, lint and legacy-index PhaseEnd files.
+"""phaseend_index.py -- assemble, archive and legacy-index PhaseEnd files.
 
     phaseend_index.py assemble <N>     build phase-ends/PhaseEnd_Phase<N>.md
-    phaseend_index.py lint [<N>]       tasks done|superseded, MILESTONE green, no placeholder left
-    phaseend_index.py --archive [<N>]  git mv current/ -> phase-<N>/, fresh current/ (refuses while a placeholder is left)
+    phaseend_index.py --archive [<N>]  git mv current/ -> phase-<N>/, fresh current/
     phaseend_index.py legacy-index     one line per pre-PA3 PhaseEnd
-    phaseend_index.py verify [<N>]     run every `verified by:` clause of the Milestone line; GREEN/RED each
 
 The PhaseEnd's `## Agent runs` section is generated from the usage ledger (agent_runs rows
 stamped with this phase, else this project's runs since approval), capped at 40 lines.
 
-`assemble` is idempotent: it leaves {{AUTHORED:recap}} / {{AUTHORED:binding}}
-placeholders, a second run fills them from current/RECAP.md, later runs keep the filled
-blocks. Order at a phase end: assemble, write RECAP.md, assemble, lint, commit, archive.
-archive moves RECAP.md with current/; genend_index.py reads the Generation Recap from
-phase-<N>/RECAP.md after that.
+`assemble` is idempotent: the recap and binding blocks come from current/RECAP.md (written
+before the close chain), else from an earlier assembled PhaseEnd, else `-`. Order at a phase
+end: write RECAP.md, assemble, commit, archive. The milestone is confirmed by the developer
+at the close. archive moves RECAP.md with current/; genend_index.py reads the Generation
+Recap from phase-<N>/RECAP.md after that.
 Stdlib only; no imports from `pa/` (it may import plan_edit.py, its neighbour).
 """
 
@@ -37,9 +35,8 @@ except Exception:
 LABELS = ("Status:", "Done:", "Files:", "Decisions:", "Deviations:", "Findings:",
           "Gotchas:", "Research:", "Rule candidate:", "Next task needs:",
           "Recommended:", "Verified:", "Full log:", "Tags:")
-RECAP_PH = "{{AUTHORED:recap}}"
+RECAP_PH = "{{AUTHORED:recap}}"     # an older assembled PhaseEnd may still hold these; never carried forward
 BIND_PH = "{{AUTHORED:binding}}"
-PLACEHOLDERS = (RECAP_PH, BIND_PH)
 TASK_HEADER = ("# Tasks -- cumulative\n"
                "# phase | id | status | title | tags | summary | log | research\n")
 RES_HEADER = ("# Research -- cumulative\n"
@@ -62,14 +59,6 @@ def cur_dir(root, conf=None):
 
 def phaseend_path(root, conf, phase):
     return os.path.join(PE.phase_dir(root, conf), "PhaseEnd_Phase%s.md" % phase)
-
-
-def placeholders_left(path):
-    """The {{AUTHORED:...}} placeholders still in an assembled PhaseEnd ([] when none or no file)."""
-    if not os.path.isfile(path):
-        return []
-    text = PE.read_text(path)
-    return [ph for ph in PLACEHOLDERS if ph in text]
 
 
 def natural_key(label):
@@ -138,20 +127,6 @@ def load_summaries(root, conf=None, phase=None):
         out.append(read_summary(os.path.join(d, name)))
     out.sort(key=lambda s: natural_key(s["id"].lstrip("T")))
     return out
-
-
-def closer(summaries):
-    """The summary titled 'phase close', else PHASE-END id, else last Verified:."""
-    for s in summaries:
-        if re.search(r"phase\s+close", s["title"], re.I):
-            return s
-    for s in summaries:
-        if not re.match(r"^T[0-9]", s["id"]):
-            return s
-    for s in reversed(summaries):
-        if s["sec"].get("Verified"):
-            return s
-    return None
 
 
 def _phase_base(root, conf, phase):
@@ -316,7 +291,7 @@ def agent_run_lines(root, phase, approved, cap=RUNS_CAP):
     except Exception as exc:                                     # sqlite3.Error, OSError
         return ["- (ledger unreadable: %s)" % exc]
     want, since = _norm(root), str(approved or "")
-    picked = [r for r in rows if str(r["phase"] or "") == str(phase)]
+    picked = [r for r in rows if str(r["phase"] or "") == str(phase) and _norm(r["project"]) == want]
     if not picked:                                               # pre-stamping ledgers only
         picked = [r for r in rows if not r["phase"] and _norm(r["project"]) == want
                   and (since in ("", "-") or str(r["started"] or "")[:10] >= since[:10])]
@@ -495,8 +470,9 @@ def existing_authored(path):
         out["recap"] = m.group(1).strip("\n")
     m = re.search(r"(?ms)^## Decisions that still bind\s*\n(.*?)(?=\n## |\Z)", text)
     if m and BIND_PH not in m.group(1):
+        # 3.25 T4: skip the generated `- <id> — …` lines (any summary id, was `- T` only) and the `-` fallback
         body = [x for x in m.group(1).split("\n")
-                if x.strip() and not x.strip().startswith("- T")]
+                if x.strip() and x.strip() != "-" and not re.match(r"^- \S+ — ", x.strip())]
         if body:
             out["binding"] = "\n".join(body).strip("\n")
     return out
@@ -597,13 +573,8 @@ def cmd_assemble(a, root, conf):
     target = phaseend_path(root, conf, phase)
     prev = existing_authored(target)
     recap, binding = recap_parts(root, conf, phase=phase)
-    recap = recap or prev["recap"] or RECAP_PH
-    binding = binding or prev["binding"] or BIND_PH
-
-    cl = closer(summaries)
-    verified = "-"
-    if cl and cl["sec"].get("Verified"):
-        verified = " ".join(cl["sec"]["Verified"]).strip()
+    recap = recap or prev["recap"] or "-"          # 3.25 T4: never a placeholder
+    binding = binding or prev["binding"] or "-"
 
     out = ["# PhaseEnd — Phase %s: %s%s" % (
         phase, bits["name"], (" (implements Gen %s)" % bits["gen"]) if bits["gen"] else "")]
@@ -611,14 +582,12 @@ def cmd_assemble(a, root, conf):
                % (bits["approved"], datetime.date.today().isoformat(),
                   bits["planner"], len(done), len(sup)))
     out += ["", "## Milestone", bits["milestone"] or "Milestone: -",
-            "Verified: %s" % verified]
+            "Confirmed by the developer at the close."]
 
     out += ["", "## Tasks"]
     if not summaries:
         out.append("- (no task summaries in current/tasks/)")
     for s in summaries:
-        if cl is not None and s["path"] == cl["path"]:
-            continue                       # the closer's line lives under Milestone
         did = " ".join(s["sec"].get("Done", [])).strip() or "-"
         link = "tasks/%s.md" % s["id"]
         log = "logs/%s.md" % s["id"]
@@ -674,7 +643,7 @@ def cmd_assemble(a, root, conf):
         if t.status in ("superseded", "blocked"):
             deferred.append("- %s | %s — %s"
                             % (t.id, t.status, t.get("title") or t.get("done-when", "")))
-    last_done = None                        # the last done plan task, not the closer
+    last_done = None                        # the last done plan task
     for s in summaries:
         if s["status"].startswith("done") and by_id.get(s["id"]) is not None:
             last_done = s["id"]
@@ -702,216 +671,7 @@ def cmd_assemble(a, root, conf):
                      "research: %d | runs: %d\n"
                      % (len(done), len(sup), nbind, len(cook), len(res),
                         len([r for r in runs if not r.startswith("- (")])))
-    left = [p for p in (RECAP_PH, BIND_PH) if p in "\n".join(out)]
-    if left:
-        sys.stdout.write("placeholders left: %s (write current/RECAP.md, re-run)\n"
-                         % " ".join(left))
     return 0
-
-
-def cmd_lint_file(path):
-    """Lint a single PhaseEnd file: no placeholder markers, required sections present."""
-    if not os.path.isfile(path):
-        sys.stdout.write("no such file: %s\n" % path)
-        return 1
-    text = PE.read_text(path)
-    problems = []
-    # {{...}} placeholder markers
-    for m in re.finditer(r"\{\{[^}]*\}\}", text):
-        problems.append("placeholder marker: %s" % m.group(0))
-    # template <...> markers (lowercase words, 5+ chars, not URLs)
-    for m in re.finditer(r"<([a-z][a-z ]{4,}[^>]*)>", text):
-        inner = m.group(1)
-        if not inner.startswith(("http", "ftp", "mailto")):
-            problems.append("template marker: <%s>" % inner[:60])
-    # literal PLACEHOLDER
-    if "PLACEHOLDER" in text:
-        problems.append("contains PLACEHOLDER")
-    # required sections
-    if "## Milestone" not in text:
-        problems.append("missing ## Milestone")
-    if "## Plain-English Recap" not in text:
-        problems.append("missing ## Plain-English Recap")
-    if problems:
-        for p in problems:
-            sys.stdout.write("%s\n" % p)
-        return 1
-    sys.stdout.write("OK\n")
-    return 0
-
-
-def cmd_lint(a, root, conf):
-    if getattr(a, "lint_file", None):
-        return cmd_lint_file(a.lint_file)
-    bits = plan_bits(root, conf, phase=a.phase)
-    phase = a.phase or bits["phase"]
-    problems = []
-    for t in bits["tasks"]:
-        if t.status not in ("done", "superseded"):
-            problems.append("%s is %s (must be done or superseded)" % (t.id, t.status))
-    summaries = load_summaries(root, conf, phase=phase)
-    # the verdict counts only where a closer states it: a Verified: line, or a line of RECAP.md
-    # that starts with the verdict (a mention elsewhere, such as a gotcha, is not a verdict)
-    verdicts = [" ".join(s["sec"].get("Verified", [])) for s in summaries]
-    lint_base = _phase_base(root, conf, phase) if phase else cur_dir(root, conf)
-    rp = os.path.join(lint_base, "RECAP.md")
-    if os.path.isfile(rp):
-        verdicts += [x.strip() for x in PE.read_text(rp).split("\n")
-                     if x.strip().upper().startswith(("MILESTONE:", "VERIFIED:"))]
-    if not any(re.match(r"^\s*(?:Verified:\s*)?MILESTONE:\s*green", v, re.I) for v in verdicts):
-        problems.append("no 'MILESTONE: green' verdict in the closer's Verified: line or RECAP.md")
-    pe_file = phaseend_path(root, conf, phase)
-    if not os.path.isfile(pe_file):
-        problems.append("no %s yet (run assemble %s first)" % (PE.rel(root, pe_file), phase))
-    for ph in placeholders_left(pe_file):
-        problems.append("%s still has %s (write current/RECAP.md, re-run assemble)"
-                        % (PE.rel(root, pe_file), ph))
-    # 3.10 T1: an untracked ledger slice would be left out of the archive commit
-    res = _git(root, "ls-files", "--others", "--exclude-standard", "--", ".claude-state/ledger/")
-    if res is not None and res.returncode == 0:
-        for p in [x.strip() for x in res.stdout.splitlines() if x.strip()]:
-            problems.append("untracked ledger slice %s (git add it and commit)" % p)
-    # 3.10 T14: a changed agent body bumps <phase>.<N+1>; N counts for the agent's lifetime
-    problems += agent_version_problems(root, phase)
-    # 3.10 T15: a phase that changed the package writes its CHANGES.md section
-    problems += changes_problems(root, phase)
-    # T29: an inbox row left `now` must be named by a task or a Changes line, or be marked
-    for rid, topic in ST.unresolved_rows(os.path.join(lint_base, "discussions", "INDEX.md"),
-                                         os.path.join(lint_base, "PHASE_PLAN.md")):
-        problems.append("inbox row %s still 'now' with no task or Changes line naming it (%s)"
-                        % (rid, topic[:50]))
-    # fix-2: an unconsumed inbox bullet would be archived unrouted (current phase only)
-    if os.path.normcase(os.path.abspath(lint_base)) == \
-            os.path.normcase(os.path.abspath(cur_dir(root, conf))):
-        n = _inbox_pending_count(root, conf)
-        if n:
-            problems.append("current/INBOX.md holds %d unconsumed bullet(s) "
-                            "(run status.py inbox-consume, inbox-mark the rows)" % n)
-    if problems:
-        if len(problems) <= 4:
-            out = ["ERROR " + p for p in problems]
-        else:
-            out = ["ERROR " + p for p in problems[:3]]
-            out.append("... and %d more problem(s)" % (len(problems) - 3))
-        out.append("FAILED: %d problem(s)" % len(problems))
-        sys.stdout.write("\n".join(out) + "\n")
-        return 1
-    sys.stdout.write("OK\n")
-    return 0
-
-
-def _split_outside_backticks(text):
-    """Split at ``;`` outside backtick spans: a command's own ``;`` (```PY -c "a; b"```) stays in
-    its clause (3.11 T11: was every ``;``, which cut a planner's ``python -c`` check into four RED
-    pieces)."""
-    out, cur, inside = [], [], False
-    for ch in text:
-        if ch == "`":
-            inside = not inside
-        elif ch == ";" and not inside:
-            out.append("".join(cur))
-            cur = []
-            continue
-        cur.append(ch)
-    out.append("".join(cur))
-    return [c.strip() for c in out if c.strip()]
-
-
-def milestone_clauses(milestone):
-    """``(gate, clauses)`` from the plan's Milestone line: the clauses follow ``verified by:``,
-    separated by ``;`` outside backticks."""
-    text = re.sub(r"^Milestone:\s*", "", str(milestone or "")).strip()
-    m = re.search(r"verified by:\s*(.*)$", text, re.I | re.S)
-    if not m:
-        return text, []
-    gate = text[:m.start()].rstrip(" \u2014-\u2013")
-    return gate, _split_outside_backticks(m.group(1))
-
-
-_CMD_HEAD = re.compile(r"^(?:PY|python3?|py|bash|sh|grep|test|git|ls|diff|cat|pytest|make|npm|node|cargo"
-                       r"|dotnet|wsl(?:\.exe)?|powershell|find|wc|sort|head|tail|\./|[A-Za-z]:/|/|~/)", re.I)
-_EXPECT_RE = re.compile(r"(?:with|prints?|shows?|contains?|outputs?|→|->)\s+(?:[a-z]+\s+)?`([^`]+)`", re.I)
-
-
-def _fill(cmd, py):
-    cmd = re.sub(r"(?<![\w/.-])PY(?![\w])", py.replace(chr(92), "/"), cmd)
-    home = os.path.expanduser("~").replace(chr(92), "/") + "/"
-    # A `~/` inside single quotes belongs to another shell (a WSL command in a clause): leave it (3.6 T7).
-    parts = cmd.split("'")
-    for i in range(0, len(parts), 2):                       # even indexes are outside single quotes
-        parts[i] = parts[i].replace("~/", home)
-    return "'".join(parts)
-
-
-def clause_command(clause, py):
-    """``(command, expects)`` for one clause of a prose milestone: the first backticked fragment
-    that looks like a command runs (``PY`` = the project interpreter, ``~/`` = home); fragments
-    introduced by "with", "prints", "shows", "contains" or an arrow are strings the output must
-    contain (``exits 0 with `Ran 32 tests```); other fragments are prose and ignored."""
-    parts = re.findall(r"`([^`]+)`", clause)
-    if not parts:
-        return _fill(clause, py), []
-    cmd_i = next((i for i, p in enumerate(parts) if _CMD_HEAD.match(p.strip())), 0)
-    cmd = _fill(parts[cmd_i], py)
-    expects = [e for e in _EXPECT_RE.findall(clause) if e != parts[cmd_i]]
-    return cmd, expects
-
-
-def cmd_verify(a, root, conf):
-    """3.1 T17: run each verified-by clause through run.sh; GREEN/RED per clause and overall."""
-    bits = plan_bits(root, conf)
-    phase = a.phase or bits["phase"]
-    gate, clauses = milestone_clauses(bits["milestone"])
-    if not clauses:
-        die("the Milestone line has no 'verified by:' clauses")
-    py = conf.get("python") or "python"
-    runner = os.path.join(root, "tools", "run.sh")
-    if not os.path.isfile(runner):
-        runner = os.path.join(os.path.dirname(os.path.abspath(__file__)), "run.sh")
-    all_lines, red_lines, green = [], [], 0
-    for i, clause in enumerate(clauses, 1):
-        name = "verify%d" % i
-        cmd, expects = clause_command(clause, py)
-        try:
-            res = subprocess.run(["bash", runner, name, "--tail", "6", "--", "bash", "-c", cmd],
-                                 cwd=root, capture_output=True, text=True, encoding="utf-8",
-                                 errors="replace")
-            code, text = res.returncode, (res.stdout or "") + (res.stderr or "")
-        except Exception as exc:
-            code, text = 1, str(exc)
-        log_text = ""
-        try:  # 3.10: a non-UTF-8 byte in a clause log must never abort verify
-            with open(os.path.join(root, ".run", "logs", name + ".log"),
-                      encoding="utf-8", errors="replace") as fh:
-                log_text = fh.read()
-        except OSError:
-            pass
-        missing = [e for e in expects if e not in log_text]
-        # 3.8 T8: a clause that names an output (`prints`/`shows`/…) is judged on the output; the exit
-        # code counts only when the clause says `exits 0` or names no output (`grep -c` exits 1 on 0)
-        needs_exit0 = not expects or bool(re.search(r"\bexits?\s+0\b", clause, re.I))
-        ok = (code == 0 or not needs_exit0) and not missing
-        green += 1 if ok else 0
-        clause_hdr = "%s %d: %s (.run/logs/%s.log)" % ("GREEN" if ok else "RED", i,
-                                                        clause[:110], name)
-        all_lines.append(clause_hdr)
-        if not ok:
-            detail = []
-            for e in missing:
-                detail.append("      expected in the output: `%s`" % e[:100])
-            tail = [x for x in text.rstrip().split("\n") if x.strip()][-3:]
-            detail += ["      " + x[:150] for x in tail]
-            all_lines += detail
-            red_lines.append(clause_hdr)
-            red_lines += detail
-    summary = "VERIFY: %s (%d/%d)" % ("GREEN" if green == len(clauses) else "RED",
-                                       green, len(clauses))
-    verbose = getattr(a, "verbose", False)
-    if verbose:
-        PE.emit(all_lines + [summary])
-    else:
-        PE.emit(red_lines + [summary])
-    return 0 if green == len(clauses) else 1
 
 
 def _git(root, *args):
@@ -919,146 +679,6 @@ def _git(root, *args):
         return subprocess.run(("git",) + args, cwd=root, capture_output=True, text=True)
     except Exception:
         return None
-
-
-AGENTS_REL = "project-architect-3.0/agents/"
-_VERSION_LINE = re.compile(r"^version:[ \t]*(.*?)[ \t]*$", re.M)
-
-
-def _split_version(text):
-    """(version, body): the frontmatter ``version:`` value and the text without that line."""
-    text = text.replace("\r\n", "\n").replace("\r", "\n")
-    m = _VERSION_LINE.search(text)
-    if not m:
-        return "", text
-    end = m.end() + 1 if text[m.end():m.end() + 1] == "\n" else m.end()
-    return m.group(1), text[:m.start()] + text[end:]
-
-
-def agent_version_problem(name, old_text, new_text, phase):
-    """The version rule for one agent file change (None when fine). ``None`` text = added/deleted.
-    User marks (``+uK``, ``user/``) are never judged. Body unchanged: version unchanged, or the
-    legacy migration ``N`` -> ``<phase>.N``. Body changed: ``<phase>.<oldN+1>`` (oldN = last
-    integer of old; N never resets), or legacy ``N`` -> ``N+1``."""
-    if old_text is None or new_text is None:
-        return None
-    old, old_body = _split_version(old_text)
-    new, new_body = _split_version(new_text)
-    if any("+u" in v or v.startswith("user/") for v in (old, new)):
-        return None
-    legacy = re.fullmatch(r"\d+", old) is not None
-    if old_body == new_body:
-        if new == old or (legacy and new == "%s.%s" % (phase, old)):
-            return None
-        return "agent %s: version %s -> %s without a body change (expected %s)" % (
-            name, old or "(none)", new or "(none)", old or "(none)")
-    nums = re.findall(r"\d+", old)
-    old_n = int(nums[-1]) if nums else 0
-    expected = "%s.%d" % (phase, old_n + 1)
-    if new == expected or (legacy and new == str(old_n + 1)):
-        return None
-    return "agent %s: body changed, version %s -> %s (expected %s)" % (
-        name, old or "(none)", new or "(none)", expected)
-
-
-def _git_utf8(root, *args):
-    """stdout of a git command decoded as UTF-8, or None on any failure."""
-    try:
-        res = subprocess.run(("git",) + args, cwd=root, capture_output=True)
-    except Exception:
-        return None
-    if res.returncode != 0:
-        return None
-    return res.stdout.decode("utf-8", errors="replace")
-
-
-def _approval_commit(root):
-    """The commit that approved the live plan (last one adding/removing ``Approved:``), or ""."""
-    plan_rel = "phase-ends/current/PHASE_PLAN.md"
-    return (_git_utf8(root, "log", "-1", "-SApproved:", "--format=%H", "--", plan_rel) or "").strip()
-
-
-PACKAGE_REL = "project-architect-3.0/"
-
-
-def changes_problems(root, phase):
-    """A package path other than CHANGES.md changed since plan approval (commits and working tree)
-    and ``CHANGES.md`` has no ``## <phase>`` line. [] without package dir, git or approval."""
-    if not phase or not os.path.isdir(os.path.join(root, PACKAGE_REL)):
-        return []
-    approval = _approval_commit(root)
-    if not approval:
-        return []
-    names = _git_utf8(root, "diff", "--name-only", approval, "--", PACKAGE_REL) or ""
-    changes_rel = PACKAGE_REL + "CHANGES.md"
-    if not [n for n in names.splitlines() if n.strip() and n.strip() != changes_rel]:
-        return []
-    try:
-        with open(os.path.join(root, changes_rel), encoding="utf-8", errors="replace") as fh:
-            text = fh.read().replace("\r\n", "\n")
-    except OSError:
-        text = ""
-    if re.search(r"^## %s(?: |$)" % re.escape(phase), text, re.M):
-        return []
-    return ["package changed in phase %s; %s has no '## %s' section" % (phase, changes_rel, phase)]
-
-
-_TASK_SUBJECT = re.compile(r"^(T\d+(?:\.\d+)?)(?:\.c\d+)?:")
-
-
-def task_runs(entries):
-    """``[(first_sha, last_sha)]`` from ``[(sha, subject)]`` oldest first: consecutive commits of one
-    task (subject ``T2:``, ``T2.c1:``, ``T4.1.c2:``) form one run, judged as one change, so an agent
-    needs one version bump per task (developer 2026-09-29); any other commit is a run of its own."""
-    runs, key = [], None
-    for sha, subject in entries:
-        m = _TASK_SUBJECT.match(subject)
-        k = m.group(1) if m else None
-        if k is not None and k == key:
-            runs[-1] = (runs[-1][0], sha)
-        else:
-            runs.append((sha, sha))
-        key = k
-    return runs
-
-
-def agent_version_problems(root, phase):
-    """Version-rule problems for every agent file change since plan approval: each first-parent
-    commit (``<c>^`` vs ``<c>``), then the working tree vs HEAD. [] without agents dir, git or approval."""
-    if not phase or not os.path.isdir(os.path.join(root, AGENTS_REL)):
-        return []
-    approval = _approval_commit(root)
-    if not approval:
-        return []
-    log = _git_utf8(root, "log", "--first-parent", "--reverse", "--format=%H %s",
-                    "%s..HEAD" % approval, "--", AGENTS_REL) or ""
-    entries = [tuple((ln.split(" ", 1) + [""])[:2]) for ln in log.splitlines() if ln.strip()]
-    pairs = [(last, first + "^", last) for first, last in task_runs(entries)]
-    pairs.append(("worktree", "HEAD", None))
-    problems = []
-    for where, old_ref, new_ref in pairs:
-        diff_args = ("diff", "--name-status", "--no-renames", old_ref) + ((new_ref,) if new_ref else ())
-        names = _git_utf8(root, *(diff_args + ("--", AGENTS_REL)))
-        for line in (names or "").splitlines():
-            parts = line.split("\t")
-            if len(parts) != 2 or parts[0] != "M" or not parts[1].endswith(".md"):
-                continue
-            path = parts[1]
-            old_text = _git_utf8(root, "show", "%s:%s" % (old_ref, path))
-            if new_ref:
-                new_text = _git_utf8(root, "show", "%s:%s" % (new_ref, path))
-            else:
-                try:
-                    with open(os.path.join(root, path), encoding="utf-8", errors="replace") as fh:
-                        new_text = fh.read()
-                except OSError:
-                    new_text = None
-            label = "%s at %s" % (os.path.splitext(os.path.basename(path))[0],
-                                  where[:7] if new_ref else where)
-            p = agent_version_problem(label, old_text, new_text, phase)
-            if p:
-                problems.append(p)
-    return problems
 
 
 def fresh_current(root, conf):
@@ -1197,14 +817,10 @@ def cmd_archive(a, root, conf):
     pe_file = phaseend_path(root, conf, phase)
     if not os.path.isfile(pe_file):
         die("assemble %s first (no %s)" % (phase, PE.rel(root, pe_file)))
-    left = placeholders_left(pe_file)
-    if left:
-        die("%s still has %s: write current/RECAP.md and re-run assemble %s before archive"
-            % (PE.rel(root, pe_file), " ".join(left), phase))
     n = _inbox_pending_count(root, conf)
     if n:
         die("current/INBOX.md holds %d unconsumed bullet(s): run `PY tools/status.py inbox-consume`, "
-            "then inbox-mark the routed rows, re-assemble, lint, then archive" % n)
+            "then inbox-mark the routed rows, re-assemble, then archive" % n)
     out = []
     _ops_reindex(root, out)
     # card check: refuse when card.py check exits 1
@@ -1218,7 +834,7 @@ def cmd_archive(a, root, conf):
     out.append("archived: %s -> %s" % (PE.rel(root, src), PE.rel(root, dst)))
     fresh_current(root, conf)
     out.append("fresh: %s/current/{tasks,logs,research,discussions}" % PE.rel(root, pdir))
-    # fix-18: the archived phase's owner stamp goes; the next `go` restamps it
+    # fix-18: the archived phase's owner stamp goes; the mod restamps it at its next session
     if os.path.isfile(ST.status_path(root)):
         sdata = ST.load(root)
         sdata["router_session"] = None
@@ -1263,7 +879,7 @@ def cmd_archive(a, root, conf):
                 py = _json.load(fh).get("python") or "python"
         except Exception:
             pass
-        out.append("RUN: %s tools/plan_edit.py gen-close %s --by router" % (py, gen))
+        out.append("RUN: %s tools/plan_edit.py gen-close %s" % (py, gen))   # the mod runs it (--by defaults to router)
         others = _other_open_phases(root, gen)
         if not others:
             # a RUN: line, never hidden by the info cap below (3.11 T11: was an info line,
@@ -1283,20 +899,28 @@ def cmd_archive(a, root, conf):
 
 
 def _other_open_phases(root, gen):
+    """Not-closed phases of `gen`'s generation besides `gen`: only `## Phases` phase lines
+    (_genplan grammar) that carry `status:` (I30: a numbered rationale bullet is no phase)."""
     path = os.path.join(root, "GENERATION_PLAN.md")
     if not os.path.isfile(path):
         return []
-    out = []
+    section, inside = [], False
     for raw in PE.read_text(path).split("\n"):
         b = PE.split_eol(raw)[0]
-        m = re.match(r"^\s*-\s+([0-9]+(?:\.[0-9]+)*)\s", b)
-        if not m or m.group(1) == gen:
+        if b.startswith("## "):
+            inside = b[3:].strip().lower().startswith("phases")
             continue
-        if m.group(1).split(".")[0] != gen.split(".")[0]:
+        if inside:
+            section.append(b)
+    out = []
+    for line in PE._genplan.phase_lines("\n".join(section)):
+        if not re.search(r"\|\s*status:", line):
             continue
-        st = re.search(r"status:\s*(\S+)", b)
-        if not st or st.group(1) != "closed":
-            out.append(m.group(1))
+        f = PE._genplan.fields(line)
+        if f["id"] == gen or f["id"].split(".")[0] != gen.split(".")[0]:
+            continue
+        if f["status"] != "closed":
+            out.append(f["id"])
     return out
 
 
@@ -1344,28 +968,19 @@ def main(argv=None):
         argv[0] = "archive"
     p = argparse.ArgumentParser(
         prog="phaseend_index.py",
-        description="Assemble / archive / lint PhaseEnd files from phase-ends/current/.")
+        description="Assemble / archive PhaseEnd files from phase-ends/current/.")
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("assemble", help="write phase-ends/PhaseEnd_Phase<N>.md")
     s.add_argument("phase", nargs="?")
-    s = sub.add_parser("lint", help="all tasks closed and MILESTONE green")
-    s.add_argument("phase", nargs="?")
-    s.add_argument("--file", dest="lint_file",
-                   help="lint a single file (no plan needed)")
     s = sub.add_parser("archive", aliases=["--archive"],
                        help="git mv current/ -> phase-<N>/ and extend the indexes")
     s.add_argument("phase", nargs="?")
     sub.add_parser("legacy-index", help="index pre-PA3 PhaseEnd files")
-    s = sub.add_parser("verify", help="run the Milestone's verified-by clauses; GREEN/RED each")
-    s.add_argument("phase", nargs="?")
-    s.add_argument("--verbose", action="store_true",
-                   help="print every clause, not just the red ones")
     a = p.parse_args(argv)
     root = PE.find_root()
     conf = PE.cfg(root)
-    return {"assemble": cmd_assemble, "lint": cmd_lint, "archive": cmd_archive,
-            "--archive": cmd_archive, "legacy-index": cmd_legacy,
-            "verify": cmd_verify}[a.cmd](a, root, conf)
+    return {"assemble": cmd_assemble, "archive": cmd_archive,
+            "--archive": cmd_archive, "legacy-index": cmd_legacy}[a.cmd](a, root, conf)
 
 
 if __name__ == "__main__":

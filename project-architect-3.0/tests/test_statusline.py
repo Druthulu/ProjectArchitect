@@ -73,6 +73,14 @@ class LedgerCase(unittest.TestCase):
         self.payload["cwd"] = self.project
         self.sid = self.payload["session_id"]
         self.cfg = plain_cfg()
+        from pa import notify
+        notify.set_spawner(self._spawn)
+        self.addCleanup(notify.set_spawner, None)
+
+    def _spawn(self, cmd, env):
+        """The sampler's detached child runs in-process (3.24 T9): its effects show at once."""
+        if "pa.statusline" in cmd:
+            statusline.run_background()
 
     def tearDown(self):
         if self._env is None:
@@ -399,7 +407,8 @@ class ProjectLineTest(LedgerCase):
         self.assertIn("T4", joined)
 
     def test_running_expert_ctx_and_handoff(self):
-        """T1.c1: agent info appears as an indented child of the current task."""
+        """3.24 T13s: no agent line under the current task (the mod's bands show agents);
+        the retired compact line keeps its handoff mark."""
         self.make_project(status={"task": "T3", "run_id": "agent-1",
                                   "started": "2026-09-12T20:58:00Z"})
         write_json(paths.running_path(), {
@@ -409,9 +418,8 @@ class ProjectLineTest(LedgerCase):
                                        "saved_live_usd": 0.0}}}}})
         joined = "\n".join(self.lines())
         self.assertNotIn("ctx 210k", joined)                 # agent ctx dropped (T27)
-        self.assertIn(statusline.HANDOFF_MARK, joined)
-        agent_line = next(l for l in self.lines() if statusline.HANDOFF_MARK in l)
-        self.assertNotIn("ctx ", agent_line)
+        self.assertNotIn(statusline.HANDOFF_MARK, joined)    # agent line dropped (3.24 T13s)
+        self.assertIn("T3", joined)
         cfg = config.defaults()
         line = statusline._line2(self.payload, statusline._gather(self.payload, cfg), cfg,
                                  statusline.sl_config(cfg), time.time())
@@ -450,8 +458,8 @@ class ProjectLineTest(LedgerCase):
         self.assertEqual(entry["agent_type"], "expert-opus55")
 
     def test_running_agent_label_and_warm_pings(self):
-        """T1.c1: agent label and warm pings appear indented under the current task
-        (3.9.5 T4: read from warmer.json, was keepwarm.json)."""
+        """3.24 T13s: no agent label or warm count under the current task; the label and
+        the warm count still resolve for the compact line (3.9.5 T4: warmer.json)."""
         import time as _time
 
         self.make_project(status={"task": "T3", "run_id": "agent-1",
@@ -470,26 +478,33 @@ class ProjectLineTest(LedgerCase):
                     "last_ping": last_ping, "via": "monitor",
                     "agent_type": "expert-fable", "idle": True}}})
 
+        def warm():
+            return statusline._warm_pings(self.project, _time.time(), "agent-1")
+
         warmer(3, int(_time.time()) - 60)
         joined = "\n".join(self.lines())
-        self.assertIn("expert-fable fable/medium", joined)
-        self.assertNotIn("ctx 90k", joined)                  # agent ctx dropped (T27)
-        self.assertIn("warm ×3", joined)
+        self.assertNotIn("expert-fable", joined)             # agent line dropped (3.24 T13s)
+        self.assertNotIn("warm", joined)
+        self.assertIn("T3", joined)
+        agent = statusline._running_agent(statusline._read_json(paths.running_path(), {}),
+                                          self.sid, "agent-1")[0]
+        self.assertEqual(statusline._agent_label({}, agent), "expert-fable fable/medium")
+        self.assertEqual(warm(), 3)
         warmer(3, int(_time.time()) - 3400)             # stale: now - last_ping >= WARM_FRESH_S
-        self.assertNotIn("warm", "\n".join(self.lines()))
+        self.assertEqual(warm(), 0)
         warmer(3, None)                                  # no ping yet
-        self.assertNotIn("warm", "\n".join(self.lines()))
+        self.assertEqual(warm(), 0)
         warmer(5, int(_time.time()) - 60, run_id="agent-2")   # another run's pings
-        self.assertNotIn("warm", "\n".join(self.lines()))
+        self.assertEqual(warm(), 0)
         self.assertEqual(statusline._model_short("claude-fable-5-1[1m]"), "fable")
         self.assertEqual(statusline._model_short("claude-opus-4-6"), "opus46")
         self.assertEqual(statusline._model_short("claude-sonnet-5"), "sonnet")
         self.assertEqual(statusline._model_short("claude-haiku-4-5-20251001"), "haiku")
         self.assertEqual(statusline._model_short(""), "")
 
-    def test_agent_line_painted_per_piece(self):
-        """T1.c4: the agent line paints per piece -- label unpainted, warm DIM,
-        no flat CYAN; the agent ctx figure is gone (T27)."""
+    def test_no_agent_line_in_coloured_render(self):
+        """3.24 T13s: the coloured render prints no agent line under the running task
+        (was T1.c4's per-piece paint of that line); the task row stays."""
         self.make_project(status={"task": "T3", "run_id": "agent-1",
                                   "expert_agent_type": "expert-fable",
                                   "started": "2026-09-12T20:58:00Z"})
@@ -505,11 +520,10 @@ class ProjectLineTest(LedgerCase):
                 "last_ping": int(time.time()) - 60, "via": "monitor",
                 "agent_type": "expert-fable", "idle": True}}})
         cfg = config.defaults()
-        agent_line = next(l for l in self.render(cfg).split("\n") if "expert-fable" in l)
-        self.assertIn("  expert-fable fable/medium", agent_line)   # label unpainted
-        self.assertNotIn("ctx ", agent_line)                 # agent ctx dropped (T27)
-        self.assertIn(statusline.DIM + "warm ×3", agent_line)
-        self.assertNotIn(statusline.CYAN, agent_line)
+        out = self.render(cfg)
+        self.assertNotIn("expert-fable", out)
+        self.assertNotIn("warm ×3", out)
+        self.assertIn("T3", out)
 
     def test_compact_line_has_no_agent_ctx(self):
         """T27: the compact line's agent segment carries no ctx figure (was T1.c4's
@@ -676,6 +690,24 @@ class PhasePlanScanTest(unittest.TestCase):
     def test_missing_file(self):
         out = statusline.scan_phase_plan(os.path.join(self.tmp, "nope.md"))
         self.assertEqual((out["done"], out["total"], out["next"]), (0, 0, None))
+
+    def test_context_bullets_are_not_tasks(self):
+        """3.24 T13f: a `## Context` bullet `- T2 transcripts … | …` is not a task row (plan_edit TASK_RE)."""
+        with open(self.path, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write("## Context\n- T2 transcripts (the review's evidence): `printf 'a' | calc` |\n"
+                         "- T3 release docs (`coder: opus55`) | anchors\n- T1x | done |\n" + PLAN)
+        out = statusline.scan_phase_plan(self.path)
+        self.assertEqual((out["done"], out["total"]), (2, 4))
+        self.assertEqual([t["id"] for t in out["tasks"]], ["T1", "T2", "T3", "T4"])
+
+    def test_specimen_5_2_plan_has_four_tasks(self):
+        """3.24 T13f: the specimen's archived 5.2 plan showed 4/6; it holds T1-T4 only."""
+        specimen = "Z:/Storage/git/pa3-calc-g5/phase-ends/phase-5.2/PHASE_PLAN.md"
+        if not os.path.exists(specimen):
+            self.skipTest("specimen absent")
+        out = statusline.scan_phase_plan(specimen)
+        self.assertEqual((out["done"], out["total"]), (4, 4))
+        self.assertEqual([t["id"] for t in out["tasks"]], ["T1", "T2", "T3", "T4"])
 
     def test_superseded_leaves_the_count(self):
         """3.5 T8.1: a superseded task is not work left; it stays listed but leaves done/total."""
@@ -1109,6 +1141,33 @@ class WaitingLineTest(LedgerCase):
         self.assertEqual(seed["max"], 30000)
         self.assertEqual(seed["n"], 3)
 
+    def test_seed_rise_under_cap_no_alert(self):
+        """3.28 T4e: a phase-over-phase seed rise under seed.max_tokens raises no alert."""
+        from pa import db as _db
+        from pa.summary import _seed_for_projects
+        conn = _db.connect(os.path.join(self.ledger, "ledger.sqlite"))
+        try:
+            _db.init_schema(conn)
+            sid = "seed-rise-0000-0000-000000000001"
+            pdir = self.project.replace("\\", "/")
+            _db.upsert(conn, "sessions", {
+                "session_id": sid, "account": "dev@example.com",
+                "project": pdir, "cwd": pdir, "kind": "main",
+                "started": "2026-09-20T10:00:00Z", "phase": "3.3"})
+            for i, (phase, seed) in enumerate([("3.2", 10000), ("3.3", 30000)]):
+                _db.upsert(conn, "agent_runs", {
+                    "run_id": "seed-rise-%04d" % i, "session_id": sid,
+                    "kind": "expert", "agent_type": "expert-opus55", "phase": phase,
+                    "seed_ctx": seed, "started": "2026-09-20T10:%02d:00Z" % i})
+            conn.commit()
+            pkey = os.path.normcase(os.path.normpath(pdir))
+            fake_projects = {pkey: {"label": "demo"}}
+            alerts = _seed_for_projects(conn, fake_projects)
+        finally:
+            _db.close(conn)
+        self.assertEqual(fake_projects[pkey]["seed"]["max"], 30000)   # +200% over 3.2
+        self.assertEqual(alerts, [])
+
 
 # --------------------------------------------------------------------------- T1.c2: period cost_used kind='api' only
 
@@ -1306,6 +1365,25 @@ class SamplerTest(LedgerCase):
         spooled = len(self.spool_lines())
         self.assertEqual(rows, spooled * 2)            # two windows per spool line
 
+    def test_child_batches_changes_into_one_rebuild(self):
+        """3.24 T9: queued changes drain in order; one refit pass and one rebuild per batch."""
+        from unittest import mock
+        from pa import notify, summary as summary_mod
+
+        notify.set_spawner(lambda cmd, env: None)      # queue only; the child runs below
+        statusline.sample(self.payload, self.cfg)
+        for pct in (21, 22, 23):
+            self.payload["rate_limits"]["five_hour"]["used_percentage"] = pct
+            statusline._JSON_CACHE.clear()
+            statusline.sample(self.payload, self.cfg)
+        self.assertFalse(os.path.exists(paths.db_path()))
+        with mock.patch.object(summary_mod, "rebuild", wraps=summary_mod.rebuild) as rb:
+            statusline.run_background()
+        self.assertEqual(rb.call_count, 1)
+        rows = self.rows("SELECT COUNT(*) AS n FROM utilization")[0]["n"]
+        self.assertEqual(rows, len(self.spool_lines()) * 2)
+        self.assertFalse(os.path.exists(statusline._sampler_path("child.lock")))
+
     def test_no_session_id_is_a_no_op(self):
         self.payload.pop("session_id")
         self.assertIsNone(statusline.sample(self.payload, self.cfg))
@@ -1317,7 +1395,8 @@ class SamplerTest(LedgerCase):
         self.assertFalse(os.path.exists(paths.db_path()))
 
     def test_sampler_labels_row_with_restamped_account(self):
-        """T8.c3: when the credentials key changed, the sampler picks up the re-stamped account."""
+        """T8.c3: when the credentials key changed, the child re-stamps and the next refresh's
+        rows carry the new account (3.24 T9: the refresh left the printing process)."""
         from pa import accounts, fsutil, running
 
         old_email = "old@example.com"
@@ -1338,13 +1417,17 @@ class SamplerTest(LedgerCase):
             accounts.credentials_key = lambda: "999:200"  # different from stamp
             accounts.auth_status = lambda *a, **k: {"email": new_email, "source": "auth"}
             statusline._JSON_CACHE.clear()
+            statusline.sample(self.payload, self.cfg)      # the row first, then the child
+            self.payload["rate_limits"]["five_hour"]["used_percentage"] = 21
+            statusline._JSON_CACHE.clear()
             statusline.sample(self.payload, self.cfg)
         finally:
             accounts.credentials_key = orig_cred
             accounts.auth_status = orig_auth
         spooled = self.spool_lines()
         self.assertTrue(spooled)
-        self.assertEqual(spooled[0]["account"], new_email)
+        self.assertEqual(spooled[0]["account"], old_email)
+        self.assertEqual(spooled[-1]["account"], new_email)
         # the render ctx picks up the re-stamped account from running.json
         statusline._JSON_CACHE.clear()
         ctx = statusline._gather(self.payload, self.cfg)
@@ -1352,6 +1435,63 @@ class SamplerTest(LedgerCase):
 
 
 # --------------------------------------------------------------------------- timing
+
+class MainReturnsFastTest(LedgerCase):
+    """3.24 T9: main prints and returns; no slow path runs in the printing process."""
+
+    def test_main_runs_no_slow_path(self):
+        import contextlib
+        import io
+        from unittest import mock
+        from pa import accounts, db, liveness, notify, summary as summary_mod, usage_api
+
+        conn = db.connect()                            # a ledger exists: the repair is due
+        db.init_schema(conn)
+        db.close(conn)
+        write_json(paths.summary_path(), {"schema": 1, "sessions": {}})
+        statusline.sample(self.payload, self.cfg)      # `first`: the next one is a change
+        self.payload["rate_limits"]["five_hour"]["used_percentage"] = 21
+        os.remove(statusline._sampler_path("tick"))
+        os.remove(paths.state_path("session_rebuild", "%s.stamp" % self.sid))  # repair due again
+        spawned, called = [], []
+        notify.set_spawner(lambda cmd, env: spawned.append(cmd))
+
+        def fail(name):
+            return lambda *a, **k: called.append(name)
+
+        with mock.patch.object(statusline, "read_payload", return_value=self.payload), \
+                mock.patch.object(statusline, "_on_change", fail("_on_change")), \
+                mock.patch.object(statusline, "_repair_session", fail("_repair_session")), \
+                mock.patch.object(summary_mod, "rebuild", fail("rebuild")), \
+                mock.patch.object(usage_api, "poll", fail("poll")), \
+                mock.patch.object(liveness, "sweep_if_due", fail("sweep")), \
+                mock.patch.object(accounts, "refresh_account", fail("refresh_account")), \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            statusline._JSON_CACHE.clear()
+            self.assertEqual(statusline.main([]), 0)
+        self.assertTrue(out.getvalue().strip())
+        self.assertEqual(called, [])
+        self.assertEqual(spawned, [statusline.background_command()[0]])
+        with open(statusline._sampler_path("queue.jsonl"), encoding="utf-8") as fh:
+            job = json.loads(fh.read().splitlines()[-1])
+        self.assertEqual(job["sid"], self.sid)
+        self.assertTrue(job["repair"])
+        self.assertEqual(job["cur"]["windows"]["five_hour"]["pct"], 21.0)
+
+    def test_held_lock_spawns_nothing(self):
+        from pa import notify, summary as summary_mod
+
+        spawned = []
+        notify.set_spawner(lambda cmd, env: spawned.append(cmd))
+        lock = statusline._sampler_path("child.lock")
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        summary_mod._write_lock(lock, "background")    # this live pid holds it
+        self.assertFalse(statusline.request_background())
+        self.assertEqual(spawned, [])
+        os.remove(lock)
+        self.assertTrue(statusline.request_background())
+        self.assertEqual(len(spawned), 1)
+
 
 class TimingTest(LedgerCase):
 
@@ -2095,9 +2235,8 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
                                    "started": "2026-09-12T21:00:00Z"}}}}})
         lines = self.lines()
         joined = "\n".join(lines)
-        # the agent label still appears (on the current task line)
-        self.assertIn("expert-fable", joined)
-        # but helper lines are hidden
+        # 3.24 T13s: no agent line under the task (the mod's bands show agents), and helper lines stay hidden
+        self.assertNotIn("expert-fable", joined)
         self.assertNotIn("coder-opus46", joined)
 
     def test_owner_session_shows_task_block(self):
@@ -2109,20 +2248,26 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertIn("recipe rung", joined)
         self.assertNotIn("runs in another session", joined)
 
-    def test_other_session_shows_beside_line(self):
-        """T28.c4: another session sees one beside line, no task block."""
+    def test_other_session_shows_the_loop_task(self):
+        """3.24 T9: the mod's status.json mirror shows phase and task in any session (was
+        T28.c4's "runs in another session" beside line)."""
         self.make_project(plan=self.PLAN_SIX, status={
             "task": "T3", "phase": "36", "router_session": "someone-else",
             "started": "2026-09-12T20:58:00Z"})
         lines = self.lines()
-        self.assertEqual(lines[0], "demo · 36 runs in another session")
         joined = "\n".join(lines)
-        self.assertEqual(joined.count("runs in another session"), 1)
-        for token in ("recipe rung", "T3", "T4", "Phase 36"):
-            self.assertNotIn(token, joined)
+        self.assertNotIn("another session", joined)
+        self.assertTrue(lines[0].startswith("demo · Phase 36"))
+        self.assertIn("recipe rung", joined)
+
+    def test_phase_end_shows_closing(self):
+        """3.24 T9: the mod's closer (status.json task PHASE-END) shows as closing."""
+        self.make_project(plan=self.PLAN_SIX, status={
+            "task": "PHASE-END", "phase": "36", "started": "2026-09-12T20:58:00Z"})
+        self.assertIn("Phase 36 · 2/6 · closing", self.lines()[0])
 
     def test_other_session_closed_phase_shows_no_phase(self):
-        """fix-18: another router_session with a null phase: no beside line, the no-phase header."""
+        """fix-18: a null phase shows the no-phase header, whoever stamped status.json."""
         self.make_project(plan=None, status={
             "task": None, "phase": None, "router_session": "someone-else"})
         lines = self.lines()
@@ -2736,15 +2881,22 @@ class SessionMissingBlockTest(LedgerCase):
         self.assertIn("100%%/%s of 5h" % statusline.DASH, line)
         self.assertIn("%s fewer" % statusline.DASH, line)
 
-    def test_rebuild_once_and_render_same_pass(self):
+    def _sample(self, cfg=None):
+        statusline._JSON_CACHE.clear()
+        statusline.sample(self.payload, cfg or self.cfg)
+
+    def test_render_never_rebuilds_the_child_does_once(self):
+        """3.24 T9: render reads the cached summary only; the sampler's child repairs it."""
         now = self._ledger(session_row=True, cost=2.0)
         self._summary({}, started_at=int(now - 7200))
         with self._counting() as rb:
-            line = self._session()
+            self._session()
+            self.assertEqual(rb.call_count, 0)
+            self._sample()
             self.assertEqual(rb.call_count, 1)
             # ledger cost $2.00 through the fit (not the payload's $11.70 fallback)
-            self.assertIn("17%%/%s of 5h" % statusline.DASH, line)
-            self._session()
+            self.assertIn("17%%/%s of 5h" % statusline.DASH, self._session())
+            self._sample()
             self.assertEqual(rb.call_count, 1)
         self.assertFalse(os.path.exists(os.path.join(self.project, ".run", "health.json")))
 
@@ -2752,6 +2904,7 @@ class SessionMissingBlockTest(LedgerCase):
         self._ledger(session_row=True, cost=0)
         self._summary({})
         with self._counting() as rb:
+            self._sample()
             self._session()
             self.assertEqual(rb.call_count, 0)
 
@@ -2761,8 +2914,8 @@ class SessionMissingBlockTest(LedgerCase):
         health = os.path.join(self.project, ".run", "health.json")
         write_json(health, {"other": {"keep": 1}})
         with self._counting() as rb:
-            self._session()
-            self._session()
+            self._sample()
+            self._sample()
             self.assertEqual(rb.call_count, 1)  # inside the 60 s cooldown
             with open(health, encoding="utf-8") as fh:
                 doc = json.load(fh)
@@ -2776,8 +2929,20 @@ class SessionMissingBlockTest(LedgerCase):
             self.assertIsNone(flag["row"])
             cfg = plain_cfg()
             cfg["summary"]["session_rebuild_cooldown_s"] = 0
-            self._session(cfg)
-            self.assertEqual(rb.call_count, 2)
+            from unittest import mock
+            with mock.patch.object(config, "load", return_value=cfg):   # the child loads its own
+                self._sample(cfg)
+            self.assertEqual(rb.call_count, 1)  # 3.24 T10: past the cooldown, no ledger change
+            from pa import db, summary as summary_mod
+            conn = db.connect()
+            conn.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd, kind)"
+                         " VALUES('m2', ?, ?, ?, 'claude-opus-4-6', 1.0, 'api')",
+                         (self.sid, self.ACCT, summary_mod._iso(time.time() - 60)))
+            conn.commit()
+            db.close(conn)
+            with mock.patch.object(config, "load", return_value=cfg):
+                self._sample(cfg)
+            self.assertEqual(rb.call_count, 2)  # a new turn: once per change
             with open(health, encoding="utf-8") as fh:
                 self.assertEqual(json.load(fh)["savings_missing"]["since"], flag["since"])
 

@@ -20,8 +20,8 @@ sys.path.insert(0, ROOT)
 
 from pa import config, db, paths, prices, replay, summary  # noqa: E402
 
-SID_A = "aaaa1111-0000-4000-8000-00000000000f"
-SID_B = "bbbb1111-0000-4000-8000-000000000012"
+SID_A = "aaaa1111-0000-4000-8000-000000000103"
+SID_B = "bbbb1111-0000-4000-8000-000000000117"
 RUN_A = SID_A
 RUN_B = SID_B
 ACCOUNT = "dev@example.com"
@@ -121,6 +121,30 @@ class RollingTest(unittest.TestCase):
         # cost = prefix 0 + new(write_1h) + output; no seed write
         expected = (0 + 3000 * 20 + 500 * 50) / 1e6
         self.assertAlmostEqual(r1["cost_replay"], expected, places=6)
+
+    def test_compaction_at_overflow(self):
+        """3.27 T9: overflow compacts: reads ctx, writes compact_out, keeps compact_post."""
+        turns = _make_turns(SID_A, RUN_A, 10, 2, new_tokens=3000, output=500)
+        params = {"window": 5000, "ttl_old_s": 3600, "subtract_agent_seeds": False,
+                  "compact_out": 200, "compact_post": 100}
+        r0, r1 = replay.rolling(turns, {}, params)
+        self.assertTrue(r1["reset"])
+        self.assertEqual(r1["ctx_after"], 3100)
+        # compaction: 3000 read + 200 output; then prefix 100 read + new write + output
+        expected = (3000 * 0.25 + 200 * 50 + 100 * 0.25 + 3000 * 20 + 500 * 50) / 1e6
+        self.assertAlmostEqual(r1["cost_replay"], expected, places=6)
+
+    def test_suggestion_per_main_loop_turn(self):
+        """3.27 T9: a main-loop end turn pays suggest_usd; other turns do not."""
+        turns = _make_turns(SID_A, RUN_A, 10, 2, new_tokens=1000, output=0)
+        turns[1]["main_end"] = True
+        base = {"window": 1000000, "ttl_old_s": 3600, "subtract_agent_seeds": False}
+        r_off = replay.rolling(turns, {}, dict(base))
+        r_on = replay.rolling(turns, {}, dict(base, suggest_usd=0.0586))
+        self.assertAlmostEqual(r_on[0]["cost_replay"], r_off[0]["cost_replay"], places=6)
+        self.assertAlmostEqual(r_on[1]["cost_replay"] - r_off[1]["cost_replay"], 0.0586, places=6)
+        self.assertEqual(replay.params_from_cfg(config.defaults())["suggest_usd"],
+                         replay.SUGGEST_USD_PER_TURN)
 
     def test_subtract_agent_seeds(self):
         """A run's first turn with seed_ctx 1500 and new_tokens 2000 adds 500."""

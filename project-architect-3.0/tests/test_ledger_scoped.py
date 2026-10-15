@@ -44,6 +44,9 @@ class ScopedCase(unittest.TestCase):
         self._poll, self._refresh = usage_api.poll, accounts.refresh_account
         usage_api.poll = lambda *a, **k: None
         accounts.refresh_account = lambda *a, **k: (None, False, None)
+        from pa import notify                  # 3.24 T9: the sampler's child runs in-process
+        notify.set_spawner(lambda cmd, env: "pa.statusline" in cmd and statusline.run_background())
+        self.addCleanup(notify.set_spawner, None)
         self.cfg = config.defaults()
         write_json(paths.summary_path(), {"sessions": {SID: {"account": ACCT_A}}})
         self.payload = {"session_id": SID, "model": {"id": "claude-opus-5-5"},

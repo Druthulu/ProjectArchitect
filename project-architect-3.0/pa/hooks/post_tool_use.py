@@ -478,7 +478,8 @@ def _inside_worker(inp, cfg, agent_id, role, may_handoff=True):
     seen = req.get("model")
     ctx = handoff.ctx_next(req)
     msg_id = req.get("msg_id")
-    limit = handoff.threshold(cfg, role=role, project_cfg=pcfg, model=seen or pinned)
+    # The window comes from the configured model's [1m] tag: transcripts record the bare id (3.23 T13).
+    limit = handoff.threshold(cfg, role=role, project_cfg=pcfg, model=pinned_for(inp, cfg, tagged=True) or seen)
 
     from .. import config
 
@@ -505,6 +506,7 @@ def _inside_worker(inp, cfg, agent_id, role, may_handoff=True):
                                   parent=sid, model_pinned=pinned)
         entry["role"] = role
         entry["agent_type"] = agent_type or entry.get("agent_type")
+        entry["transcript_path"] = path        # 3.24 T13h: a recreated entry keeps the sweep's path
         if meta_parent and entry.get("parent") != str(meta_parent):
             entry["parent"] = str(meta_parent)
             entry["parent_source"] = "meta"
@@ -598,7 +600,7 @@ def _inside_other(inp, cfg, agent_id, role):
     if not req:
         return None
     fields = {"ctx": handoff.ctx_next(req), "role": role,
-              "agent_type": inp.get("agent_type"),
+              "agent_type": inp.get("agent_type"), "transcript_path": path,
               "model_seen": req.get("model"), "last_msg_id": req.get("msg_id")}
     meta_parent = transcript.read_meta(path).get("parentAgentId")
     if meta_parent:

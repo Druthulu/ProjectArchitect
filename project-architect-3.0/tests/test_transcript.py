@@ -11,7 +11,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pa import transcript as T  # noqa: E402
 
 REF = ("C:/Users/you/.claude/projects/Z--Storage-git-Vantage/"
-       "e2eed858-0000-4000-8000-000000000015/subagents/agent-abfdf578000000016.jsonl")
+       "e2eed858-0000-4000-8000-000000000160/subagents/agent-abfdf578000000025.jsonl")
 
 
 def _assistant(mid, out, ts="2026-09-12T10:00:00.000Z", model="claude-sonnet-5",
@@ -291,7 +291,12 @@ class ReferenceTranscriptTest(unittest.TestCase):
     def test_twenty_requests_and_output_sum(self):
         reqs = list(T.iter_requests(REF))
         self.assertEqual(len(reqs), 20)
-        self.assertEqual(sum(r["output"] for r in reqs), 3109)
+        # 3.24 T13l: the last two messages never got a stop_reason (placeholder output 1 each,
+        # the old 3109); their output is estimated from 334 and 14,107 chars written
+        self.assertEqual(sum(r["output"] for r in reqs if not r["output_est"]), 3107)
+        self.assertEqual([(r["msg_id"], r["output"]) for r in reqs if r["output_est"]],
+                         [("msg_01SYNTH00000000000000002", 167),
+                          ("msg_01SYNTH00000000000000003", 7054)])
 
     def test_placeholder_output_is_not_kept(self):
         by_id = {r["msg_id"]: r for r in T.iter_requests(REF)}
@@ -302,13 +307,26 @@ class ReferenceTranscriptTest(unittest.TestCase):
         last = list(T.iter_requests(REF))[-1]
         tail = T.tail_last_usage(REF)
         self.assertEqual(tail["msg_id"], last["msg_id"])
-        self.assertEqual(tail["output"], last["output"])
+        self.assertTrue(last["output_est"])               # T13l: the tail keeps the placeholder
+        self.assertEqual(tail["output"], 1)
         self.assertEqual(tail["ctx"], last["ctx"])
 
     def test_meta_of_the_reference_agent(self):
         meta = T.read_meta(REF)
         self.assertEqual(meta.get("agentType"), "general-purpose")
         self.assertEqual(meta.get("spawnDepth"), 1)
+
+
+class ModLocalTurnsTest(unittest.TestCase):
+    """3.22: the mod's local answers (``‹sent›`` and the partner's reply) bill nothing."""
+
+    FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                           "fixtures", "hooks", "mod_local_turns.jsonl")
+
+    def test_no_requests(self):
+        reqs, end = T.read_new_requests(self.FIXTURE)
+        self.assertEqual(reqs, [])
+        self.assertEqual(end, os.path.getsize(self.FIXTURE))
 
 
 if __name__ == "__main__":

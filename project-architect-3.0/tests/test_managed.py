@@ -195,7 +195,7 @@ class PackageVersionTest(unittest.TestCase):
     def test_upstream_version_from_package_version_file(self):
         """I11: the record's ``upstream_version`` is the package VERSION, else ``__version__``."""
         from pa import __version__
-        self.assertEqual(managed._package_version(HERE), "3.15.3")
+        self.assertEqual(managed._package_version(HERE), "3.28")
         d = tempfile.mkdtemp(prefix="pa3-pkgver-")
         try:
             self.assertEqual(managed._package_version(d), __version__)
@@ -206,50 +206,7 @@ class PackageVersionTest(unittest.TestCase):
             shutil.rmtree(d, ignore_errors=True)
 
 
-class PaSessionStepTest(unittest.TestCase):
-    def test_router_drift_step_and_version(self):
-        with open(os.path.join(HERE, "agents", "pa-session.md"), encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertEqual(managed.base_of(text), "3.15.27")  # 3.15 T18 relay a discuss hand-back with no RECORD line; was "3.15.26" (3.15 T6 arm on entering router mode); was "3.15.25" (3.15 T4 the -5m expert twins spawnable); was "3.14.1.24" (3.14.1 a discuss return is the RECORD notification; was "3.14.23" (3.14 T2 migration curate line in any mode), "3.13.22" (3.13 T2 router asks before each curator run), "3.13.21" (3.13 T1 auditor spawnable), "3.12.20" (3.12 T1 Sonnet 5.5), "3.11.19" (3.11 T13 the expert's label T<n> <title>), "3.11.18" (3.11 T10 the generic push line), "3.11.17" (3.11 T9 the renewal question), "3.10.6.16" (3.10.6 T5 window gate), "3.10.5.15", "3.10.5.14" (T22 recalc before assemble), "3.10.13" (fix-19 no pause before the archive), "3.10.12" (T17 route every message, denials to the developer), "3.10.11" (T20 one wrapper, denial question), "3.10.10" (T16 root-install paragraph), "3.10.9" (T15.c4 older hook), "3.10.8" (T15 automatic upgrade)
-        step1 = text[text.index("\n1. `PY tools/status.py inbox-consume`"):text.index("\n2. `PY tools/plan_edit.py next")]
-        for s in ("PY tools/managed.py drift", "PY tools/managed.py stamp <rel>",
-                  "PY tools/managed.py decline <rel>", "AskUserQuestion",
-                  '"stamp|decline <rel>" <rel> .claude/pa3-managed.json'):
-            self.assertIn(s, step1)
-        self.assertIn("the step-1 drift question", text)
-
-    def test_update_pa3_step(self):
-        with open(os.path.join(HERE, "agents", "pa-session.md"), encoding="utf-8") as fh:
-            text = fh.read()
-        for s in ("`PA3 update`", "Upgrade: auto", "Upgrade: ask", "update pa3", "upgrade-<n>",
-                  ".claude/pa3-upgrade/UPGRADE.md", "CHANGES.md", "restart: needed", "what changed"):
-            self.assertIn(s, text)
-
-    def test_update_step_wrapper_denial_resolve(self):
-        with open(os.path.join(HERE, "agents", "pa-session.md"), encoding="utf-8") as fh:
-            text = fh.read()
-        step = text[text.index("`PA3 update` (every mode"):text.index("`what changed` (any mode)")]
-        for s in ("tools/pa3_update.py", "one-time permission", "resolve:"):
-            self.assertIn(s, step)
-
-    def test_planner_has_no_upgrade_task(self):
-        with open(os.path.join(HERE, "agents", "planner-phase.md"), encoding="utf-8") as fh:
-            text = fh.read()
-        self.assertNotIn("upgrade task", text)
-        self.assertNotIn("`Upgrade:`", text)
-
-
-class PaSessionAgentListTest(unittest.TestCase):
-    def test_every_named_agent_is_spawnable(self):
-        agents_dir = os.path.join(HERE, "agents")
-        with open(os.path.join(agents_dir, "pa-session.md"), encoding="utf-8") as fh:
-            text = fh.read()
-        front, body = text.split("\n---\n", 1)
-        tools = next(l for l in front.splitlines() if l.startswith("tools:"))
-        spawnable = {s.strip() for s in tools[tools.index("Agent(") + 6:tools.rindex(")")].split(",")}
-        stems = sorted(f[:-3] for f in os.listdir(agents_dir) if f.endswith(".md") and f != "pa-session.md")
-        missing = [s for s in stems if "`%s`" % s in body and s not in spawnable]
-        self.assertEqual(missing, [], "pa-session body names agents missing from Agent(...): %s" % missing)
+# 3.24 T3.1: PaSessionStepTest and PaSessionAgentListTest left with pa-session.md and planner-phase.md
 
 
 if __name__ == "__main__":

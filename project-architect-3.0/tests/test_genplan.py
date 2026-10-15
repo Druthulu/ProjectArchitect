@@ -64,15 +64,16 @@ class FieldsTest(unittest.TestCase):
     def test_fields_on_this_repos_generation_plan(self):
         text = read(REPO_GEN_PLAN)
         lines = _genplan.phase_lines(text)
-        hit = [l for l in lines if _genplan.fields(l)["id"] == "3.7"]
+        # 3.23: the PA 3.2 plan replaced Gen 3's lines (3.7 is gone); 3.22 is closed and stable.
+        hit = [l for l in lines if _genplan.fields(l)["id"] == "3.22"]
         self.assertEqual(len(hit), 1)
         f = _genplan.fields(hit[0])
-        self.assertEqual(f["id"], "3.7")
-        self.assertIn(f["status"], ("open", "closed"))  # was "open": 3.7 closed 2026-09-23
-        self.assertEqual(f["depends"], "3.6")
+        self.assertEqual(f["id"], "3.22")
+        self.assertEqual(f["status"], "closed")
+        self.assertEqual(f["depends"], "3.21")
         self.assertTrue(f["name"])
         self.assertTrue(f["milestone"])
-        self.assertEqual(f["phase_end"], "phase-ends/PhaseEnd_Phase3.7.md")
+        self.assertEqual(f["phase_end"], "docs/pa3-build/3.2/3.22-partner.md")
 
     def test_fields_on_a_fixture_line(self):
         f = _genplan.fields(
@@ -149,8 +150,9 @@ class GrammarTest(ToolCase):
         super().setUp()
         shutil.copyfile(PLAN_FIXTURE, os.path.join(self.cur, "PHASE_PLAN.md"))
 
-    def test_grammar_has_positional_and_stays_small(self):
-        out = self.ok(self.tool("plan_edit.py", "grammar"), "Positional")
+    def test_grammar_has_the_loose_line_and_stays_small(self):
+        # 3.25 T4: the loose line; status and agent are optional positional columns
+        out = self.ok(self.tool("plan_edit.py", "grammar"), "| done-when:", "positional")
         self.assertLess(len(out), 1500)
 
 

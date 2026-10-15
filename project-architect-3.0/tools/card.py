@@ -223,9 +223,16 @@ def cmd_interview(args, root):
 
 # -- slice --------------------------------------------------------------------
 
+# 3.24 T3: the Gen 3 router (pa-session) left; its slice is offered no more.
+_RETIRED_ROLES = {"router": "the Gen 3 router left at 3.24"}
+
+
 def cmd_slice(args, root):
     """Print sections whose role tag names the given role."""
     role = args.role
+    if role in _RETIRED_ROLES:
+        sys.stderr.write("card.py: no %s slice (%s)\n" % (role, _RETIRED_ROLES[role]))
+        return 2
     text = _read_card(root)
     _cnote(_card_path(root), script=_SCRIPT, sub="slice", whole=True, root=root)
     sections = _parse_sections(text)
@@ -282,7 +289,7 @@ def main(argv=None):
                     help="write the template defaults without prompting")
 
     sl = sub.add_parser("slice", help="print sections for a role")
-    sl.add_argument("role", help="the role name (e.g. expert, router)")
+    sl.add_argument("role", help="the role name (e.g. expert, coder, auditor)")
 
     sub.add_parser("check", help="print card health and exit 1 when unhealthy")
 

@@ -1,12 +1,15 @@
 """UserPromptSubmit: record a returning subagent's ``<task-notification>``.
 
-The harness resumes the router with a synthetic prompt when a background agent
+The harness resumes the main session with a synthetic prompt when a background agent
 stops (probe1 fixture)::
 
     <task-notification><task-id>a5cf…</task-id><tool-use-id>toolu_…</tool-use-id>
     <output-file>…</output-file><status>completed</status><summary>…</summary>
     <note>…</note><result>UNKNOWN.</result>
     <usage><subagent_tokens>2408</subagent_tokens>…</usage></task-notification>
+
+3.22: a peer hand-back ``<agent-message from="<id>">…`` records the same way (the id as the
+task id); a prompt holding the mod's marker ``‹pa reply`` is ignored.
 
 Everything else returns immediately: a developer prompt is none of the ledger's
 business and this hook's budget is 60 ms.  The parsed return lands in
@@ -16,6 +19,10 @@ governed project, the contract status lands in ``.run/status.json.note``.
 Returns output only for the renewal-day prompt (3.11 T9): after a switch to an account
 without a renewal day, a ``systemMessage`` for the user and ``additionalContext`` that asks
 the model to put one question; everything else returns nothing.
+
+3.24 T6: the first prompt of a ``mod: on`` project's main session checks this session's mod
+heartbeat (pa/health.py ``first_prompt``): a mod that failed to load is healed in the same session
+and the ``additionalContext`` line says what broke and what was done.
 """
 
 import re
@@ -26,11 +33,17 @@ from . import agent_of, governed, now_iso, project_config, sid_of, status_patch
 _TAG_RE = re.compile(r"<([a-z-]+)>(.*?)</\1>", re.S)
 _STATUS_RE = re.compile(r"STATUS\s*[:=]\s*([A-Za-z-]+)", re.I)
 _CONTRACT = ("handoff", "done", "blocked", "question", "review", "error")
+_PEER_RE = re.compile(r'\s*<agent-message from="([^"]+)">(.*?)(?:</agent-message>\s*)?\Z', re.S)
+MOD_MARKER = "‹pa reply"                    # 3.22: the mod's marker prompt, never a hand-back
 
 
 def parse_notification(prompt):
-    """``{tag: text}`` for a ``<task-notification>`` prompt, else ``{}``."""
+    """``{tag: text}`` for a ``<task-notification>`` prompt; for a peer hand-back
+    (``<agent-message from="<id>">``, 3.22) ``{"task-id": id, "result": text}``; else ``{}``."""
     text = str(prompt or "")
+    m = _PEER_RE.match(text)
+    if m:
+        return {"task-id": m.group(1), "result": m.group(2).strip()}
     if "<task-notification>" not in text:
         return {}
     out = {}
@@ -70,11 +83,31 @@ def _renewal_after_switch(inp, cfg):
             "hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": model_line}}
 
 
+def _health_line(inp):
+    """3.24 T6: the first prompt's heartbeat check (main session, ``mod: on`` project), else None."""
+    if agent_of(inp) or inp.get("pa_probe"):
+        return None
+    try:
+        from .. import health
+        root = governed(inp)
+        return health.first_prompt(root, sid_of(inp)) if health.mod_on(root) else None
+    except Exception:
+        return None
+
+
 def run(inp, cfg):
     inp = inp or {}
+    if MOD_MARKER in str(inp.get("prompt") or ""):     # 3.22: the mod's own marker prompt
+        return None
     fields = parse_notification(inp.get("prompt"))
     if not fields:
-        return _renewal_after_switch(inp, cfg)
+        out = _renewal_after_switch(inp, cfg)
+        line = _health_line(inp)
+        if line:
+            out = out or {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit"}}
+            had = out["hookSpecificOutput"].get("additionalContext")
+            out["hookSpecificOutput"]["additionalContext"] = "\n".join(x for x in (had, line) if x)
+        return out
 
     sid = sid_of(inp)
     agent_id = fields.get("task-id")

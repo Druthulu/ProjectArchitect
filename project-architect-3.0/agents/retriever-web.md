@@ -1,9 +1,9 @@
 ---
 name: retriever-web
 role: retriever
-version: 3.12.2
+version: 3.27.5
 description: Researches one question on the web for a stated purpose, writes a research report with dated sources, and returns only what matters. Leaf agent; no house rules.
-model: claude-sonnet-5-5
+model: claude-haiku-5-5[1m]
 effort: medium
 omitClaudeMd: true
 tools: WebSearch, WebFetch, Write
@@ -22,4 +22,3 @@ hyphens, <=40 chars) as `# <title>`, `task:`, `agent: retriever-web`, `tags:`, t
 Return `REPORT: pending/<file>` first. `REPORT: no` never writes.
 
 By the 20th tool call, answer with what you have.
-A message that is exactly `.` is the warmer's ping: reply with the single character `.` and nothing else.

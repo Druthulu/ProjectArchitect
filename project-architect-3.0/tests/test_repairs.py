@@ -324,6 +324,40 @@ class SavingsAccountTest(RepairsCase):
         self.assertEqual(repairs.pop_notice(), [])
 
 
+RES = getattr(repairs, "STEP_RESIDUAL_OFF_MAIN", "3.24/residual-off-main")
+OLD = "sess-old"
+NEW = "sess-new"
+
+
+class ResidualOffMainTest(RepairsCase):
+    """T13q (3.24): pre-T13l residual rows on the main run move to ``unattributed:<sid>``, once."""
+
+    def run_ids(self, sid):
+        return [(r[0], r[1]) for r in self.conn.execute(
+            "SELECT msg_id, run_id FROM turns WHERE session_id=? ORDER BY msg_id", (sid,))]
+
+    def test_old_rows_move_new_rows_untouched_once(self):
+        self.turn(OLD, "o1", A, "2026-09-01T10:00:00.000Z")
+        self.turn(OLD, "residual:" + OLD, A, "2026-09-01T11:00:00.000Z", kind="residual", cost_usd=2.0)
+        self.turn(NEW, "n1", A, "2026-10-09T10:00:00.000Z")
+        self.turn(NEW, "residual:%s:opus" % NEW, A, "2026-10-09T11:00:00.000Z", kind="residual",
+                  run_id="unattributed:" + NEW, cost_usd=1.0)
+        self.assertEqual(repairs.detect_residual_off_main(self.conn, self.cfg), {"turns": 1})
+        res = repairs.run(self.cfg, conn=self.conn)
+        self.assertEqual(res[RES], {"turns": 1})
+        self.assertEqual(self.run_ids(OLD), [("o1", OLD), ("residual:" + OLD, "unattributed:" + OLD)])
+        self.assertEqual(self.run_ids(NEW), [("n1", NEW), ("residual:%s:opus" % NEW, "unattributed:" + NEW)])
+        self.assertIn(RES, repairs.pop_notice()[0])
+        self.assertIn('"turns": 1', db.get_meta(self.conn, "repair." + RES))
+
+        # second run with the stamp cleared: nothing detected, nothing changed
+        self.conn.execute("DELETE FROM meta WHERE key=?", ("repair." + RES,))
+        self.assertIsNone(repairs.detect_residual_off_main(self.conn, self.cfg))
+        self.assertIsNone(repairs.run(self.cfg, conn=self.conn)[RES])
+        self.assertEqual(self.run_ids(OLD), [("o1", OLD), ("residual:" + OLD, "unattributed:" + OLD)])
+        self.assertEqual(repairs.pop_notice(), [])
+
+
 class RunnerTest(RepairsCase):
     def test_request_spawns_once_while_locked(self):
         spawned = []
@@ -335,11 +369,53 @@ class RunnerTest(RepairsCase):
         self.assertIn("PYTHONPATH", spawned[0][1])
         self.assertTrue(os.path.exists(paths.state_path("repairs.lock")))
 
+    def test_requested_child_takes_over_hand_run_waits(self):
+        """I47 (3.24): the child takes over its requester's lock; a hand run never steals a held one."""
+        from unittest import mock
+
+        spawned = []
+        notify.set_spawner(lambda cmd, env: spawned.append(env))
+        self.assertTrue(repairs.request(self.cfg))
+        lock = paths.state_path("repairs.lock")
+        ran = []
+        with mock.patch.object(repairs, "run", side_effect=lambda *a, **k: ran.append(1)), \
+                mock.patch.dict(os.environ, {repairs._REQUESTER_ENV: spawned[0][repairs._REQUESTER_ENV]}):
+            repairs.main([])
+        self.assertEqual(ran, [1])
+        self.assertFalse(os.path.exists(lock))                     # released
+        with open(lock, "w", encoding="utf-8") as fh:              # another live run holds it
+            fh.write("%d repairs\n" % os.getpid())
+        with mock.patch.object(repairs, "run", side_effect=lambda *a, **k: ran.append(2)):
+            repairs.main([])
+        self.assertEqual(ran, [1])
+        self.assertTrue(os.path.exists(lock))
+        os.remove(lock)
+        with mock.patch.object(repairs, "run", side_effect=lambda *a, **k: ran.append(3)):
+            repairs.main([])                                      # free: the hand run takes it
+        self.assertEqual(ran, [1, 3])
+        self.assertFalse(os.path.exists(lock))
+
+    def test_stamp_never_overwritten(self):
+        """I47 (3.24): a racing run's real counts survive this run's "nothing"."""
+        key = "repair." + STEP
+
+        def racer(c, g):
+            db.set_meta(c, key, '{"counts": {"turns": 3}}')
+            return None
+        old = repairs.STEPS[:]
+        repairs.STEPS[:] = [(STEP, racer, lambda c, g, p: {})]
+        try:
+            repairs.run(self.cfg, conn=self.conn)
+        finally:
+            repairs.STEPS[:] = old
+        self.assertEqual(db.get_meta(self.conn, key), '{"counts": {"turns": 3}}')
+
     def test_fresh_ledger_prestamped(self):
         conn = db.connect(os.path.join(self.dir, "fresh.sqlite"))
         try:
             db.init_schema(conn)
             self.assertEqual(db.get_meta(conn, "repairs_version"), __version__)
+            self.assertIn(RES, repairs.step_ids())
             for sid in repairs.step_ids():
                 self.assertEqual(db.get_meta(conn, "repair." + sid), "fresh")
         finally:

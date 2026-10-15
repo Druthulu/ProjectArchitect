@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""discussion.py -- owns .run/DISCUSSION and discussions/INDEX.md.
+"""discussion.py -- owns discussions/INDEX.md rows.
 
-`on`  : the PreToolUse guard denies edits and non-read-only shell while the flag exists.
-`off` : removes the flag; `--new-record` writes discussions/D<n>.md and indexes it.
+`status <id> <value>` : sets a record's Status: line and its index row.
 `triage <id> <status>` : writes a deferred item's status into its index row (planner-gen triage).
+3.24 T3.2: `on`/`off` (the .run/DISCUSSION flag) and `--new-record` left with the discussion guard.
 Stdlib only; no imports from `pa/`.
 """
 
@@ -21,22 +21,6 @@ except Exception:
 
 INDEX_HEADER = ("# Discussions -- one line per record\n"
                 "# id | topic | date | status | path\n")
-TEMPLATE = """# {did} — {topic} ({date}, session {kind})
-Status: open
-
-## Decisions
-- (one line each)
-
-## Plan edits
-- (plan_edit.py commands; executed: yes/no)
-
-## Open
-- (unresolved items)
-
-## Deferred
-- deferred: <what> → <phase>
-"""
-
 VALID_STATUSES = ("executed", "dropped", "failed")
 STATUS_PREFIX = ("deferred:", "planned:")  # deferred:<phase>, planned:<phase>
 
@@ -113,81 +97,16 @@ def die(msg):
     raise SystemExit(1)
 
 
-def flag_path(root):
-    return os.path.join(root, ".run", "DISCUSSION")
-
-
 def dis_dir(root):
     return os.path.join(phase_dir(root), "current", "discussions")
-
-
-def next_id(root):
-    d = dis_dir(root)
-    used = []
-    if os.path.isdir(d):
-        for name in os.listdir(d):
-            m = re.match(r"^D([0-9]+)\.md$", name)
-            if m:
-                used.append(int(m.group(1)))
-    return 1 + max(used or [0])
-
-
-def cmd_on(a, root):
-    path = flag_path(root)
-    if os.path.isfile(path):
-        sys.stdout.write("discussion already on (since %s)\n"
-                         % read_text(path).strip().split("\n")[0])
-        return 0
-    stamp = datetime.datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    write_text(path, "%s\ntopic: %s\n" % (stamp, a.topic or "-"))
-    sys.stdout.write("discussion ON -- edits and non-read-only shell are denied "
-                     "until `discussion.py off`\n")
-    return 0
-
-
-def cmd_off(a, root):
-    path = flag_path(root)
-    topic = a.topic or "-"
-    kind = a.kind or os.environ.get("PA_MODE") or "router"
-    if os.path.isfile(path):
-        first = read_text(path).split("\n")
-        for line in first:
-            if line.startswith("topic:") and not a.topic:
-                topic = line.split(":", 1)[1].strip() or "-"
-        os.remove(path)
-        sys.stdout.write("discussion OFF\n")
-    else:
-        sys.stdout.write("discussion was already off\n")
-    if not a.new_record:
-        return 0
-    did = "D%d" % next_id(root)
-    target = os.path.join(dis_dir(root), "%s.md" % did)
-    date = datetime.date.today().isoformat()
-    write_text(target, TEMPLATE.format(did=did, topic=topic, date=date, kind=kind))
-    _cnote(target, script="discussion.py", sub="off", whole=True, root=root)
-    index = os.path.join(dis_dir(root), "INDEX.md")
-    if not os.path.isfile(index):
-        write_text(index, INDEX_HEADER)
-    line = "%s | %s | %s | open | %s" % (did, topic, date, rel(root, target))
-    with open(index, "a", encoding="utf-8", newline="") as fh:
-        fh.write(line + "\n")
-    _cnote(index, script="discussion.py", sub="off", added=len(line), root=root)
-    sys.stdout.write("%s\n%s\n" % (rel(root, target), line))
-    return 0
 
 
 def cmd_status(a, root):
     # when called with a record id and value: set the record's status
     did = getattr(a, "did", None)
-    if did:
-        return _set_record_status(a, root)
-    path = flag_path(root)
-    if os.path.isfile(path):
-        body = read_text(path).strip().replace("\n", " | ")
-        sys.stdout.write("on | %s\n" % body)
-    else:
-        sys.stdout.write("off\n")
-    return 0
+    if not did or not getattr(a, "value", None):
+        die("status needs a record id and a value")
+    return _set_record_status(a, root)
 
 
 def _set_record_status(a, root):
@@ -307,15 +226,9 @@ def cmd_triage(a, root):
 
 def main(argv=None):
     p = argparse.ArgumentParser(
-        prog="discussion.py", description="Read-only discussion mode (/discuss, /proceed).")
+        prog="discussion.py", description="Discussion record status and deferred-item triage.")
     sub = p.add_subparsers(dest="cmd", required=True)
-    s = sub.add_parser("on", help="raise .run/DISCUSSION")
-    s.add_argument("--topic")
-    s = sub.add_parser("off", help="drop the flag; --new-record writes discussions/D<n>.md")
-    s.add_argument("--new-record", dest="new_record", action="store_true")
-    s.add_argument("--topic")
-    s.add_argument("--kind")
-    s = sub.add_parser("status", help="on|off or set a record status")
+    s = sub.add_parser("status", help="set a record status")
     s.add_argument("did", nargs="?", help="record id (e.g. D1)")
     s.add_argument("value", nargs="?", help="executed|deferred:<phase>|planned:<phase>|dropped|failed")
     s.add_argument("--reason", nargs="*", help="reason for the status change")
@@ -325,8 +238,7 @@ def main(argv=None):
     s.add_argument("--reason", nargs="*", help="reason (not written; for the caller's log)")
     a = p.parse_args(argv)
     root = find_root()
-    return {"on": cmd_on, "off": cmd_off, "status": cmd_status,
-            "triage": cmd_triage}[a.cmd](a, root)
+    return {"status": cmd_status, "triage": cmd_triage}[a.cmd](a, root)
 
 
 if __name__ == "__main__":

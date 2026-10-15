@@ -13,6 +13,10 @@ Budget <= 600 ms, timeout 15 s: this is the one hook that may run
 ``claude auth status`` (~210 ms, cached on the credentials mtime).
 Returns nothing -- SessionStart output would be injected into the model's
 context, and D38 keeps ledger data out of it.
+
+3.24 T6: in a ``mod: on`` project the main session's start runs the mod's health check and its
+healing (pa/health.py) and, under ``upgrade: auto``, starts the offered update itself
+(``tools/pa3_update.py`` detached, after the I48 checks); the lines say what broke and what was done.
 """
 
 import os
@@ -59,15 +63,6 @@ def run(inp, cfg):
     finally:
         close_db(conn)
 
-    # 3.9.5 T4: the session's warmer daemon (never twice: a live <sid>.pid wins)
-    root = governed(inp)
-    if root:
-        try:
-            from .. import warmer
-            warmer.start_if_needed(root, sid, cfg, os.environ.get("CLAUDE_PID"))
-        except Exception as exc:       # fail soft: a cold cache costs a rewrite, never the session
-            log.log("warmer_start_failed", session_id=sid, error=str(exc)[:200])
-
     # memory link repair: governed main session only (never a subagent)
     if not agent_of(inp):
         try:
@@ -89,13 +84,6 @@ def run(inp, cfg):
         except Exception as exc:
             log.log("progress_from_kill_failed", session_id=sid, error=str(exc)[:200])
 
-    if source == "clear" and governed(inp):
-        # /clear empties the context and the main-thread agent's initialPrompt does not re-fire
-        # (docs); this line lands in the fresh context so the next message re-seeds the router.
-        return {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext":
-                "PA3: context cleared. Run the interpreter named in .claude/pa.json on "
-                "tools/launch.py --seed-only, read .run/seed.md, and enter the mode it names."}}
-
     # install offer and update check
     lines = []
     user_lines = []
@@ -109,11 +97,25 @@ def run(inp, cfg):
             user_lines.append(user_offer)
     except Exception as exc:
         log.log("offer_install_failed", session_id=sid, error=str(exc)[:200])
+    mod_root = None
+    if not agent_of(inp):
+        try:
+            from .. import health
+            mod_root = find_project_root(inp.get("cwd"))
+            if health.mod_on(mod_root):
+                healed = health.session_start(mod_root, sid, source)
+                if healed:
+                    lines.append(healed)
+            else:
+                mod_root = None
+        except Exception as exc:       # fail soft: a missed check waits for the first prompt or the next start
+            mod_root = None
+            log.log("health_check_failed", session_id=sid, error=str(exc)[:200])
     update = None
     try:
         update = _update_check(inp, cfg)
         if update:
-            lines.append(update)
+            lines.append(_auto_run(mod_root, sid, update))
     except Exception as exc:
         log.log("update_check_failed", session_id=sid, error=str(exc)[:200])
     if not update:
@@ -121,7 +123,7 @@ def run(inp, cfg):
         try:
             behind = _record_behind(inp, cfg)
             if behind:
-                lines.append(behind)
+                lines.append(_auto_run(mod_root, sid, behind))
         except Exception as exc:
             log.log("record_behind_failed", session_id=sid, error=str(exc)[:200])
     if source == "startup" and not agent_of(inp):
@@ -165,7 +167,7 @@ def _record(conn, inp, cfg, sid, source, status, email):
 
     cwd = inp.get("cwd") or ""
     agent_type = inp.get("agent_type")
-    kind = session_kind(agent_type, cfg)
+    kind = session_kind(agent_type, cfg, governed(inp))
     role = role_of(inp, cfg)
     machine = paths.machine_tag()
     now = now_iso()
@@ -254,15 +256,20 @@ _ABSENT = {"absent": "tier", "base": None, "sha": None, "user": None}
 def _reconcile_ladder(inp, conn, email):
     """3.10.6 T3: the managed agents follow the account's plan tier.
 
-    Main session, governed root with ``.claude/pa3-managed.json`` only. A start with no
+    Main session, ``mod: on`` governed root with ``.claude/pa3-managed.json`` only (3.24 T17d: a
+    ``mod: off`` or pre-mod project, 3.15.3 layout, gets no agent, record or pa.json write). A start with no
     mismatch and ``pa.json`` ``preset`` in step reads pa.json, the six agents and the db row
     and writes nothing; a mismatch re-renders the installed text (body edits kept), installs
-    or removes expert-fable and updates the managed record.
+    or removes an agent absent at the tier (was expert-fable; 3.25 T6a: none, the variant rows have no file)
+    and updates the managed record.
     A ``pa_probe`` payload (doctor's latency run on a fixture) returns at once: a probe never mutates the project."""
     if agent_of(inp) or (inp or {}).get("pa_probe"):
         return
     root = governed(inp)
     if not root or not os.path.isfile(os.path.join(root, ".claude", "pa3-managed.json")):
+        return
+    from .. import health
+    if not health.mod_on(root):    # 3.24 T17d: the gate the heal and update paths use (T3.1 had dropped it)
         return
     import json as _json
     from ..install import ladder
@@ -279,7 +286,7 @@ def _reconcile_ladder(inp, conn, email):
     preset = accounts.tier_for(conn, email, pa)
     override = pa.get("ladder") if isinstance(pa.get("ladder"), dict) else None
     agents_dir = os.path.join(root, ".claude", "agents")
-    todo = ladder.mismatches(agents_dir, preset, override)
+    todo = ladder.mismatches(agents_dir, preset, override)   # 3.24 T3.1: mod= arg left; T17d gates above
     if todo:
         _ladder_apply(root, agents_dir, todo, preset, override)
     if pa.get("preset") != preset:
@@ -287,8 +294,9 @@ def _reconcile_ladder(inp, conn, email):
 
 
 def _pkg_agent(agent):
-    """The packaged agent text from the package clone, else None."""
-    path = os.path.join(paths.package_clone_dir(), "project-architect-3.0", "agents", agent + ".md")
+    """The packaged agent text from the installed root (``<pa3>/agents/``), else None.
+    3.24 T4: was the package clone, which may hold unreleased code (I48)."""
+    path = os.path.join(paths.install_dir(), "agents", agent + ".md")
     try:
         with open(path, "r", encoding="utf-8", newline="") as fh:
             return fh.read()
@@ -859,16 +867,27 @@ def _offer_parts(inp, cfg):
 
 # --------------------------------------------------------------------------- update check
 
-def _update_check(inp, cfg):
-    """Check for PA3 updates from the package clone (startup, main session only).
-
-    A fresh stamp (update.json checked_at within install.update_check_hours) skips only the
-    git fetch and the stamp rewrite; the local comparison and the offer run on every startup.
-    """
-    source = str((inp or {}).get("source") or "startup").lower()
-    if source != "startup":
-        return None
+def _check_due(inp):
+    """3.28 T5: the release check runs at every startup, and at a resume in a ``mod: on`` project
+    (the mod makes sessions endless); main session only, never on clear or compact."""
     if agent_of(inp):
+        return False
+    source = str((inp or {}).get("source") or "startup").lower()
+    if source == "startup":
+        return True
+    if source != "resume":
+        return False
+    from .. import health
+    return bool(health.mod_on(find_project_root((inp or {}).get("cwd"))))
+
+
+def _update_check(inp, cfg):
+    """Check for PA3 updates from the package clone (main session; see ``_check_due``).
+
+    Every check fetches the clone and rewrites the update.json stamp (the doctor row reads it).
+    3.28 T5: the once-a-day freshness gate is gone.
+    """
+    if not _check_due(inp):
         return None
 
     from .. import config as _config
@@ -878,36 +897,24 @@ def _update_check(inp, cfg):
     if not os.path.isdir(clone):
         return None
 
-    check_hours = _config.get(cfg, "install.update_check_hours", 24)
     stamp_path = os.path.join(pa3_dir, "update.json")
 
-    import json as _json
     import time as _time
 
     now = _time.time()
-    fresh = False
-    try:
-        with open(stamp_path, "r", encoding="utf-8") as fh:
-            stamp = _json.loads(fh.read())
-        checked_at = stamp.get("checked_at", 0)
-        if isinstance(checked_at, (int, float)) and now - checked_at < check_hours * 3600:
-            fresh = True
-    except (OSError, ValueError):
-        pass
 
     timeout_s = _config.get(cfg, "install.fetch_timeout_s", 8)
     import subprocess
-    if not fresh:  # the stamp gates only the network step and the stamp rewrite
-        try:
-            result = subprocess.run(
-                ["git", "-C", clone, "fetch", "--quiet"],
-                capture_output=True, timeout=timeout_s)
-            if result.returncode != 0:
-                _write_stamp(stamp_path, {"checked_at": now, "status": "offline"})
-                return None
-        except (OSError, subprocess.SubprocessError):
+    try:
+        result = subprocess.run(
+            ["git", "-C", clone, "fetch", "--quiet"],
+            capture_output=True, timeout=timeout_s)
+        if result.returncode != 0:
             _write_stamp(stamp_path, {"checked_at": now, "status": "offline"})
             return None
+    except (OSError, subprocess.SubprocessError):
+        _write_stamp(stamp_path, {"checked_at": now, "status": "offline"})
+        return None
 
     # installed hash, package tree and version from VERSION git:/tree:/version: lines
     version_path = os.path.join(pa3_dir, "VERSION")
@@ -937,17 +944,17 @@ def _update_check(inp, cfg):
         except (OSError, subprocess.SubprocessError):
             remote_tree = ""
     # remote package version (I11): the clone's project-architect-3.0/VERSION where the tree id comes from
+    # (3.24 T4 / I48: read with or without tree:, since it alone decides the offer)
     remote_version = ""
-    if tree:
-        try:
-            r = subprocess.run(
-                ["git", "-C", clone, "show", "@{u}:project-architect-3.0/VERSION"],
-                capture_output=True, text=True, timeout=5)
-            if r.returncode == 0:
-                from .. import parse_version
-                remote_version = parse_version(r.stdout)
-        except (OSError, subprocess.SubprocessError):
-            remote_version = ""
+    try:
+        r = subprocess.run(
+            ["git", "-C", clone, "show", "@{u}:project-architect-3.0/VERSION"],
+            capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            from .. import parse_version
+            remote_version = parse_version(r.stdout)
+    except (OSError, subprocess.SubprocessError):
+        remote_version = ""
     scope = ["--", "project-architect-3.0"] if tree else []
 
     # behind count
@@ -992,32 +999,66 @@ def _update_check(inp, cfg):
     if tree:
         doc["tree"] = tree
         doc["remote_tree"] = remote_tree
-    if not fresh:
-        _write_stamp(stamp_path, doc)
+    _write_stamp(stamp_path, doc)
 
     root = find_project_root((inp or {}).get("cwd"))
     steps = _update_steps(clone, root, _upgrade_mode(root))
 
-    if tree:
-        # the package tree decides: commits outside project-architect-3.0/ (bench results) never offer
-        tree_changed = bool(remote_tree) and remote_tree != tree
-        ver_changed = bool(remote_version) and remote_version != inst_version
-        if not (tree_changed or ver_changed):
-            return None
-        why = (" (version %s -> %s)" % (inst_version or "unknown", remote_version)
-               if ver_changed else " (package changed)")
-        if behind == 0:
-            return ("PA3: the installed copy (%s) is behind the clone (%s)%s. %s"
-                    % (installed or tree[:7], clone_head, why, steps))
-        subj_str = "; ".join(subjects)
-        return ("PA3: update available: %d commits (%s)%s. %s" % (behind, subj_str, why, steps))
-    if behind > 0:
-        subj_str = "; ".join(subjects)
-        return ("PA3: update available: %d commits (%s). %s" % (behind, subj_str, steps))
-    if installed and installed != clone_head:
-        return ("PA3: the installed copy (%s) is behind the clone (%s). %s"
-                % (installed, clone_head, steps))
-    return None
+    # I48 (3.24 T4): a root takes only released code. The clone's @{u} package VERSION above the
+    # installed version: offers; a changed tree alone (a release candidate, an unreleased package
+    # commit, bench results) or a clone below the root never offers. Was: tree or version changed.
+    if not _version_above(remote_version, inst_version):
+        return None
+    why = " (version %s -> %s)" % (inst_version or "unknown", remote_version)
+    if behind == 0:
+        return ("PA3: the installed copy (%s) is behind the clone (%s)%s. %s"
+                % (installed or tree[:7] or "unknown", clone_head, why, steps))
+    subj_str = "; ".join(subjects)
+    return ("PA3: update available: %d commits (%s)%s. %s" % (behind, subj_str, why, steps))
+
+
+def _auto_run(root, sid, line):
+    """3.24 T6: under ``upgrade: auto`` in a ``mod: on`` project, start the offered run
+    (``tools/pa3_update.py`` detached, single flight) and say so in place of ``line``; else ``line``."""
+    if not root:
+        return line
+    try:
+        import re as _re
+        from .. import health
+        if health.upgrade_mode(root) != "auto":
+            return line
+        m = _re.search(r"\(version [^)]*\)", line)
+        what = ("the update to the newer release %s" % m.group(0) if m
+                else "the project step (this project's files are behind the installed PA3)")
+        if health.run_running(root):
+            return ("PA3: updating: a run is already going (.run/mod/update.log); the mod starts no task until "
+                    "it finishes and then says what changed.")
+        if not health.start_run(root, False, line):
+            return line
+        health.mark_ran(root, sid)
+    except Exception as exc:           # fail soft: the offer line stands
+        log.log("auto_update_failed", session_id=sid, error=str(exc)[:200])
+        return line
+    return ("PA3: updating: the session-start hook started %s in the background (tools/pa3_update.py, log "
+            ".run/mod/update.log). The mod starts no task until it finishes, then says what changed; %s."
+            % (what, health.RELOAD))
+
+
+def _version_key(text):
+    """``(3, 24, 0)`` from a version's leading dotted numbers, else None."""
+    import re as _re
+    m = _re.match(r"^\s*(\d+(?:\.\d+)*)", text or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def _version_above(remote, installed):
+    """I48: True when ``remote`` is a readable version above ``installed`` (an unreadable installed
+    version counts as below any readable remote one)."""
+    want = _version_key(remote)
+    if want is None:
+        return False
+    have = _version_key(installed)
+    return have is None or want > have
 
 
 def _upgrade_mode(root):
@@ -1080,7 +1121,7 @@ def _project_steps(clone, root, mode):
 def _update_steps(clone, root, mode):
     """The `update pa3` command text: the project wrapper when governed, else pull + root refresh.
 
-    T15: mode "auto" (governed root) names the steps the router runs before the first task.
+    T15: mode "auto" (governed root) names the steps the session runs before the first task.
     T20: governed roots name ``tools/pa3_update.py`` (or the installer once, pre-T20 projects)."""
     if root:
         return _project_steps(clone, root, mode)
@@ -1093,10 +1134,11 @@ def _update_steps(clone, root, mode):
 def _record_behind(inp, cfg):
     """T15: the project's managed record (``git``) is behind the installed PA3 (VERSION ``git:``).
 
-    Startup, main session, governed root with ``.claude/pa3-managed.json`` only; not gated
-    by the update.json stamp. Behind: no record hash, or the record is an ancestor of it."""
-    source = str((inp or {}).get("source") or "startup").lower()
-    if source != "startup" or agent_of(inp):
+    When ``_check_due`` (startup; resume in a ``mod: on`` project), main session, governed root
+    with ``.claude/pa3-managed.json`` only. Behind: no record hash, or the record is an ancestor of it.
+    I48 (3.24 T4): offered only when the installed VERSION ``tree:`` equals the clone's ``@{u}``
+    package tree (a released root); a release candidate or a clone below the root is silent."""
+    if not _check_due(inp):
         return None
     root = find_project_root((inp or {}).get("cwd"))
     if not root:
@@ -1109,21 +1151,30 @@ def _record_behind(inp, cfg):
         return None
     rec = str(rec_doc.get("git") or "").strip() if isinstance(rec_doc, dict) else ""
     inst = ""
+    tree = ""
     try:
         with open(os.path.join(paths.install_dir(), "VERSION"), "r", encoding="utf-8") as fh:
             for line in fh:
-                if line.startswith("git:"):
+                if line.startswith("git:") and not inst:
                     inst = line.split(":", 1)[1].strip()
-                    break
+                elif line.startswith("tree:") and not tree:
+                    tree = line.split(":", 1)[1].strip()
     except OSError:
         return None
     clone = paths.package_clone_dir()
-    if not inst or not os.path.isdir(clone):
+    if not inst or not tree or not os.path.isdir(clone):
+        return None
+    import subprocess
+    try:
+        r = subprocess.run(["git", "-C", clone, "rev-parse", "@{u}:project-architect-3.0"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0 or r.stdout.strip() != tree:          # not a released root
         return None
     if rec:
         if rec.startswith(inst) or inst.startswith(rec):     # same commit, short or full hash
             return None
-        import subprocess
         try:
             r = subprocess.run(["git", "-C", clone, "merge-base", "--is-ancestor", rec, inst],
                                capture_output=True, timeout=5)

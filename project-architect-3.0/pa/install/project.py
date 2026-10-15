@@ -59,8 +59,8 @@ CURRENT_SUBDIRS = ("tasks", "logs", "research", "discussions")
 REFRESHED = ("agents", "project-architect skill", "commands", "tools", "templates", "docs/project-architect.md")
 
 DISCUSSIONS_INDEX = (
-    "<!-- Discussion records for one phase. One line per record, written by "
-    "tools/discussion.py off --new-record: D<n> | <topic> | <date> | discussions/D<n>.md -->\n"
+    "<!-- Discussion records for one phase. One line per record: "
+    "D<n> | <topic> | <date> | discussions/D<n>.md -->\n"
 )
 TASK_INDEX = ("# Tasks -- cumulative\n"
               "# phase | id | status | title | tags | summary | log | research\n")
@@ -69,7 +69,13 @@ RESEARCH_INDEX = ("# Research -- cumulative\n"
 LEGACY_INDEX = ("# Legacy PhaseEnds (pre-PA3)\n"
                 "# phase | title | milestone | date | path\n")
 
-RETIRED_AGENTS = ("coder-opus46.md", "coder-sonnet.md", "expert-fable-high.md")  # was ("coder-opus46.md", "coder-sonnet.md") (3.9.5 T15); was ("coder-opus46.md",) (3.9.5 T9); coder-opus46 was also the hard-tier expert's agent file (3.9 T1: back as the hard tier)
+RETIRED_AGENTS = ("coder-opus46.md", "coder-sonnet.md", "expert-fable-high.md", "partner.md",  # 3.25 T6a: + the five per-model role agents (pa-expert, pa-coder, pa-thinker replace them)
+                  "expert-opus55.md", "expert-fable.md", "coder-opus55.md", "thinker.md", "deep-thinker.md")  # partner.md: renamed claude.md (3.22 T8f), pa-claude.md (T8g); was ("coder-opus46.md", "coder-sonnet.md") (3.9.5 T15); was ("coder-opus46.md",) (3.9.5 T9); coder-opus46 was also the hard-tier expert's agent file (3.9 T1: back as the hard tier)
+RETIRED_GEN3 = tuple([".claude/agents/%s.md" % a for a in (     # 3.24 T5: the Gen 3 loop (T3.1); pruned
+    "pa-session", "critic", "review", "discuss", "discuss-high", "discuss-max", "planner-gen",
+    "planner-phase", "expert-opus55-5m", "expert-fable-5m", "plain")]  # recorded or not (bfm: untracked)
+    + [".claude/commands/%s.md" % c for c in ("discuss", "plangen", "planphase", "proceed", "thoughts")]
+    + ["tools/expert_ttl.py", "templates/discussion.template.md"])
 
 # --------------------------------------------------------------------------- state
 
@@ -309,6 +315,28 @@ def _raw_pa_json(env):
     return data if isinstance(data, dict) else {}
 
 
+def _bash_path():
+    """3.23 T2: pa.json ``bash`` under mod on. Windows: ``CLAUDE_CODE_GIT_BASH_PATH``, else
+    ``<git install>/bin/bash.exe`` beside ``shutil.which("git")`` (…/Git/cmd/git.exe) when it
+    exists (found by walking up from git), else empty so the mod derives it; elsewhere ``bash``."""
+    if os.name != "nt":
+        return "bash"
+    env_path = os.environ.get("CLAUDE_CODE_GIT_BASH_PATH")
+    if env_path:
+        return env_path
+    git = shutil.which("git")
+    if git:
+        # 3.23 T10: git can be …/Git/cmd/git.exe (Windows PATH) or …/Git/mingw64/bin/git.exe (a Git Bash
+        # shell's PATH), so walk up to the install root holding bin/bash.exe
+        d = os.path.dirname(git)
+        for _ in range(4):
+            cand = os.path.join(d, "bin", "bash.exe")
+            if os.path.isfile(cand):
+                return cand.replace("\\", "/")
+            d = os.path.dirname(d)
+    return ""  # never a bare "bash" on Windows (it can be WSL's); the mod derives Git Bash itself
+
+
 def _preset(env):
     """The ladder preset, once per run (3.10.6 T2): ``env.preset`` when set > the ledger's
     ``override`` row for the cached email > the credentials tier > ``accounts.tier_for``."""
@@ -393,7 +421,8 @@ def _absent_agent(env, up, rel):
 
 def copy_agents(env, up):
     """``.claude/agents/*.md`` through :func:`ladder.render` at the run's preset (3.10.6 T2):
-    the only route that writes agents. Returns the per-file results (absent agents omitted)."""
+    the only route that writes agents. Returns the per-file results (absent agents omitted).
+    3.24 T3.1: every packaged agent; was pa-claude, thinker and deep-thinker only under mod on."""
     out = []
     src_dir = os.path.join(env.pkg, "agents")
     if not os.path.isdir(src_dir):
@@ -734,6 +763,78 @@ def _now_iso_utc():
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
 
 
+def _mod_keys(existing):
+    """3.24 T5: pa.json ``mod`` (always on), ``upgrade`` (kept, else auto; decision 6) and ``bash``
+    (kept, else found, per machine), in write order."""
+    return (("mod", "on"), ("upgrade", existing.get("upgrade") or "auto"),
+            ("bash", existing.get("bash") or _bash_path()))                 # 3.23 T2
+
+
+def _put_json_key(text, key, value):
+    """3.24 T5: ``text`` (a JSON object) with top-level ``key`` set to ``value``: a string value
+    replaced in place, an absent key inserted after the opening brace; the rest kept byte for byte."""
+    pat = re.compile(r'^(\s*"%s"\s*:\s*)"(?:[^"\\]|\\.)*"' % re.escape(key), re.M)
+    if pat.search(text):
+        return pat.sub(lambda m: m.group(1) + json.dumps(value), text, count=1)
+    if re.search(r'^\s*"%s"\s*:' % re.escape(key), text, re.M):
+        data = json.loads(text)                     # a non-string value: rewrite the document
+        data[key] = value
+        return json.dumps(data, indent=2) + "\n"
+    return re.sub(r"^\{", lambda m: '{\n  "%s": %s,' % (key, json.dumps(value)), text, count=1)
+
+
+def pa_json_mod(env):
+    """3.24 T5: a pa3 upgrade's pa.json takes :func:`_mod_keys` (its other keys kept); a mode change
+    marks ``restart: needed``. Returns the changed keys ``[(key, old, new)]``."""
+    rel = ".claude/pa.json"
+    if not os.path.isfile(env.path(rel)):
+        place(env, rel, text=pa_json_text(env))
+        return [("pa.json", None, "written")]
+    text = fsutil.read_text(env.path(rel), "")
+    try:
+        existing = json.loads(text)
+    except ValueError:
+        env.warnings.append(".claude/pa.json does not parse: mod, upgrade and bash not written")
+        return []
+    existing = existing if isinstance(existing, dict) else {}
+    changed, new = [], text
+    for key, value in _mod_keys(existing):
+        if existing.get(key) != value:
+            changed.append((key, existing.get(key), value))
+            new = _put_json_key(new, key, value)
+    if not changed:
+        env.man.skipped.append(rel)
+        return []
+    json.loads(new)                                      # refuse to write broken JSON
+    if any(k == "mod" for k, _o, _n in changed):
+        env.restart = True
+    write_changed(env, rel, new, backup=False)
+    return changed
+
+
+def _pa_json_preset(env):
+    """3.24 T12e: write the run's resolved ``env.ladder_preset`` to pa.json ``preset`` (other keys
+    kept), so pa.json never disagrees with the agents this run renders. No pa.json, a pa.json that
+    does not parse, a dry run or an equal value: nothing written."""
+    rel = ".claude/pa.json"
+    preset = getattr(env, "ladder_preset", None)
+    if env.dry_run or preset not in ladder.PRESETS or not os.path.isfile(env.path(rel)):
+        return
+    text = fsutil.read_text(env.path(rel), "")
+    try:
+        existing = json.loads(text)
+    except ValueError:
+        return
+    if not isinstance(existing, dict) or existing.get("preset") == preset:
+        return
+    new = _put_json_key(text, "preset", preset)
+    json.loads(new)                                      # refuse to write broken JSON
+    with open(env.path(rel), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(new)
+    if rel not in env.man.created and rel not in env.man.updated:
+        env.man.updated.append(rel)
+
+
 def pa_json_text(env):
     """``pa.json.template`` with the project name, the interpreter, the version and
     ``installed_at`` (T10.1): stamped once, carried forward unchanged from an existing
@@ -761,6 +862,11 @@ def pa_json_text(env):
             text = re.sub(r'("tier"\s*:\s*"[^"]*")',
                           lambda m, k=key: m.group(1) + ',\n  "%s": %s' % (k, json.dumps(existing[k])),
                           text, count=1)
+    # 3.22: pa.json ``mod``; 3.24 T3.1: every install writes mod on, upgrade (kept, else ask) and
+    # bash (kept, else found); was ``--mod on`` only (also setting warmer off), ``--mod off`` wrote mod off
+    # 3.24 T5: resolved once (:func:`_mod_keys`), replacing the template's values; upgrade defaults to auto
+    for key, value in _mod_keys(existing):
+        text = _put_json_key(text, key, value)
     ped =getattr(env, "phase_ends_dir", "phase-ends")
     if ped != "phase-ends":
         text = re.sub(r'("phase_ends_dir"\s*:\s*)"[^"]*"',
@@ -787,8 +893,15 @@ def bootstrap(env, skip=None):
     skip the real generation).
     """
     if env.layout == "pa3":
-        step("P2", "bootstrap", "SKIP", "pa3 upgrade: the project tree is already bootstrapped")
-        return "SKIP"
+        changed = pa_json_mod(env)                       # 3.24 T5: mod on, upgrade, bash
+        if not changed:
+            step("P2", "bootstrap", "SKIP", "pa3 upgrade: the project tree is already bootstrapped")
+            return "SKIP"
+        step("P2", "bootstrap", "SKIP" if env.dry_run else "DONE",
+             "pa3 upgrade: .claude/pa.json %s" % ", ".join(k for k, _o, _n in changed))
+        for key, old, new in changed:
+            note("~ pa.json   %s: %s -> %s" % (key, json.dumps(old), json.dumps(new)))
+        return "SKIP" if env.dry_run else "DONE"
     mark = env.man.mark()
     ped = getattr(env, "phase_ends_dir", "phase-ends")
     skip = skip or set()
@@ -954,18 +1067,11 @@ def copy_files(env):
     up.rules = rules                        # past skill versions are filled with it (T15)
     env.ladder_preset = _preset(env)        # the model ladder, resolved once (3.10.6 T2)
     env.ladder_override = _raw_pa_json(env).get("ladder")
+    _pa_json_preset(env)                    # 3.24 T12e: pa.json agrees with the rendered agents
 
     pairs = copy_agents(env, up)
-    # prune retired agents that a previous install may have placed
-    for stale in RETIRED_AGENTS:
-        old = env.path(os.path.join(".claude", "agents", stale))
-        if os.path.isfile(old):
-            env.man.removed.extend(_pruned_files(env, ".claude/agents/" + stale))
-            if env.dry_run:
-                step("P3", "files", "SKIP", "would remove retired agent %s" % stale)
-                continue
-            os.remove(old)
-            step("P3", "files", "DONE", "removed retired agent %s" % stale)
+    # 3.24 T5: retired agents are pruned with every other file no longer shipped (up.prune below),
+    # so an edited one is staged; was removed here unconditionally
     # prune a PA3 skill a previous install placed under an older name (found by description)
     for stale in detect_mod.legacy_skills(env.repo):
         env.man.removed.extend(_pruned_files(env, ".claude/skills/" + stale))
@@ -977,6 +1083,11 @@ def copy_files(env):
     _stage_earlier_prunes(env)
     skill = ".claude/skills/project-architect/SKILL.md"
     pairs.append((skill, place(env, skill, text=skill_text(env, rules), upgrade=up)))
+    planning = os.path.join(pkg, "skills", "pa-planning", "SKILL.template.md")   # 3.23 T2; was mod on only
+    with open(planning, "r", encoding="utf-8", newline="") as fh:
+        ptext = fill_py(fh.read())
+    prel = ".claude/skills/pa-planning/SKILL.md"
+    pairs.append((prel, place(env, prel, text=ptext, upgrade=up)))
     pairs += copy_dir(env, os.path.join(pkg, "commands"), ".claude/commands",
                       transform=fill_py, only=".md", upgrade=up)
     pairs += copy_dir(env, os.path.join(pkg, "tools"), "tools", recurse=True, upgrade=up)
@@ -1003,12 +1114,16 @@ def copy_files(env):
             return "FAIL"
         pairs.append((managed.DOC, place(env, managed.DOC, src=master, upgrade=up)))
     rename_skill_refs(env)
+    # 3.24 T5: the general prune: recorded files the package no longer ships, and the retired agents
+    up.prune([rel for rel, _r in pairs], [".claude/agents/" + a for a in RETIRED_AGENTS] + list(RETIRED_GEN3),
+             never_keep=RETIRED_GEN3)          # T5c: an edited Gen 3 file goes too, its copy kept
     if not env.dry_run:
-        up.apply()                      # UPGRADE.md `| resolve:` verdicts, before record (T20)
+        up.apply()                     # UPGRADE.md `| resolve:` verdicts, before record (T20)
         managed.record(env, pairs, up)  # .claude/pa3-managed.json: the five groups and the doc (T25)
         up.stage()                      # .claude/pa3-upgrade/: conflicts kept, upstream staged (T8)
     if env.layout == "pa3":
         up.report(pairs)                # one class line per changed managed file, then counts (T10)
+        env.restart = getattr(env, "restart", False) or up.restart       # 3.24 T5: close prints it
 
     done = env.man.since(mark)
     status = "SKIP" if (env.dry_run or not Manifest.changed(done)) else "DONE"
@@ -1161,34 +1276,112 @@ _OLD_KEY, _NEW_KEY = "claude-sonnet-5", "claude-sonnet-5-5"
 _OLD_EFFORT = {"effortLevel": "medium"}
 
 
-def migrate_model_defaults(settings):
-    """Swap the old shipped ``model``/``modelSettings`` defaults in ``settings`` (in place).
+# 3.24 T5 (decision 4): every pin PA3 shipped (the snippet's history), PA3's to remove
+SHIPPED_PINS = {"agent": ("pa-session",), "model": (_OLD_MODEL, _NEW_MODEL)}
+SHIPPED_EFFORT_KEYS = (_OLD_KEY, _NEW_KEY, "claude-fable-5-1")
 
-    Only the exact old default values move; any other value is the developer's and is kept.
-    Returns ``[(key, old, new), ...]`` in the merge report's ``changed`` shape."""
+
+def migrate_model_defaults(settings, keep=None):
+    """Remove the pins PA3 shipped from ``settings`` (in place; 3.24 T5, decision 4): ``agent``
+    pa-session, ``model`` Sonnet 5 / 5.5 [1m], ``modelSettings`` entries equal to the shipped
+    ``{effortLevel: medium}`` (an emptied ``modelSettings`` goes). Was (3.12 T1): swap Sonnet 5
+    for Sonnet 5.5. 3.27 T11: a ``model`` equal to ``keep`` (this tier's partner pin) stays.
+
+    Any other value is the developer's and is kept. Returns ``[(key, old, new), ...]`` in the
+    merge report's ``changed`` shape."""
     changed = []
-    if settings.get("model") == _OLD_MODEL:
-        settings["model"] = _NEW_MODEL
-        changed.append(("model", _OLD_MODEL, _NEW_MODEL))
+    for key, values in sorted(SHIPPED_PINS.items()):
+        if settings.get(key) in values and not (key == "model" and settings[key] == keep):
+            changed.append((key, settings.pop(key), "<removed>"))
     ms = settings.get("modelSettings")
-    if isinstance(ms, dict) and ms.get(_OLD_KEY) == _OLD_EFFORT:
-        del ms[_OLD_KEY]
-        changed.append(("modelSettings." + _OLD_KEY, dict(_OLD_EFFORT), "<removed>"))
-        if _NEW_KEY not in ms:
-            ms[_NEW_KEY] = dict(_OLD_EFFORT)
-            changed.append(("modelSettings." + _NEW_KEY, None, dict(_OLD_EFFORT)))
+    if isinstance(ms, dict):
+        for key in SHIPPED_EFFORT_KEYS:
+            if ms.get(key) == _OLD_EFFORT:
+                del ms[key]
+                changed.append(("modelSettings." + key, dict(_OLD_EFFORT), "<removed>"))
+        if not ms and changed:
+            del settings["modelSettings"]
+    return changed
+
+
+def foreign_pins(settings, rel):
+    """3.24 T5: one line per ``agent``/``model``/``modelSettings`` value in ``settings`` that PA3
+    did not ship: the developer's, kept and reported."""
+    out = []
+    for key in ("agent", "model"):
+        if key in settings and settings[key] not in SHIPPED_PINS[key] + _MOD_PIN_VALUES.get(key, ()):
+            out.append("%s %s: %s (yours, kept)" % (rel, key, json.dumps(settings[key])))
+    ms = settings.get("modelSettings")
+    if isinstance(ms, dict) and ms:
+        out.append("%s modelSettings: %s (yours, kept)" % (rel, ", ".join(sorted(ms))))
+    return out
+
+
+# 3.22 T2d: defaults a pa3 upgrade adds when absent; a value the project has is kept
+PA3_ADD_DEFAULTS = (("promptSuggestionEnabled", False), ("idleCompaction", False))
+
+
+def add_pa3_defaults(settings):
+    """Add each :data:`PA3_ADD_DEFAULTS` key absent from ``settings`` (in place).
+
+    Returns ``[(key, None, value), ...]`` in the merge report's ``changed`` shape."""
+    added = []
+    for key, value in PA3_ADD_DEFAULTS:
+        if key not in settings:
+            settings[key] = value
+            added.append((key, None, value))
+    return added
+
+
+_DEAD_TOOLS_RULE = re.compile(r"^Bash\((.+ tools/\*):\*\)$")   # 3.24 T12h: old PA's tools/*:*
+
+
+def fix_dead_tool_rules(settings):
+    """3.24 T12h: turn each old PA ``Bash(<x> tools/*:*)`` in ``permissions.allow`` (a ``*`` before
+    ``:*`` is literal to Claude Code, so it matches nothing) into ``Bash(<x> tools/*)`` in place, in
+    order; dropped when that twin is already there. Every other entry is the user's and stays.
+    Returns ``[(key, old, new), ...]`` in the merge report's ``changed`` shape."""
+    perms = settings.get("permissions")
+    allow = perms.get("allow") if isinstance(perms, dict) else None
+    if not isinstance(allow, list):
+        return []
+    out, changed = [], []
+    for rule in allow:
+        m = _DEAD_TOOLS_RULE.match(rule) if isinstance(rule, str) else None
+        if not m:
+            out.append(rule)
+            continue
+        twin = "Bash(%s)" % m.group(1)
+        if twin in allow or twin in out:
+            changed.append(("permissions.allow", rule, "<removed>"))
+        else:
+            out.append(twin)
+            changed.append(("permissions.allow", rule, twin))
+    if changed:
+        perms["allow"] = out
     return changed
 
 
 def migrate_pa3_settings(env):
-    """P7 on a pa3 upgrade: migrate only the old model defaults in ``.claude/settings.json``."""
+    """P7 on a pa3 upgrade: remove the shipped pins from ``.claude/settings.json``, fix old PA's
+    dead ``tools/*:*`` allow rules (3.24 T12h) and add :data:`PA3_ADD_DEFAULTS`,
+    :data:`MOD_PINS` and :data:`MOD_ADD` when absent (3.24 T5)."""
     rel = ".claude/settings.json"
     path = env.path(rel)
     current = fsutil.read_json(path, None) if os.path.isfile(path) else None
     if not isinstance(current, dict):
         return []
     migrated = json.loads(json.dumps(current))
-    moved = migrate_model_defaults(migrated)
+    pins = mod_pins(_tier(env))                                  # 3.27 T11: the tier's pins
+    moved = (migrate_model_defaults(migrated, dict(pins)["model"]) + fix_dead_tool_rules(migrated)
+             + add_pa3_defaults(migrated) + retier_mod_pins(migrated, pins))
+    for key, value in pins + MOD_ADD:                            # 3.23 T13d.c8; was mod on only
+        if key not in migrated:                                  # 3.24 T5: and MOD_ADD
+            migrated[key] = value
+            moved.append((key, None, value))
+    if any(k.split(".")[0] in ("agent", "model", "modelSettings", "effortLevel")
+           for k, _o, _n in moved):
+        env.restart = True                                       # 3.24 T5: a pin changed
     if not moved:
         env.man.skipped.append(rel)
         return []
@@ -1201,6 +1394,50 @@ def migrate_pa3_settings(env):
     return moved
 
 
+MOD_ADD = (("showThinkingSummaries", True), ("precomputeCompactionEnabled", False),
+           ("autoContinueAtUsageLimit", True))                  # 3.23 T2
+# 3.23 T13d.c8: the partner's (pa-claude, model: inherit) starting model and effort; added only
+# where absent; /model and /effort in a session still change it for that session
+MOD_PINS = (("model", "claude-opus-5-5[1m]"), ("effortLevel", "medium"))
+# 3.27 T11 (developer 2026-10-13, the 3.27 benches): Pro's partner starts on Sonnet 5.5 at medium;
+# every other tier takes MOD_PINS
+TIER_MOD_PINS = {"pro": (("model", "claude-sonnet-5-5[1m]"), ("effortLevel", "medium"))}
+_MOD_PIN_VALUES = {k: tuple(sorted({dict(p)[k] for p in (MOD_PINS,) + tuple(TIER_MOD_PINS.values())}))
+                   for k, _v in MOD_PINS}                        # every tier's shipped value per key
+
+
+def mod_pins(tier):
+    """3.27 T11: the partner's shipped pins for ``tier``."""
+    return TIER_MOD_PINS.get(tier, MOD_PINS)
+
+
+def _tier(env):
+    """The run's ladder tier: resolved at P3, else now."""
+    return getattr(env, "ladder_preset", None) or _preset(env)
+
+
+def retier_mod_pins(settings, pins):
+    """3.27 T11: a pin exactly another tier's shipped value takes ``pins``' value (in place); any other
+    value is the developer's and stays. Returns ``[(key, old, new), ...]``."""
+    changed = []
+    for key, value in pins:
+        if settings.get(key) != value and settings.get(key) in _MOD_PIN_VALUES.get(key, ()):
+            changed.append((key, settings[key], value))
+            settings[key] = value
+    return changed
+
+
+def mod_snippet(snippet, pins=MOD_PINS):
+    """3.22: the project snippet with ``pins`` (Claude's starting model and effort; 3.27 T11: the
+    tier's, :data:`MOD_PINS` by default) and :data:`MOD_ADD` added; every other key as shipped.
+    3.24 T3.1: the only form; the strip of the shipped pa-session ``agent``/``model``/``modelSettings``
+    pins (MOD_DROP) left with them."""
+    out = dict(snippet)
+    out.update(pins)
+    out.update(MOD_ADD)
+    return out
+
+
 def merge_project_settings(env):
     """Merge ``settings/project.snippet.json`` into ``.claude/settings.json``."""
     rel = ".claude/settings.json"
@@ -1211,8 +1448,10 @@ def merge_project_settings(env):
     else:
         current = fsutil.read_json(path, {}) or {}
     snippet = sm.fill(sm.load_snippet(name="project"), env.py_exe, env.pa3_dir)
+    pins = mod_pins(_tier(env))                                  # 3.27 T11: the tier's pins
+    snippet = mod_snippet(snippet, pins)
     migrated = json.loads(json.dumps(current))
-    moved = migrate_model_defaults(migrated)
+    moved = migrate_model_defaults(migrated, dict(pins)["model"]) + retier_mod_pins(migrated, pins)
     merged, report = sm.merge(migrated, snippet, scope="project")
     report["changed"][:0] = moved
     if merged == current:
@@ -1230,23 +1469,149 @@ def _absent(env, rel, make):
     return place(env, rel, text=make(env))
 
 
+def _report_pins(env):
+    """3.24 T5: the developer's own pins, one line each, never touched: ``agent``/``model``/
+    ``modelSettings`` PA3 did not ship in ``.claude/settings.json``, any ``agent``/``model`` in
+    ``.claude/settings.local.json``."""
+    st = fsutil.read_json(env.path(".claude/settings.json"), {}) or {}
+    for line in foreign_pins(st if isinstance(st, dict) else {}, ".claude/settings.json"):
+        note("pin: %s" % line)
+    local = fsutil.read_json(env.path(".claude/settings.local.json"), {}) or {}
+    for key in ("agent", "model"):
+        if isinstance(local, dict) and key in local:
+            note("pin: .claude/settings.local.json %s: %s (yours, kept)" % (key, json.dumps(local[key])))
+
+
+# 3.24 T5: the Gen 3 template's Roles line and memory clause, as every past CLAUDE.template.md shipped
+# them (git history of templates/CLAUDE.template.md); a project line equal to one takes the current one
+_PAST_ROLES = (
+    "Roles: planner · router · expert · coder · retriever · critic. "
+    "Rules: the `house-rules` skill.",
+    "Roles: planner · router · expert · coder · retriever · critic. "
+    "Rules: the `project-architect` skill.",
+    "Roles: Claude (the partner) · expert · coder · retriever; under `mod: off` also "
+    "planner · router · critic. Rules: the `project-architect` skill.",
+)
+_PAST_MEMORY = (
+    "Every agent, always: never push; no AI trailers; never write memories; never `/compact`, "
+    "`/model`, `/effort`;",
+    "Every agent, always: never push; no AI trailers; never write memories (under `mod: on`, Claude "
+    "keeps the project\nmemory); never `/compact`, `/model`, `/effort`;",
+    "Every agent, always: never push; no AI trailers; never write memories (Claude keeps the project's memory);"
+    "\nnever `/compact`, `/model`, `/effort`;",
+)
+_MEMORY_RE = re.compile(r"^Every agent, always:.*?`/effort`;$", re.M | re.S)
+
+
+def _swap_block(text, old, new):
+    """``text`` with the whole-line block ``old`` replaced once by ``new``, else ``text``."""
+    pos = ("\n" + text + "\n").find("\n" + old + "\n")
+    return text if pos < 0 else text[:pos] + new + text[pos + len(old):]
+
+
+def refresh_claude_md(env):
+    """3.24 T5: CLAUDE.md's Roles line and "Every agent, always" memory clause take the current
+    template's where they equal a past shipped one byte for byte; any other is left for the curator
+    (``curate.py claude-md --refresh``). Returns the note lines."""
+    rel = "CLAUDE.md"
+    raw = fsutil.read_text(env.path(rel), "") or ""
+    tmpl = _template_text(env, "CLAUDE.template.md").replace("\r\n", "\n")
+    roles = [ln for ln in tmpl.split("\n") if ln.startswith("Roles:")]
+    mem = _MEMORY_RE.search(tmpl)
+    if not raw or not roles or not mem:
+        return []
+    crlf = "\r\n" in raw
+    text = new = raw.replace("\r\n", "\n")
+    out = []
+    for what, past, cur in (("Roles line", _PAST_ROLES, roles[0]),
+                            ("memory clause", _PAST_MEMORY, mem.group(0))):
+        for old in past:
+            got = _swap_block(new, old, cur)
+            if got != new:
+                new = got
+                out.append("~ CLAUDE.md %s: the 3.2 template's" % what)
+                break
+        else:
+            have = ([ln for ln in new.split("\n") if ln.startswith("Roles:")] if what == "Roles line"
+                    else [m.group(0) for m in _MEMORY_RE.finditer(new)])
+            if have and cur not in have:
+                out.append("CLAUDE.md %s: yours, left for the curator (curate.py claude-md --refresh)"
+                           % what)
+    if new != text:
+        write_changed(env, rel, new.replace("\n", "\r\n") if crlf else new, backup=False)
+    return out
+
+
+SEED_REFRESH = ("P3", "P5", "P8", "P10", "H8", "P4", "H7", "X4", "M1")  # 3.24 T5: the seed rules 3.2 rewrote; 3.25 T7b: + P4, H7, X4, M1
+SEED_RETIRED = ("P7",)      # 3.25 T7b: seed rules the package no longer ships
+
+
+def refresh_seed_rules(env):
+    """3.24 T5: ``rules/<id>.md`` for :data:`SEED_REFRESH` takes the current ``rules-seed/<id>.md``
+    when it equals a past version (:mod:`seed_history`); any other copy is left for the curator
+    (``curate.py rules --reseed``). Seed rules stay out of the managed record. 3.25 T7b: a
+    :data:`SEED_RETIRED` copy equal to a past version is removed with its ``rules/INDEX.md`` line;
+    an edited one is kept and reported. Returns note lines."""
+    from . import seed_history
+    out = []
+    for rid in SEED_RETIRED:
+        rel = "rules/%s.md" % rid
+        if not os.path.isfile(env.path(rel)):
+            continue
+        if managed.sha(_read(env.path(rel))) not in seed_history.past(rid, env.pkg):
+            out.append("%s: yours, kept (no longer a seed rule)" % rel)
+            continue
+        if not env.dry_run:
+            os.remove(env.path(rel))
+            idx = env.path("rules/INDEX.md")
+            if os.path.isfile(idx):
+                raw = _read(idx).decode("utf-8")
+                keep = [ln for ln in raw.splitlines(True) if not ln.startswith(rid + " |")]
+                if len(keep) != len(raw.splitlines(True)):
+                    write_changed(env, "rules/INDEX.md", "".join(keep), backup=False)
+        env.man.removed.append(rel)
+        out.append("~ %s: removed (no longer a seed rule)" % rel)
+    for rid in SEED_REFRESH:
+        rel, src = "rules/%s.md" % rid, os.path.join(env.pkg, "rules-seed", rid + ".md")
+        if not (os.path.isfile(env.path(rel)) and os.path.isfile(src)):
+            continue
+        cur, new = _read(env.path(rel)), _read(src)
+        if managed.sha(cur) == managed.sha(new):
+            continue
+        if managed.sha(cur) in seed_history.past(rid, env.pkg):
+            write_changed(env, rel, new.decode("utf-8"), backup=False)
+            out.append("~ %s: the 3.2 seed text" % rel)
+        else:
+            out.append("%s: yours, left for the curator (curate.py rules --reseed)" % rel)
+    return out
+
+
 def claude_and_settings(env):
     """P7: CLAUDE.md (+ retire), project settings, HOW_WE_WORK.md."""
     if env.layout == "pa3":
         # 3.12 T1: CLAUDE.md, HOW_WE_WORK.md and every other setting stay; old model defaults migrate
+        # 3.22 T2d: and PA3_ADD_DEFAULTS are added when absent
+        # 3.24 T5: the shipped pins go; CLAUDE.md's Gen 3 lines and past seed rules take the 3.2 text
         mark = env.man.mark()
         moved = migrate_pa3_settings(env)
-        if not moved:
+        lines = refresh_claude_md(env) + refresh_seed_rules(env)
+        if not moved and not [ln for ln in lines if ln.startswith("~")]:
             step("P7", "claude + settings", "SKIP",
                  "pa3 upgrade: CLAUDE.md, settings.json, HOW_WE_WORK.md left alone")
+            for line in lines:
+                note(line)
+            _report_pins(env)
             return "SKIP"
         done = env.man.since(mark)
         status = "SKIP" if (env.dry_run or not Manifest.changed(done)) else "DONE"
         step("P7", "claude + settings", status,
-             _reason(env, done, ".claude/settings.json (old model defaults migrated)"))
+             _reason(env, done, ".claude/settings.json, CLAUDE.md, rules/ (3.2 refresh)"))
         for key, old, new in moved:
             note("~ settings  %s: %s -> %s"
                  % (key, json.dumps(old, default=str), json.dumps(new, default=str)))
+        for line in lines:
+            note(line)
+        _report_pins(env)
         return status
     mark = env.man.mark()
 
@@ -1380,7 +1745,9 @@ def close(env):
              % ", ".join(man.edited[:8]) + (" ..." if len(man.edited) > 8 else ""))
     for warn in env.warnings:
         note("warn: %s" % warn)
-    note("Next: open `claude` in the repo (the pa-session agent takes it from there)")
+    if env.layout == "pa3":     # 3.24 T5: managed agent/skill/command files, pins or the mode changed
+        note("restart: needed" if getattr(env, "restart", False) else "restart: not needed")
+    note("Next: open `claude` in the repo (Claude takes it from there)")
     return status if status != "SKIP" else "SKIP"
 
 
@@ -1412,10 +1779,56 @@ def _memory_link(env):
     return memory_sort.link(env)
 
 
+FIRST_RUN = "first_run"     # 3.24 T5: the pa.json key the curator's first-run sort (T7b) reads
+FIRST_RUN_DONE = ("migrated", "3.2")     # written by the curator when the sort is done
+
+
+def _has_memories(env):
+    """A memory file (not the index or the inventory) anywhere under ``.claude-state/memory``."""
+    for _dirpath, _dirs, files in os.walk(env.path(memory_sort.MEMORY_REL.replace(os.sep, "/"))):
+        if [n for n in files if n.lower().endswith(".md") and n not in ("MEMORY.md", "INVENTORY.md")]:
+            return True
+    return False
+
+
+def first_run_marker(env, origin):
+    """3.24 T5: pa.json ``first_run: {"from": origin, "at": <version>}`` (origin ``gen3`` | ``pa2`` |
+    ``vanilla``) when the project has memories for the curator's first-run sort: written once, never
+    after the curator's ``migrated: "3.2"``, an existing marker kept. Returns the marker or None."""
+    rel = ".claude/pa.json"
+    has = getattr(env, "memories_moved", 0) if origin == "vanilla" else _has_memories(env)
+    if env.dry_run or not has or not os.path.isfile(env.path(rel)):
+        return None
+    text = fsutil.read_text(env.path(rel), "") or ""
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or FIRST_RUN in data or data.get(FIRST_RUN_DONE[0]) == FIRST_RUN_DONE[1]:
+        return None
+    marker = {"from": origin, "at": PA_VERSION}
+    write_changed(env, rel, _put_json_key(text, FIRST_RUN, marker), backup=False)
+    note("first run: the curator sorts the project's memories at the next session (%s)" % origin)
+    return marker
+
+
+def _floor_stop(opts):
+    """3.24 T5 (decision 3): below the mod's Claude Code floor, the one plain line; else None.
+    Runs before anything is written (``root.floor_check``)."""
+    from . import root as _root
+    pa3_dir = sm.abs_fwd(getattr(opts, "pa3_dir", None) or paths.install_dir())
+    ok, why = _root.floor_check(resolve_package(pa3_dir, package_root()))
+    return None if ok else why
+
+
 def install_project(opts):
     """Run P1..P3, P6 (memory link), P7, P10 for a fresh or already-PA3 repository."""
     print("Project Architect 3.0 -- per-repo install (--project)%s"
           % ("  [dry run]" if opts.dry_run else ""))
+    why = _floor_stop(opts)
+    if why:
+        print(why)
+        return 1
     env = detect_project(opts)
     if env is None:
         print("FAIL (P1)")
@@ -1442,6 +1855,7 @@ def install_project(opts):
         results["P3"] = copy_files(env)
         results["P6"] = _memory_link(env)
         results["P7"] = claude_and_settings(env)
+        first_run_marker(env, "gen3" if env.layout == "pa3" else "vanilla")      # 3.24 T5
         results["P9"] = _import_ledger_slices(env)
     except (OSError, ValueError, sm.MergeError) as exc:
         step("P10", "close", "FAIL", "%s: %s" % (type(exc).__name__, exc))

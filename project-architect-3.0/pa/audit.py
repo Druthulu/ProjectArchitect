@@ -659,7 +659,8 @@ def _compute_outline_credit(conn, session_ids, filter_span):
 
 # ------------------------------------------------------------------ warmer and toasts
 
-TOAST_CAUSES = ("question", "review", "replan", "permission", "input", "discussion",
+# 3.24 T3.2: "discussion" left with the discussion guard; an old row's cause counts as "other"
+TOAST_CAUSES = ("question", "review", "replan", "permission", "input",
                 "crash", "idle", "stop", "subagent-stop", "model", "other")
 
 
@@ -758,10 +759,9 @@ def _compute_warm_pings(conn, session_ids, filter_span):
                         continue
                     if t["rewrite"]:
                         out["k"] += 1
-                    ctx = t["ctx"] or 0
                     out["b"] += prices.cost_of(
-                        {"cache_write": ctx}, t["model"], ttl_default=ttl, at=t["ts"],
-                        long_context=ctx > prices.LONG_CONTEXT_TOKENS)[0]
+                        {"cache_write": t["ctx"] or 0}, t["model"], ttl_default=ttl,
+                        at=t["ts"])[0]
             start, pinged, wait = i, 0, 0.0
     return out
 

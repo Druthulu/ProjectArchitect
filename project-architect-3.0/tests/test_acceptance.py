@@ -555,13 +555,10 @@ class TestAcceptance(unittest.TestCase):
 _HASH = "e0a5" + "0" * 60
 
 
-_NOISE = ("noise coder-opus55 ±0/28 (2026-09-26)\n"
-          "noise expert-opus55 ±1/12 (2026-09-26)\n"
-          "noise planner-phase ±1/12 (2026-09-26)\n"
+_NOISE = ("noise pa-coder ±0/28 (2026-09-26)\n"   # 3.27 T2: today's full-suite agents
+          "noise pa-expert ±1/12 (2026-09-26)\n"
           "noise retriever-code ±1/28 (2026-09-26)\n"
-          "noise pa-session ±0/12 (2026-09-26)\n"
-          "noise critic ±0/12 (2026-09-26)\n"
-          "noise review ±0/12 (2026-09-26)\n")
+          "noise retriever-digest ±0/28 (2026-09-26)\n")
 
 
 def _fake_runner(fetch_ok=True, check_rc=1, graders_ok=True, plan_full=None,
@@ -633,7 +630,7 @@ class TestBenchRows(unittest.TestCase):
                                    "failed=1 unclassified=0")
         self.assertIn("coder 28", rs[6][3])
         self.assertIn("tier-3 tasks", rs[6][3])
-        self.assertIn("critic ±0/12", rs[7][3])
+        self.assertIn("retriever-digest ±0/28", rs[7][3])
 
     def test_b3_pass_while_check_exits_1(self):
         rs = acceptance.bench_rows(_fake_runner(check_rc=1), self.tmp)
@@ -675,19 +672,19 @@ class TestBenchRows(unittest.TestCase):
         self.assertEqual(rs[6][2], "PASS")
 
     def test_b7_fail_count_below_floor(self):
-        full = acceptance._PLAN_WANT["full"].replace("critic 12", "critic 6")
+        full = acceptance._PLAN_WANT["full"].replace("expert 12", "expert 6")
         rs = acceptance.bench_rows(_fake_runner(plan_full=full), self.tmp)
         self.assertEqual(rs[6][0], "B7")
         self.assertEqual(rs[6][2], "FAIL")
-        self.assertIn("low: critic", rs[6][3])
+        self.assertIn("low: expert", rs[6][3])
 
     def test_b8_fail_noise_unknown(self):
-        noise = _NOISE.replace("noise critic ±0/12 (2026-09-26)",
-                               "noise critic unknown")
+        noise = _NOISE.replace("noise retriever-digest ±0/28 (2026-09-26)",
+                               "noise retriever-digest unknown")
         rs = acceptance.bench_rows(_fake_runner(noise=noise), self.tmp)
         self.assertEqual(rs[7][0], "B8")
         self.assertEqual(rs[7][2], "FAIL")
-        self.assertIn("unknown: critic", rs[7][3])
+        self.assertIn("unknown: retriever-digest", rs[7][3])
 
 
 _DOCTOR_OK = ("  OK   ledger: schema v9\n"

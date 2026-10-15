@@ -334,14 +334,17 @@ def inbox_pending(text):
 
 
 def _route_context(root):
-    """-> (current id, known ids in plan order, open ids, G) or None without a plan."""
+    """-> (current id, known ids in plan order, open ids, G); between generations (no open
+    phase, no current plan; or no GENERATION_PLAN.md) -> (None, ids, [], G) with G the newest
+    generation whose phases are all closed (0 without a plan): bullets go to gen<G+1> (3.23 T2).
+    None (every bullet `now`) when a current PHASE_PLAN.md exists but GENERATION_PLAN.md does not."""
     try:
         gtext = read_text(os.path.join(root, "GENERATION_PLAN.md"))
     except Exception:
-        return None
+        gtext = None
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     import _genplan
-    rows = [_genplan.fields(l) for l in _genplan.phase_lines(gtext)]
+    rows = [_genplan.fields(l) for l in _genplan.phase_lines(gtext or "")]
     ids = [f["id"] for f in rows]
     opens = [f["id"] for f in rows if f["status"] == "open"]
     cur = None
@@ -351,9 +354,15 @@ def _route_context(root):
         cur = m.group(1) if m else None
     except Exception:
         pass
+    if gtext is None:
+        return None if cur else (None, [], [], 0)
     cur = cur or _genplan.first_open(gtext)
     if not cur:
-        return None
+        gens = {}
+        for f in rows:
+            gens.setdefault(int(f["id"].split(".")[0]), []).append(f["status"])
+        done = [g for g, sts in gens.items() if all(st == "closed" for st in sts)]
+        return None, ids, [], max(done) if done else 0
     return cur, ids, opens, int(cur.split(".")[0])
 
 
@@ -362,6 +371,8 @@ def _route(bullet, ctx):
     if ctx is None:
         return "now", ""
     cur, ids, opens, g = ctx
+    if cur is None:                       # between generations: the next one (3.23 T2)
+        return "deferred", "gen%d" % (g + 1)
     ci = ids.index(cur) if cur in ids else len(ids)
 
     def phase_target(pid):
@@ -623,7 +634,7 @@ def build_parser():
     sub = p.add_subparsers(dest="cmd", required=True)
     s = sub.add_parser("set", help="stamp the running task")
     s.add_argument("--task", required=True)
-    s.add_argument("--agent", default="expert-opus55")
+    s.add_argument("--agent", default="pa-expert")  # 3.25 T6a: was expert-opus55
     s.add_argument("--coder")
     s.add_argument("--kind", choices=KINDS, default="task")
     s.add_argument("--attempt", type=int, default=1)

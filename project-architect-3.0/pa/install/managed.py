@@ -382,6 +382,23 @@ def parse_resolutions(text):
 
 # --------------------------------------------------------------------------- refresh (T8)
 
+def _gone_what(rel, retired):
+    """The step text naming a pruned file (3.24 T5)."""
+    if rel in retired and rel.startswith(".claude/agents/"):
+        return "retired agent %s" % rel.rsplit("/", 1)[1]
+    return "%s (no longer shipped)" % rel
+
+
+def _rmdirs(repo, path):
+    """Remove ``path`` and its parents while empty, never ``repo`` itself (3.24 T5)."""
+    repo = os.path.normcase(os.path.abspath(repo))
+    path = os.path.abspath(path)
+    while (os.path.normcase(path).startswith(repo + os.sep) and os.path.isdir(path)
+           and not os.listdir(path)):
+        os.rmdir(path)
+        path = os.path.dirname(path)
+
+
 class Refresh(object):
     """Classify a ``--project`` refresh of the managed groups against the prior record."""
 
@@ -399,6 +416,9 @@ class Refresh(object):
         self._hist = {}             # rel -> {sha: transformed past package bytes}
         self.absent = {}            # rel -> record entry of an agent the tier leaves out (3.10.6 T2)
         self.dropped = []           # absent agents deleted this run (3.10.6 T2)
+        self.retired = []           # files no longer shipped, removed this run (3.24 T5)
+        self.preserved = []         # edited never-keep files removed, copy at yours_rel (3.24 T5c)
+        self.restart = False        # set by :meth:`report` (3.24 T5: printed by project.close)
 
     def classify(self, rel, cur_bytes, data):
         """``same`` | ``updated`` (upstream-only) | ``user`` (user-only) | ``merged`` |
@@ -429,6 +449,61 @@ class Refresh(object):
             return "replaced"
         self.conflicts.append((rel, cur_bytes, data, ent))
         return "conflict"
+
+    def prune(self, placed, retired=(), never_keep=()):
+        """3.24 T5: a file the old record lists (or a ``retired`` path) that this run did not place:
+        an unchanged copy (its recorded sha or a past package version; any under ``--force``) is
+        removed; an edited one is kept and staged as a conflict with an empty upstream, recorded
+        ``absent: "retired"`` (``keep`` leaves it the developer's, ``upstream`` deletes it). Before
+        :meth:`apply`. A ``never_keep`` path (the Gen 3 files, T5c) is removed even when edited, its
+        copy kept at :func:`yours_rel` with one UPGRADE.md line; never staged, never kept. Returns the
+        removed (or, in a dry run, removable) paths."""
+        from . import step
+
+        env, gone = self.env, []
+        placed = set(placed) | set(self.absent)
+        for rel in sorted((set(self.prior) | set(retired)) - placed):
+            ent = self.prior.get(rel) if isinstance(self.prior.get(rel), dict) else None
+            dst = env.path(rel)
+            if not os.path.isfile(dst):
+                continue
+            with open(dst, "rb") as fh:
+                cur = fh.read()
+            s, user = sha(cur), (ent or {}).get("user")
+            edited = not (env.force or (ent and s == ent.get("sha")) or s in self._history(rel))
+            if rel in never_keep and edited:        # 3.24 T5c: it can't run in 3.2; a keep is moot
+                gone.append(rel)
+                if env.dry_run:
+                    step("P3", "files", "SKIP", "would remove %s; your copy: %s"
+                         % (_gone_what(rel, retired), yours_rel(rel)))
+                    continue
+                self._put(yours_rel(rel), _lf(cur))
+                self._drop(rel)
+                _rmdirs(env.repo, os.path.dirname(dst))
+                self.preserved.append(rel)
+                step("P3", "files", "DONE", "removed %s; your copy: %s"
+                     % (_gone_what(rel, retired), yours_rel(rel)))
+                continue
+            if ((ent or {}).get("absent") == "retired" and isinstance(user, dict)
+                    and user.get("state") == "keep"):
+                self.absent[rel] = ent          # kept by the developer: theirs, never staged again
+                continue
+            if not edited:
+                gone.append(rel)
+                if env.dry_run:
+                    step("P3", "files", "SKIP", "would remove %s" % _gone_what(rel, retired))
+                    continue
+                self._drop(rel)
+                _rmdirs(env.repo, os.path.dirname(dst))
+                step("P3", "files", "DONE", "removed %s" % _gone_what(rel, retired))
+                continue
+            self.absent[rel] = {"absent": "retired", "base": (ent or {}).get("base"), "sha": None,
+                                "user": None}
+            self.kinds[rel] = "conflict"
+            self.conflicts.append((rel, cur, b"", ent))
+            env.man.edited.append(rel)
+        self.retired = gone
+        return gone
 
     def save_yours(self, rel):
         """Write a replaced file's pre-refresh bytes to :func:`yours_rel`."""
@@ -535,7 +610,7 @@ class Refresh(object):
 
     def report(self, pairs):
         """One ``<class> <rel>`` line per managed file that is not unchanged, the counts,
-        then ``restart: needed`` when an agent, skill or command file changed this run."""
+        and sets ``self.restart`` when an agent, skill or command file changed this run."""
         from . import note
 
         counts = dict.fromkeys(("unchanged", "upstream-changed", "user-changed", "merged",
@@ -552,9 +627,13 @@ class Refresh(object):
         for rel in self.dropped:
             note("  removed %s (not in this plan tier)" % rel)
             restart = True
+        for rel in self.retired:                                 # 3.24 T5: no longer shipped
+            note("  %s %s (no longer shipped)" % ("would remove" if self.env.dry_run else "removed", rel))
+            restart = restart or rel.startswith(RESTART)
         keys = [k for k in counts if k != "forced" or counts[k]]
         note("classes: " + ", ".join("%s %d" % (k, counts[k]) for k in keys))
-        note("restart: needed" if restart else "restart: not needed")
+        # 3.24 T5: the restart line moved to project.close, which adds pin and mode changes
+        self.restart = restart
 
     def _compare(self, rel):
         """The bench verdict of an installed agent, else ``no series``."""
@@ -646,7 +725,8 @@ class Refresh(object):
                 out = new if verdict == "upstream" else cur
             if verdict == "upstream" and rel in self.absent:     # 3.10.6 T2: upstream = no file
                 self._drop(rel)
-                self.absent[rel] = {"absent": "tier", "base": None, "sha": None, "user": None}
+                self.absent[rel] = {"absent": self.absent[rel].get("absent", "tier"), "base": None,
+                                    "sha": None, "user": None}           # 3.24 T5: or "retired"
                 self.dropped.append(rel)
             elif verdict != "keep":
                 self._put(rel, out)
@@ -694,10 +774,13 @@ class Refresh(object):
             lines.append("- %s | base %s | yours %s | upstream %s (version %s) | compare: %s"
                          " | edited in: %s | default: keep yours\n"
                          % (rel, (ent or {}).get("base") or "unknown", yours,
-                            "absent (tier)" if rel in self.absent
+                            "absent (%s)" % self.absent[rel].get("absent", "tier") if rel in self.absent
                             else base_of(data.decode("utf-8", "replace")) or "unknown", pkg_version,
                             self._compare(rel), ", ".join(tasks.get(rel, [])) or "—"))
             note("! %s kept yours; upstream staged" % rel)
+        for rel in self.preserved:          # 3.24 T5c: informational, asks for no resolution
+            lines.append("- %s | removed: a retired Gen 3 file, it can't run in PA 3.2 | your edited"
+                         " copy: %s | no resolution needed\n" % (rel, yours_rel(rel)))
         root = env.path(UPGRADE_DIR)
         for dirpath, _dirs, names in os.walk(root, topdown=False):
             for name in sorted(names):

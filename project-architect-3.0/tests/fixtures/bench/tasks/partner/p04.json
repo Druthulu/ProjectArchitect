@@ -1,0 +1,17 @@
+{
+  "id": "p04",
+  "arm": "partner",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full",
+    "canary"
+  ],
+  "prompt": "bench: one turn of the partner in the shelf project (a small Python library-loans package in this repository). The mod is absent here: its mcp__pa-watch__ tools and SubagentHandback do not exist, so end your turn with your reply as plain text. An Agent call is recorded, not run. Make only the move this turn calls for.\n\n‹pa› plan needed: phase 1.5 \"Fines that stick\" (GENERATION_PLAN.md: fees accrue per day and cap; members with unpaid fees over the cap cannot borrow). Previous PhaseEnd: phase-ends/PhaseEnd_Phase1.4.md. Deferred items: D1 fee waivers for staff; D2 holds expire after 7 days; D3 a CSV export.\n\nThe developer says: D1 and D2 go into 1.5, D3 stays deferred. Go ahead with the plan.",
+  "expect": {
+    "subagent_type": "pa-planner"
+  },
+  "hidden": "—",
+  "settings": "settings/deny-agent.json",
+  "overlay": "overlay/partner"
+}

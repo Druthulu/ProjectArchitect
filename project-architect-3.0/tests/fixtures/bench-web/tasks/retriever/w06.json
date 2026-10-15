@@ -1,0 +1,17 @@
+{
+  "id": "w06",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "Which PEP allows writing union types as X | Y, and from which Python version? Give the PEP number and the version.\n\nFind the answer in the published source on the web. Give the answer and the full address (URL) of the page you read it on.",
+  "expect": {
+    "tokens": [
+      "604",
+      "3.10",
+      "pep-0604"
+    ]
+  },
+  "hidden": "—"
+}

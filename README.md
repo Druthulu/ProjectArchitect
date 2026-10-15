@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 3.15.3" src="https://img.shields.io/badge/version-3.15.3-3b82f6">
+  <img alt="version 3.28" src="https://img.shields.io/badge/version-3.28-3b82f6">
   <img alt="for Claude Code" src="https://img.shields.io/badge/for-Claude%20Code-d97757">
   <img alt="Windows, WSL, Linux, macOS" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20WSL%20%7C%20Linux%20%7C%20macOS-64748b">
 </p>
@@ -30,13 +30,6 @@ words.
 ## See it
 
 <p align="center">
-  <img src="project-architect-3.0/docs/images/pa3-new-project-run-demo.gif" alt="A new project from claude to the phase close: the router, the planners' drafts, two approvals, experts briefing a retriever and coders, and the close" width="860">
-</p>
-
-A new project from `claude` to the phase close, sped up: the router starts, the planners draft, you approve twice,
-the experts brief a retriever and coders, and the phase closes.
-
-<p align="center">
   <img src="project-architect-3.0/docs/images/statusline.png" alt="The PA3 statusline during a phase" width="860">
 </p>
 
@@ -46,16 +39,17 @@ them. [Every number, line by line](https://github.com/Druthulu/ProjectArchitect/
 
 ## Install
 
-You need Claude Code, a Claude subscription (Max 20x, Max 5x or Pro), Python 3.12 or newer, and git.
+You need Claude Code 2.1.292 or newer, a Claude subscription (Max 20x, Max 5x or Pro), Python 3.12 or newer, and git.
 
 1. **Once per machine.** Download this repository (**Code → Download ZIP**, then extract) and open its
    `project-architect-3.0` folder. On Windows, double-click **`install.cmd`**; on WSL, Linux or macOS, run
-   `./install.sh`. It asks nothing.
+   `./install.sh`. It asks nothing, and it also installs the mod, the Claude Code plugin that runs a plan's tasks.
 2. **Once per repository.** Open the repository in Claude Code: PA3 shows one line that sets it up, with the path
    already filled in. Type it, then restart Claude Code (`/exit`, then `claude`). Or double-click
    **`setup-project.cmd`** and pick the folder. It makes one commit and never pushes.
-3. **Start.** Open `claude` in your repository, and the router takes it from there. The first time, PA3 asks which day
-   your plan renews (the Claude app shows it under Settings → Billing) so the month figures count from it.
+3. **Start.** Open a bare `claude` in your repository and talk with Claude, who works out where the project stands
+   and takes it from there. The first session shows a line pointing to the Claude app's Settings → Billing page and
+   the command that stores the day your plan renews, so the month figures count from it.
 
 Step by step, updating and removing: [Install](https://github.com/Druthulu/ProjectArchitect/wiki/Install). Every
 switch: [INSTALL.md](project-architect-3.0/INSTALL.md).
@@ -64,17 +58,20 @@ switch: [INSTALL.md](project-architect-3.0/INSTALL.md).
 
 ```mermaid
 flowchart LR
-    you((You)) <--> router["router"]
-    router --> planners["planners"]
-    router --> expert["expert<br/>one per task"]
-    router --> critic["critic"]
+    you((You)) <--> claude["Claude"]
+    claude --> thinkers["thinkers"]
+    claude --> retrievers["retrievers"]
+    mod["the mod<br/>runs the loop"] --> expert["expert<br/>one per task"]
     expert --> coder["coder"]
-    expert --> retrievers["retrievers"]
+    expert --> retrievers
 ```
 
-You talk to one session, the router. A planner drafts each phase; after you approve it, the router runs one expert
-per task in a fresh context, the expert briefs coders and retrievers, and the critic judges any change to the plan.
-The phase closes when its milestone check passes, with a plain-English recap of what was done.
+You talk with one partner, Claude, in one session. Claude drafts each phase's plan with you; after you approve it,
+the mod runs one expert per task in a fresh context while you keep talking with Claude, and the expert briefs coders
+and retrievers. Every change an expert wants to make to the plan goes to Claude, who settles what stays inside the
+milestone and asks you about the rest. A task that hits a wall comes back blocked with its evidence and a
+recommendation. When the milestone is met, Claude asks you before the phase closes, and the close leaves a
+plain-English recap of what was done.
 [What PA3 is and does](https://github.com/Druthulu/ProjectArchitect/wiki/What-PA3-does) ·
 [The roles](https://github.com/Druthulu/ProjectArchitect/wiki/How-it-works) ·
 [A day in the life](https://github.com/Druthulu/ProjectArchitect/wiki/A-day-in-the-life)

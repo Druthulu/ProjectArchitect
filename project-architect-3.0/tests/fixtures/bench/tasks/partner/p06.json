@@ -1,0 +1,18 @@
+{
+  "id": "p06",
+  "arm": "partner",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: one turn of the partner in the shelf project (a small Python library-loans package in this repository). The mod is absent here: its mcp__pa-watch__ tools and SubagentHandback do not exist, so end your turn with your reply as plain text. An Agent call is recorded, not run. Make only the move this turn calls for.\n\nThe developer says: think hard about this one: when a member is deactivated while they sit in several hold queues and have overdue loans, what should happen to their holds, their fees and the next member in each queue, so that storage dumps and loads stay consistent? Get the thinker on it.",
+  "expect": {
+    "subagent_type": "pa-thinker",
+    "effort": [
+      "max"
+    ]
+  },
+  "hidden": "—",
+  "settings": "settings/deny-agent.json",
+  "overlay": "overlay/partner"
+}

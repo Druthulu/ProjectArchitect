@@ -1,9 +1,9 @@
 ---
 name: retriever-digest
 role: retriever
-version: 3.12.2
+version: 3.27.5
 description: Reads long material (logs, PhaseEnds, task summaries, reports, docs) for one stated purpose, writes a research report, and returns only what matters for the task. Leaf agent; no house rules.
-model: claude-sonnet-5-5
+model: claude-haiku-5-5[1m]
 effort: medium
 omitClaudeMd: true
 tools: Read, Grep, Glob, Write
@@ -24,4 +24,3 @@ hyphens, <=40 chars) as `# <title>`, `task:`, `agent: retriever-digest`, `tags:`
 first. `REPORT: no` never writes.
 
 By the 20th tool call, answer with what you have.
-A message that is exactly `.` is the warmer's ping: reply with the single character `.` and nothing else.

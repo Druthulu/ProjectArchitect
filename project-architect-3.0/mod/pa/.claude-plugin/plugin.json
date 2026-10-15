@@ -1,0 +1,25 @@
+{
+  "name": "pa",
+  "version": "3.28.0",
+  "description": "Project Architect 3.2 router: the infinite session's partner, its state file, the inbox the watcher writes, and the journal that replaces compaction",
+  "author": { "name": "Drew T" },
+  "types": "./types/index.d.ts",
+  "experimental": {
+    "monitors": [
+      {
+        "name": "feed",
+        "command": "bash \"${CLAUDE_PLUGIN_ROOT}/feed/pa_feed.sh\" \"${CLAUDE_PROJECT_DIR}\"",
+        "description": "pa feed"
+      }
+    ]
+  },
+  "userConfig": {
+    "card_style": {
+      "type": "string",
+      "title": "Card style",
+      "description": "How the loop's note and finish cards draw: mixed (notes with a side bar, finishes in a round border), boxed (all round), bar (all a side bar) or plain (no border)",
+      "default": "mixed",
+      "options": ["mixed", "boxed", "bar", "plain"]
+    }
+  }
+}

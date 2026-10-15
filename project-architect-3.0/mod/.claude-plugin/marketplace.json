@@ -1,0 +1,19 @@
+{
+  "name": "pa3",
+  "owner": { "name": "Drew T" },
+  "metadata": {
+    "description": "Project Architect 3.2: the mod's two plugins, loaded in place from the PA3 root's mod/ folder"
+  },
+  "plugins": [
+    {
+      "name": "pa",
+      "source": "./pa",
+      "description": "Project Architect 3.2 router: the infinite session's partner, its state file, the inbox and the journal"
+    },
+    {
+      "name": "pa-watch",
+      "source": "./pa-watch",
+      "description": "Project Architect 3.2 watcher: sees every agent's steps, serves the PA tools, writes the live feed"
+    }
+  ]
+}

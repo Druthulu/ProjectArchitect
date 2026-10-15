@@ -1,7 +1,7 @@
 """Streaming reader for Claude Code transcripts (design doc A.1/F, recon V1).
 
 Public:
-    CPT, MISS_FRACTION, MISS_MIN_CTX, RESET_FRACTION, USAGE_KEYS
+    CPT, OUTPUT_CPT, MISS_FRACTION, MISS_MIN_CTX, RESET_FRACTION, USAGE_KEYS
     parse_ts(s), iso(dt), fmt_gap(seconds), est(obj), blocks(message)
     iter_records(path, start_offset=0, with_offset=False)
     iter_requests(path, start_offset=0, cold_gap_s=3600)
@@ -21,6 +21,10 @@ usage is deduped by ``message.id`` keeping the **LAST** jsonl line of a message.
 Subagent transcripts store a placeholder ``output_tokens`` on the first line of a
 multi-block message and the real value on the last (recon V1: keep-first
 undercounts subagent output 3x).
+3.24 T13l: a message that ends in a tool call (CC 2.1.296) may never get that last line: every
+line has ``stop_reason`` null and the placeholder output (2-68).  Such a request gets its output
+estimated from the content written (:func:`output_estimate`) and ``output_est`` True; the ledger
+then scales each model's estimates to the cost-state (``pa.runs.reconcile_models``).
 
 Everything here streams line by line and is bounded by the longest line in the
 file: a 256 MB transcript must never be loaded into memory.  ``tail_last_usage``
@@ -35,6 +39,10 @@ import re
 from . import prices
 
 CPT = 4                    # chars per token, rough estimate for unpriced content
+# 3.24 T13l: chars written per output token, by tokenizer generation (``prices.tokenizer_for``).
+# "new": the specimen d76796c5's exact messages, text + thinking + tool input / output_tokens:
+# opus-5-5 1.5-2.2, sonnet-5-5 0.8-1.7 (thinking is partly unwritten).  Others fall back to CPT.
+OUTPUT_CPT = {"new": 2.0}
 RESET_FRACTION = 0.5       # context below this fraction of the prior max => reset
 MISS_FRACTION = 0.5        # cache_creation above this fraction of ctx => prefix rewritten
 MISS_MIN_CTX = 20_000      # ignore tiny contexts when flagging misses/resets
@@ -163,6 +171,31 @@ def _usage_of(rec):
     return None, None
 
 
+def _content_chars(msg):
+    """Characters a line's assistant content wrote: text, thinking and tool_use input."""
+    n = 0
+    for b in blocks(msg):
+        if not isinstance(b, dict):
+            continue
+        t = b.get("type")
+        if t == "text":
+            n += len(b.get("text") or "")
+        elif t == "thinking":
+            n += len(b.get("thinking") or "")
+        elif t == "tool_use":
+            try:
+                n += len(json.dumps(b.get("input"), ensure_ascii=False))
+            except (TypeError, ValueError):
+                n += len(str(b.get("input")))
+    return n
+
+
+def output_estimate(chars, model, at=None):
+    """Output tokens for ``chars`` written content on ``model`` (``OUTPUT_CPT``, else ``CPT``)."""
+    cpt = OUTPUT_CPT.get(prices.tokenizer_for(model, at) if model else None) or CPT
+    return int(-(-float(chars or 0) // cpt))          # ceil
+
+
 def _apply_usage(req, usage):
     """Overwrite a request's token fields with a later line's usage (keep-LAST)."""
     cc = usage.get("cache_creation")
@@ -202,12 +235,17 @@ def _new_request(rec, msg, usage):
         "stop_reason": msg.get("stop_reason"),
         "index": 0, "gap_s": None, "cold": False, "rewrite": False,
         "ctx": 0, "new_tokens": 0,
+        "content_chars": _content_chars(msg), "output_est": False,
     }
     return _apply_usage(req, usage)
 
 
 def _finish(req, index, prev_ts, cold_gap_s):
     req["index"] = index
+    if not req.get("stop_reason"):                  # placeholder usage only (T13l): estimate
+        req["output"] = max(req["output"], output_estimate(req.get("content_chars"),
+                                                           req.get("model"), req.get("ts_iso")))
+        req["output_est"] = True
     req["ctx"] = req["input"] + req["cache_write"] + req["cache_read"]
     req["new_tokens"] = req["input"] + req["cache_write"]
     if prev_ts is not None and req["ts"] is not None:
@@ -225,7 +263,7 @@ def iter_requests(path, start_offset=0, cold_gap_s=3600):
 
     Keys: ``msg_id request_id uuid session_id ts ts_iso model side stop_reason
     index input cache_write cache_write_5m cache_write_1h split cache_read
-    output thinking ctx new_tokens gap_s cold rewrite``.
+    output thinking ctx new_tokens gap_s cold rewrite content_chars output_est``.
 
     ``ctx = input + cache_write + cache_read`` and
     ``new_tokens = input + cache_write`` (what the API had to ingest fresh).
@@ -246,6 +284,7 @@ def iter_requests(path, start_offset=0, cold_gap_s=3600):
         mid = msg.get("id") or rec.get("requestId") or rec.get("uuid")
         if pending is not None and pending["msg_id"] == mid:
             _apply_usage(pending, usage)                      # keep-LAST
+            pending["content_chars"] += _content_chars(msg)
             if msg.get("stop_reason"):
                 pending["stop_reason"] = msg.get("stop_reason")
             continue
@@ -286,6 +325,7 @@ def read_new_requests(path, start_offset=0, cold_gap_s=3600, prev_ts=None, start
         mid = msg.get("id") or rec.get("requestId") or rec.get("uuid")
         if pending is not None and pending["msg_id"] == mid:
             _apply_usage(pending, usage)
+            pending["content_chars"] += _content_chars(msg)
             if msg.get("stop_reason"):
                 pending["stop_reason"] = msg.get("stop_reason")
             continue
@@ -306,15 +346,10 @@ def read_new_requests(path, start_offset=0, cold_gap_s=3600, prev_ts=None, start
 def request_cost(req, ttl_default="5m", at=None):
     """``prices.cost_of`` for a request dict from :func:`iter_requests``.
 
-    T8: does *not* pass ``long_context`` even for a request whose own ``ctx``
-    crosses ``prices.LONG_CONTEXT_TOKENS``.  Verified against two real >200k
-    sessions (Vantage claude-fable-5-1, 442/456 requests over the threshold;
-    WSL b2fa9a37 claude-opus-5[1m]): this ledger's cost-state totals track the
-    *base* rate, not the published long-context surcharge -- applying the tier
-    here overshot Vantage's actual cost-state total by +83 % (T8 log).  The
-    tier stays real and tested in ``prices.cost_of`` for a caller that does
-    have a request genuinely billed at it; this ledger's own request costing
-    does not.
+    T8: a request over 200k context is priced at the base rate.  Verified
+    against two real >200k sessions (Vantage claude-fable-5-1, 442/456 requests
+    over 200k; WSL b2fa9a37 claude-opus-5[1m]): their cost-state totals track
+    the base rate (a 2x/1.5x surcharge overshot Vantage's by +83 %, T8 log).
     """
     return prices.cost_of(req, req.get("model"), ttl_default=ttl_default,
                           at=at or req.get("ts_iso"))
@@ -545,7 +580,7 @@ def workflow_id_of(path):
 
 
 def agent_id_from_path(path):
-    """``…/agent-abfdf578000000016.jsonl`` -> ``abfdf578000000016``."""
+    """``…/agent-abfdf578000000025.jsonl`` -> ``abfdf578000000025``."""
     m = _AGENT_RE.search(str(path or "").replace("\\", "/"))
     return m.group(1) if m else None
 

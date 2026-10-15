@@ -1,0 +1,18 @@
+{
+  "id": "p08",
+  "arm": "partner",
+  "tier": 2,
+  "suites": [
+    "full"
+  ],
+  "prompt": "bench: one turn of the partner in the shelf project (a small Python library-loans package in this repository). The mod is absent here: its mcp__pa-watch__ tools and SubagentHandback do not exist, so end your turn with your reply as plain text. An Agent call is recorded, not run. Make only the move this turn calls for.\n\nThe developer says: ask the thinker, it's a hard one: how should renewals, holds and fee caps interact so a member can never dodge a fee by renewing while someone waits?",
+  "expect": {
+    "subagent_type": "pa-thinker",
+    "effort": [
+      "max"
+    ]
+  },
+  "hidden": "—",
+  "settings": "settings/deny-agent.json",
+  "overlay": "overlay/partner"
+}

@@ -1,9 +1,8 @@
 # REVIEW — Phase <N>, T<n>
 
 <!-- Written when the plan marks a task `review: yes`, or when a `wait-for:` batch exceeds the
-     router’s bounded wait. The developer reads outcome-first prose, decides, and the
-     router enters review mode in the same session (detect_state sees this file).
-     `status.py review-done` clears it. -->
+     loop's bounded wait. The developer reads outcome-first prose and decides: Claude presents
+     it. `status.py review-done` clears it. -->
 
 <!-- field: ran -->
 What ran: <commands, hosts, wall time>

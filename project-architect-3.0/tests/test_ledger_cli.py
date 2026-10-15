@@ -203,6 +203,20 @@ class ReportSavingsTiersTest(unittest.TestCase):
         self.assertIn("savings, since 2026-09-01, %s" % ACCT_A, text)
         self.assertIn("the all-time block starts at the ledger era", text)
 
+    def test_since_goes_by_session_start_not_restamp(self):
+        """3.28 T3: a recalc restamps sv.updated; an older session stays out of --since."""
+        import argparse
+        conn = db.connect(paths.db_path())
+        for sid in ("s_pre", "s_t"):
+            db.upsert_savings(conn, {"run_id": "sv_" + sid, "session_id": sid,
+                                     "measured_saved_usd": 1.0, "modeled_saved_usd": 2.0,
+                                     "updated": "2026-09-05T00:00:00Z"})
+        conn.commit()
+        args = argparse.Namespace(session=None, phase=None, account=None)
+        got = {r["session_id"] for r in ledger_cli._saved_rows(conn, args, "2026-09-01")}
+        db.close(conn)
+        self.assertEqual(got, {"s_t"})
+
 
 class ExportBesideTest(unittest.TestCase):
     """T28: export --phase lists a ``beside <phase>`` session in the header, not its rows."""
@@ -416,6 +430,144 @@ class DoctorUpdateRulesTest(unittest.TestCase):
         self.assertEqual(len(self._run(None)), 1)
 
 
+class DoctorModTest(unittest.TestCase):
+    """3.24 T4: doctor's root manifest, registration, matcher, floor, release and 3.2 project rows."""
+
+    def setUp(self):
+        from unittest import mock
+        self.tmp = tempfile.mkdtemp(prefix="pa3-dmod-")
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        self.pa3 = os.path.join(self.tmp, "pa3")
+        self.clone = os.path.join(self.tmp, "clone")
+        os.makedirs(self.pa3)
+        for name, value in (("install_dir", lambda: self.pa3),
+                            ("package_clone_dir", lambda config_dir=None: self.clone)):
+            patcher = mock.patch.object(paths, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def _rows(self, fn, *args):
+        doc = ledger_cli._Doctor()
+        fn(doc, *args)
+        return doc.lines
+
+    def _write(self, rel, text):
+        path = os.path.join(self.tmp, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(text)
+        return path
+
+    def test_root_manifest(self):
+        from pa.install import root
+        self.assertTrue(self._rows(ledger_cli._doctor_root_manifest)[0].startswith("WARN"))
+        src = self._write("pa3/agents/a.md", "a\n")
+        ver = "version: 3.24\n"
+        self._write("pa3/MANIFEST.json", root.manifest_text([("agents/a.md", src)], ver))
+        self._write("pa3/VERSION", ver)
+        rows = self._rows(ledger_cli._doctor_root_manifest)
+        self.assertTrue(rows[0].startswith("OK"), rows)
+        self._write("pa3/agents/a.md", "changed\n")
+        rows = self._rows(ledger_cli._doctor_root_manifest)
+        self.assertTrue(rows[0].startswith("FAIL") and "1 of 1 differ" in rows[0], rows)
+        self._write("pa3/VERSION", "version: 3.23\n")              # a half copy: VERSION not the manifest's
+        rows = self._rows(ledger_cli._doctor_root_manifest)
+        self.assertIn("half copy", rows[0])
+
+    def test_registration_and_matcher(self):
+        hook = {"type": "command", "command": "py C:/pa3/pa_hook.py pre_tool_use"}
+        doc = {"extraKnownMarketplaces": {"pa3": {"source": {"source": "directory",
+                                                              "path": os.path.join(self.pa3, "mod")}}},
+               "enabledPlugins": {"pa@pa3": True, "pa-watch@pa3": True},
+               "hooks": {"PreToolUse": [{"matcher": "Read|Edit|Bash", "hooks": [hook]}]}}
+        path = self._write("cfg/settings.json", json.dumps(doc))
+        rows = self._rows(ledger_cli._doctor_registration, "user", path)
+        self.assertEqual([r.split()[0] for r in rows], ["OK", "OK"], rows)
+        doc["extraKnownMarketplaces"]["pa3"]["source"]["path"] = "C:/elsewhere/mod"
+        doc["hooks"]["PreToolUse"][0]["matcher"] = "Edit|Bash"
+        self._write("cfg/settings.json", json.dumps(doc))
+        rows = self._rows(ledger_cli._doctor_registration, "user", path)
+        self.assertEqual([r.split()[0] for r in rows], ["FAIL", "FAIL"], rows)
+        self.assertIn("not %s" % ledger_cli._fwd_norm(os.path.join(self.pa3, "mod")), rows[0])
+        self.assertIn("Read is not in the PreToolUse matcher", rows[1])
+
+    def test_floor(self):
+        from unittest import mock
+        from pa.install import root
+        floor = root.mod_floor(root.package_root())
+        with mock.patch.object(root, "claude_version", lambda: "2.0.0"):
+            rows = self._rows(ledger_cli._doctor_floor)
+        self.assertTrue(rows[0].startswith("FAIL") and "below the mod's floor %s" % floor in rows[0], rows)
+        with mock.patch.object(root, "claude_version", lambda: floor):
+            self.assertTrue(self._rows(ledger_cli._doctor_floor)[0].startswith("OK"))
+
+    @unittest.skipUnless(shutil.which("git"), "git not on PATH")
+    def test_released_tree_warns_when_it_differs(self):
+        import subprocess
+
+        def git(*args):
+            return subprocess.run(["git"] + list(args), capture_output=True, text=True, check=True).stdout.strip()
+
+        origin = os.path.join(self.tmp, "origin.git")
+        git("init", "--bare", "-q", origin)
+        git("init", "-q", self.clone)
+        git("-C", self.clone, "config", "user.email", "t@t")
+        git("-C", self.clone, "config", "user.name", "T")
+        self._write("clone/project-architect-3.0/VERSION", "3.24\n")
+        git("-C", self.clone, "add", "-A")
+        git("-C", self.clone, "commit", "-q", "-m", "release")
+        git("-C", self.clone, "remote", "add", "origin", origin)
+        git("-C", self.clone, "push", "-q", "-u", "origin", "HEAD")
+        tree = git("-C", self.clone, "rev-parse", "HEAD:project-architect-3.0")
+        self._write("pa3/VERSION", "version: 3.24\ntree: %s\n" % tree)
+        self.assertTrue(self._rows(ledger_cli._doctor_released)[0].startswith("OK"))
+        self._write("pa3/VERSION", "version: 3.24\ntree: %s\n" % ("0" * 40))
+        rows = self._rows(ledger_cli._doctor_released)
+        self.assertTrue(rows[0].startswith("WARN") and "release candidate" in rows[0], rows)
+
+    def test_project_32(self):
+        from pa.install import ladder
+        proj = os.path.join(self.tmp, "proj")
+        self._write("proj/.claude/pa.json", json.dumps({"mod": "on", "preset": "max5"}))
+        src = os.path.join(ROOT, "agents")
+        for name in sorted(os.listdir(src)):
+            agent = name[:-3]
+            if name.endswith(".md") and (agent not in ladder.MANAGED or ladder.row(agent, "max5") is not None):
+                self._write("proj/.claude/agents/" + name, "x\n")
+        self._write("proj/.claude/settings.json", json.dumps({"model": "claude-opus-5-5[1m]"}))
+        self._write("cfg/.credentials.json", json.dumps(          # 3.24 T17: a fixed live tier
+            {"claudeAiOauth": {"subscriptionType": "max", "rateLimitTier": "default_claude_max_20x"}}))
+        from unittest import mock
+        env = mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": os.path.join(self.tmp, "cfg")})
+        env.start()
+        self.addCleanup(env.stop)
+        rows = self._rows(ledger_cli._doctor_project_mod, proj)
+        self.assertEqual([r.split()[0] for r in rows], ["OK"] * 6, rows)
+        self.assertIn("pa-planner runs claude-opus-5-5[1m] at max (tier max20, credentials)", rows[4])
+        self._write("proj/.claude-state/journal/2026-10-11/120000-001w-mod-start.md",
+                    "---\nagentType: pa-planner\nmodel: claude-opus-5-5\neffort: max\n---\n\nspawn\n")
+        self.assertTrue(self._rows(ledger_cli._doctor_project_mod, proj)[5].startswith("OK"))
+        self._write("proj/.claude-state/journal/2026-10-11.md", "## 110000-001w-mod-start\n---\n"
+                    "agentType: auditor\nmodel: claude-opus-5-5[1m]\neffort: high\n---\n\nspawn\n")
+        row = self._rows(ledger_cli._doctor_project_mod, proj)[5]
+        self.assertTrue(row.startswith("WARN") and "auditor got claude-opus-5-5[1m]/high" in row, row)
+        self.assertNotIn("pa-planner got", row)
+        self._write("proj/.claude/pa.json", json.dumps({"preset": "max5"}))
+        self._write("proj/.claude/agents/critic.md", "x\n")
+        self._write("proj/.claude/commands/proceed.md", "x\n")
+        os.remove(os.path.join(proj, ".claude", "agents", "pa-claude.md"))
+        self._write("proj/.claude/settings.json", json.dumps(
+            {"agent": "pa-session", "modelSettings": {"claude-sonnet-5-5": {"effortLevel": "medium"}}}))
+        self._write("proj/.claude/settings.local.json", json.dumps({"model": "claude-sonnet-5-5[1m]"}))
+        rows = self._rows(ledger_cli._doctor_project_mod, proj)
+        self.assertEqual([r.split()[0] for r in rows], ["FAIL", "FAIL", "FAIL", "FAIL", "WARN", "OK", "WARN"],
+                         rows)
+        self.assertIn("pa-claude", rows[1])
+        self.assertIn(".claude/agents/critic.md, .claude/commands/proceed.md", rows[2])
+        self.assertIn("agent, modelSettings.claude-sonnet-5-5", rows[3])
+        self.assertEqual(self._rows(ledger_cli._doctor_project_mod, os.path.join(self.tmp, "none")), [])
+
+
 class SavingsDisplayDoctorTest(unittest.TestCase):
     """T11.1: doctor's ``savings display`` row FAILs for a >= $1 session with no
     ``windows`` block; ``--repair savings`` rebuilds summary.json and clears the flag."""
@@ -460,6 +612,16 @@ class SavingsDisplayDoctorTest(unittest.TestCase):
 
     def _row(self, text):
         return [ln for ln in text.splitlines() if "savings display" in ln]
+
+    def test_user_rows_follow_claude_config_dir(self):
+        """3.24 T12e: with $CLAUDE_CONFIG_DIR set, the user settings rows read it, not ~/.claude."""
+        from unittest import mock
+        cfg = os.path.join(self.dir, "cfg-vantage")
+        os.makedirs(cfg)
+        with mock.patch.dict(os.environ, {"CLAUDE_CONFIG_DIR": cfg}):
+            _rc, text, _e = run_cli("doctor", "--skip-hooks", "--project", self.project)
+        self.assertIn("user: no settings.json at %s" % os.path.join(cfg, "settings.json"), text)
+        self.assertNotIn(os.path.join(paths.claude_dir(), "settings.json"), text)
 
     def test_fail_then_repair_clears_row_and_flag(self):
         _rc, text, _e = run_cli("doctor", "--skip-hooks", "--project", self.project)
@@ -545,7 +707,7 @@ class SavingsDisplayDoctorTest(unittest.TestCase):
                                   lambda a: recalcs.append(a.session)):
             ok, row = ledger_cli.repair_savings(self.SID, self.project)
         self.assertFalse(ok, row)
-        self.assertEqual(recalcs, [self.SID])
+        self.assertEqual(recalcs, [[self.SID]])    # 3.24 T10: --session repeats (a list)
         with open(self.health, encoding="utf-8") as fh:
             self.assertIn("savings_missing", json.load(fh))
 
@@ -600,6 +762,76 @@ class AccountsTierTest(unittest.TestCase):
         rc, _text, _errs = run_cli("accounts", "tier", ACCT_A, "max")
         self.assertEqual(rc, 2)
         self.assertEqual(self._tier(), ("max5", "credentials"))
+
+
+class ModCommandsTest(unittest.TestCase):
+    """3.22: ``prices --json``, ``event`` and ``toast``: one JSON line, rc 0; bad input rc 2."""
+
+    def setUp(self):
+        from pa import notify
+
+        self.dir = tempfile.mkdtemp(prefix="pa3-ledger-mod-")
+        self._old_env = os.environ.get("PA_LEDGER_DIR")
+        os.environ["PA_LEDGER_DIR"] = self.dir
+        paths.ensure_ledger_tree()
+        self.spawned = []
+        notify.set_spawner(lambda cmd, env: self.spawned.append(cmd))
+
+    def tearDown(self):
+        from pa import notify
+
+        notify.set_spawner(None)
+        if self._old_env is None:
+            os.environ.pop("PA_LEDGER_DIR", None)
+        else:
+            os.environ["PA_LEDGER_DIR"] = self._old_env
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_prices_json(self):
+        from pa import prices
+
+        rc, text, errs = run_cli("prices", "--json")
+        self.assertEqual(rc, 0, errs)
+        self.assertEqual(len(text.strip().splitlines()), 1)
+        doc = json.loads(text)
+        self.assertEqual(doc["prices"]["opus-5-5"],
+                         {"read": 0.2, "write_5m": 5.0, "write_1h": 8.0, "input": 4.0, "output": 20.0})
+        rc, text, errs = run_cli("prices", "--json", "--model", "claude-opus-5-5[1m]")
+        self.assertEqual(rc, 0, errs)
+        self.assertEqual(json.loads(text)["price"]["write_1h"], 8.0)
+        self.assertEqual(run_cli("prices", "--json", "--model", "gpt-9")[0], 2)
+        tier = {"over": 100000, "input": 0.5, "write_5m": 0.625, "write_1h": 1.0, "read": 0.05,
+                "output": 2.5}
+        self.assertEqual(doc["prices"]["haiku-5-5"]["prompt_tier"], tier)
+        self.assertEqual(doc["prices"]["sonnet-5-5"]["read"], 0.1)
+        rc, text, errs = run_cli("prices", "--json", "--model", "claude-haiku-5-5")
+        self.assertEqual(json.loads(text)["price"]["prompt_tier"], tier)
+
+    def test_event_spools_a_warm_ping(self):
+        detail = {"run_id": "a1", "session_id": "s1", "ttl": "1h", "idle_s": 3300, "n": 1,
+                  "via": "mod", "cap": None, "cap_inputs": {}}
+        rc, text, errs = run_cli("event", "warm_ping", "--session", "s1", "--run", "a1",
+                                 "--detail", json.dumps(detail))
+        self.assertEqual(rc, 0, errs)
+        row = json.loads(text)
+        self.assertEqual((row["kind"], row["run_id"], row["detail"]), ("warm_ping", "a1", detail))
+        with open(paths.spool_path("s1"), encoding="utf-8") as fh:
+            self.assertEqual(json.loads(fh.readline())["detail"]["via"], "mod")
+        self.assertEqual(run_cli("event", "toast", "--session", "s1")[0], 2)
+        self.assertEqual(run_cli("event", "warm_ping", "--session", "s1", "--detail", "[1]")[0], 2)
+
+    def test_toast_waiting(self):
+        proj = os.path.join(self.dir, "proj")
+        os.makedirs(os.path.join(proj, ".claude"))
+        with open(os.path.join(proj, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
+            json.dump({"mod": "on", "toast": "waiting"}, fh)
+        rc, text, errs = run_cli("toast", "--session", "s1", "--cause", "question", "--title", "PA3",
+                                 "--body", "Which one?", "--project", proj)
+        self.assertEqual(rc, 0, errs)
+        self.assertTrue(json.loads(text)["sent"])
+        self.assertEqual(len(self.spawned), 1)
+        self.assertEqual(run_cli("toast", "--session", "s1", "--cause", "stop", "--title", "t",
+                                 "--body", "b")[0], 2)
 
 
 if __name__ == "__main__":

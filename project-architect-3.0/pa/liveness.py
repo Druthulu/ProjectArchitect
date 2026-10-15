@@ -11,7 +11,7 @@ Two detection paths:
      ``tool_result`` older than ``liveness.dead_min`` minutes; the model answers
      within seconds, so silence after 20 minutes means the turn limit was hit.
      An entry whose last record is an assistant ``tool_use`` is never swept by
-     age (a tool call may be a long gate or wait; the warmer, ``pa/warmer.py``, pings idle runs).
+     age (a tool call may be a long gate or wait; the mod's ``warm_ping`` keeps idle runs warm).
 
 Swept agents are closed through :func:`pa.hooks.subagent_stop.close_run` so
 they are locked and booked like a normal SubagentStop.
@@ -209,6 +209,33 @@ def _find_parent_transcript(agent_path, parent_id, sid):
 _SWEEP_STAMP_FILE = "liveness_sweep.json"
 
 
+def _ledger_path(sid, agent_id):
+    """A flat subagent's transcript when its running entry has none (3.24 T13h): the
+    agent_runs row's ``transcript_path``, else the flat path built from the session's
+    main transcript (``<dir>/<sid>/subagents/agent-<id>.jsonl``); "" when neither."""
+    try:
+        from .hooks import close_db, open_db
+
+        conn = open_db(create=False)
+        if conn is None:
+            return ""
+        try:
+            row = conn.execute("SELECT transcript_path FROM agent_runs WHERE run_id=?",
+                               (str(agent_id),)).fetchone()
+            if row and row[0]:
+                return str(row[0])
+            row = conn.execute("SELECT transcript_path FROM sessions WHERE session_id=?",
+                               (str(sid),)).fetchone()
+        finally:
+            close_db(conn)
+    except Exception:
+        return ""
+    if not row or not row[0]:
+        return ""
+    return os.path.join(os.path.dirname(str(row[0])), str(sid), "subagents",
+                        "agent-%s.jsonl" % agent_id)
+
+
 def _should_sweep(now, interval_s=60):
     """True when at least *interval_s* have passed since the last sweep."""
     from . import paths
@@ -264,8 +291,8 @@ def sweep(sid, cfg, now=None, min_age_s=300):
         if not started or str(started) > cutoff_iso:
             continue  # too young
 
-        # transcript path from the running entry
-        path = entry.get("transcript_path") or ""
+        # transcript path from the running entry, else the ledger's (3.24 T13h)
+        path = entry.get("transcript_path") or _ledger_path(sid, agent_id)
         agent_type = entry.get("agent_type") or ""
         parent_in_entry = entry.get("parent") or ""
 
@@ -308,7 +335,7 @@ def sweep(sid, cfg, now=None, min_age_s=300):
             continue
 
         if _is_tool_use(last):
-            continue  # assistant tool_use: never sweep by age (could be a long gate; idle runs are the warmer's, pa/warmer.py)
+            continue  # assistant tool_use: never sweep by age (could be a long gate; idle runs are the mod's warm_ping)
 
         if _is_tool_result(last):
             rec_epoch = _record_epoch(last)

@@ -214,10 +214,10 @@ class TestOverlayCollision(OverlayCase):
 
     def test_colliding_agent_fails_and_no_file(self):
         """Add a colliding agent to .claude/agents/, run -> FAIL."""
-        # create a project agent with a name that collides with PA3's pa-session.md
+        # create a project agent with a name that collides with PA3's pa-claude.md (3.24: was pa-session.md)
         agents_dir = _path(self.repo, ".claude", "agents")
         os.makedirs(agents_dir, exist_ok=True)
-        with open(os.path.join(agents_dir, "pa-session.md"), "w") as fh:
+        with open(os.path.join(agents_dir, "pa-claude.md"), "w") as fh:
             fh.write("# colliding agent\n")
         git(self.repo, "add", ".")
         git(self.repo, "commit", "-qm", "add colliding agent")

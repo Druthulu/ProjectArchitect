@@ -20,6 +20,22 @@ import time
 
 from . import prices
 
+# 3.27 T9 (I66): measured unit costs of the Claude Code features a stock session runs and PA3
+# turns off (settings/project.snippet.json); the vanilla basis pays them.
+# Prompt suggestions: (residual $0.4157 with them, session 772d01c6, - $0.0058 without,
+# 2931fbad) / 7 main-loop turns (Stop events) of 772d01c6 = $0.0586 per main-loop turn
+# (docs/pa3-build/3.2/3.22-partner.md:527-530).
+SUGGEST_USD_PER_TURN = 0.0586
+# Compaction: headless /compact of a 125,271-token Opus 5.5 session (f4b175bb, 2026-10-12):
+# reads the context, writes a 2,207-token summary, leaves 4,448 tokens ($0.1318).
+COMPACT_OUT_TOKENS = 2207
+COMPACT_POST_TOKENS = 4448
+# Left out, unmeasured: the todo/task tools (headless `claude -p` 2.1.296 offers none, on or
+# off: same 36 tools, same 31,827 input tokens); the session recap (the 2.7 %/4.5 % shares
+# mix recaps with other untranscribed requests and depend on time away); idle compaction
+# (its frequency is time away).
+LEFT_OUT = "todo/task tools (not offered headless), session recap, idle compaction: unmeasured"
+
 
 def _parse_epoch(ts):
     """Parse an ISO 8601 timestamp to epoch seconds."""
@@ -39,7 +55,9 @@ def account_turns(conn, account):
     ``{run_id: seed_ctx}``.
     """
     rows = conn.execute(
-        "SELECT msg_id, session_id, run_id, ts, model, new_tokens, output, cost_usd "
+        "SELECT msg_id, session_id, run_id, ts, model, new_tokens, output, cost_usd, "
+        "stop_reason, (run_id = session_id OR run_id IN "
+        "(SELECT run_id FROM agent_runs WHERE kind='partner')) AS main_loop "
         "FROM turns WHERE kind='api' AND account IS ? AND ts IS NOT NULL "
         "ORDER BY ts, run_id, msg_id", (account,)).fetchall()
     turns = []
@@ -50,6 +68,7 @@ def account_turns(conn, account):
             "run_id": r["run_id"], "ts": ts, "epoch": _parse_epoch(ts),
             "model": r["model"], "new_tokens": int(r["new_tokens"] or 0),
             "output": int(r["output"] or 0), "cost_usd": float(r["cost_usd"] or 0.0),
+            "main_end": bool(r["main_loop"]) and r["stop_reason"] == "end_turn",
         })
     seed_rows = conn.execute(
         "SELECT run_id, seed_ctx FROM agent_runs WHERE session_id IN "
@@ -62,16 +81,23 @@ def account_turns(conn, account):
 def rolling(turns, seeds, params):
     """Walk every turn with one virtual context, returning per-turn modeled cost.
 
-    *params* keys: ``window``, ``ttl_old_s``, ``subtract_agent_seeds``.
-    The context is a plain window that cycles: it starts at 0, and a turn
-    whose new tokens would overflow ``window`` resets it to 0 first (no seed
-    write, no compact).  Deterministic: no clocks, no dict-order dependence.
+    *params* keys: ``window``, ``ttl_old_s``, ``subtract_agent_seeds``, and the
+    measured feature charges ``suggest_usd``, ``compact_out``, ``compact_post``
+    (each 0 when absent).  The context is a plain window that cycles: it starts
+    at 0, and a turn whose new tokens would overflow ``window`` compacts it
+    first (reads the context, writes ``compact_out`` tokens, keeps
+    ``compact_post``; a free reset to 0 when those are 0).  A main-loop turn
+    (``main_end``) pays ``suggest_usd`` for its prompt suggestion.
+    Deterministic: no clocks, no dict-order dependence.
     Sets ``params["_n_unpriced"]`` as a side effect for :func:`assumptions`.
     """
     # T30: seed_old/old_reset retired; the counterfactual is a plain 1M cycle.
     window = int(params.get("window", 1000000))
     ttl_old_s = int(params.get("ttl_old_s", 3600))
     subtract_seeds = bool(params.get("subtract_agent_seeds", True))
+    suggest_usd = float(params.get("suggest_usd", 0.0))
+    compact_out = int(params.get("compact_out", 0))
+    compact_post = int(params.get("compact_post", 0))
 
     ctx = 0
     prev_epoch = None
@@ -97,10 +123,16 @@ def rolling(turns, seeds, params):
 
         cold = False
         reset = False
+        compact_cost = 0.0
 
         if ctx + new > window:
             reset = True
-            ctx = 0
+            if p is not None and (compact_out or compact_post):
+                compact_cost = (ctx * float(p.get("read", 0.0))
+                                + compact_out * float(p.get("output", 0.0))) / 1e6
+                ctx = compact_post
+            else:
+                ctx = 0
 
         if p is None:
             # unpriced model: cost_replay = cost_usd, modeled_saved = 0
@@ -122,7 +154,9 @@ def rolling(turns, seeds, params):
 
             new_cost = new * write_1h / 1e6
             out_cost = output * out_price / 1e6
-            cost_replay = prefix_cost + new_cost + out_cost
+            cost_replay = prefix_cost + new_cost + out_cost + compact_cost
+            if turn.get("main_end"):
+                cost_replay += suggest_usd
 
             ctx += new
 
@@ -178,6 +212,9 @@ def assumptions(params, results):
         "window": int(params.get("window", 1000000)),
         "ttl_old_s": int(params.get("ttl_old_s", 3600)),
         "subtract_agent_seeds": bool(params.get("subtract_agent_seeds", True)),
+        "suggest_usd": float(params.get("suggest_usd", 0.0)),
+        "compact_out": int(params.get("compact_out", 0)),
+        "compact_post": int(params.get("compact_post", 0)),
         "prices_version": prices.PRICES_VERSION,
         "n_turns": len(results),
         "n_unpriced": int(params.get("_n_unpriced", 0)),
@@ -193,6 +230,9 @@ def params_from_cfg(cfg):
         "window": int(_config.get(cfg, "savings.window_tokens", 1000000) or 1000000),
         "ttl_old_s": _config.get(cfg, "modeled.ttl_old_s", 3600),
         "subtract_agent_seeds": _config.get(cfg, "modeled.subtract_agent_seeds", True),
+        "suggest_usd": SUGGEST_USD_PER_TURN,
+        "compact_out": COMPACT_OUT_TOKENS,
+        "compact_post": COMPACT_POST_TOKENS,
     }
 
 

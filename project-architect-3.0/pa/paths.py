@@ -210,7 +210,6 @@ def project_paths(cwd):
         "slug": project_slug(cwd),
         "run_dir": run,
         "status_json": os.path.join(run, "status.json"),
-        "discussion_flag": os.path.join(run, "DISCUSSION"),
         "logs_dir": os.path.join(run, "logs"),
         "phase_current": cur,
         "phase_plan": os.path.join(cur, "PHASE_PLAN.md"),

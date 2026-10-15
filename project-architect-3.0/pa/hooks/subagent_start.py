@@ -13,19 +13,15 @@ heuristic is exact for the live case and is overwritten later anyway.
 Governance: an expert's run id is pushed into ``.run/status.json`` so the
 statusline's line 2 can show which run the phase task is on.
 
-Focus (3.1 T12.1.1.1): with ``pa.json follow_agents: on``, a planner, expert or
-critic (never a retriever or coder) gets a new focused Windows Terminal tab in the
-current window (``wt.exe -w 0 nt``) running ``pa_ledger.py follow <run_id>``, a
-read-only live view of its transcript; SubagentStop drops the marker that closes it.
+3.24 T3.2: the ``follow_agents`` focus tab and the warmer's runs file left with the
+Gen 3 loop (an old pa.json ``follow_agents`` key is ignored).
 """
 
 import json
-import os
 import re
-import sys
 
 from .. import log, running
-from . import (close_db, governed, now_iso, open_db, pinned_for, project_config,
+from . import (close_db, governed, now_iso, open_db, pinned_for,
                role_of, sid_of, status_patch, status_read)
 
 _TASK_ID_RE = re.compile(r"^(T\d+(?:\.\d+)*)(?:\.c\d+)?\b")
@@ -67,8 +63,9 @@ def run(inp, cfg):
     root = governed(inp)
     status = (status_read(root) or {}) if root else {}         # the router's stamp (3.1 T10/T11)
 
+    tpath = _transcript(inp, agent_id)    # 3.24 T13h: the live entry carries it (liveness sweep)
     running.update(lambda data: _live(data, sid, agent_id, agent_type, role, parent,
-                                      pinned, meta, now, source))
+                                      pinned, meta, now, source, tpath))
 
     conn = open_db()
     try:
@@ -102,7 +99,7 @@ def run(inp, cfg):
             "description": meta.get("description"), "tool_use_id": meta.get("toolUseId"),
             "spawn_depth": depth, "model_pinned": pinned,
             "model_seen": meta.get("model"), "started": now, "status": "running",
-            "transcript_path": _transcript(inp, agent_id),
+            "transcript_path": tpath,
             "task_id": desc_task_id or status.get("task") or None, "phase": run_phase,
         })
     finally:
@@ -117,76 +114,12 @@ def run(inp, cfg):
         running.set_expert(sid, agent_id)
         if root:
             status_patch(root, {"run_id": agent_id, "expert_agent_type": agent_type})
-    if root and follow_wanted(project_config(root), role):
-        open_follow_tab(inp, sid, agent_id, agent_type, role, status)
-    if root:
-        _warm(root, sid, cfg, agent_id, agent_type, role)
     log.log("subagent_start", session=sid, agent=agent_id, role=role, depth=depth)
     return None
 
 
-def _warm(root, sid, cfg, agent_id, agent_type, role):
-    """3.9.5 T4: tell the session's warmer of the run (``<sid>.runs``); start it when none lives."""
-    try:
-        from .. import fsutil, warmer
-
-        fsutil.append_line(warmer.path(root, sid, "runs"), json.dumps(
-            {"add": agent_id, "agent_type": agent_type, "role": role}))
-        warmer.start_if_needed(root, sid, cfg, os.environ.get("CLAUDE_PID"))
-    except Exception as exc:           # fail soft: the run is only not warmed
-        log.log("warmer_start_failed", session_id=sid, agent=agent_id, error=str(exc)[:200])
-
-
-def follow_wanted(pcfg, role):
-    """``pa.json follow_agents: on`` and a planner, expert or critic (never a retriever or coder)."""
-    flag = str((pcfg or {}).get("follow_agents") or "off").strip().lower()
-    if flag not in ("on", "true", "1", "yes"):
-        return False
-    role = str(role or "")
-    return role in ("expert", "critic") or role.startswith("planner")
-
-
-def wt_exe():
-    """Windows Terminal: ``$PA_WT_EXE`` (tests), PATH, else the WindowsApps alias; None elsewhere."""
-    forced = os.environ.get("PA_WT_EXE")
-    if forced:
-        return forced
-    from .. import notify
-
-    found = notify._which("wt")
-    if found:
-        return found
-    cand = os.path.join(os.environ.get("LOCALAPPDATA") or "", "Microsoft", "WindowsApps", "wt.exe")
-    return cand if os.path.isfile(cand) else None
-
-
-def open_follow_tab(inp, sid, agent_id, agent_type, role, status):
-    """A new focused tab in the current Windows Terminal window that follows the agent, read-only."""
-    from .. import notify, paths
-
-    wt = wt_exe()
-    if not wt:
-        log.log("follow_no_wt", session=sid, agent=agent_id)
-        return False
-    pa3 = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    title = ("%s %s" % (agent_type or role, (status or {}).get("task") or "")).strip()
-    cmd = [wt, "-w", "0", "nt", "--title", title, sys.executable, "-X", "utf8",
-           os.path.join(pa3, "pa_ledger.py"), "follow", str(agent_id),
-           "--transcript", _transcript(inp, agent_id) or "", "--session", sid]
-    try:
-        marker = paths.follow_path(agent_id)
-        os.makedirs(os.path.dirname(marker), exist_ok=True)
-        with open(marker, "w", encoding="utf-8") as fh:
-            json.dump({"agent": agent_type, "role": role, "session": sid,
-                       "opened": now_iso(), "title": title}, fh)
-    except OSError:
-        pass
-    sent = notify.spawn_detached(cmd, {})
-    log.log("follow_open", session=sid, agent=agent_id, sent=bool(sent))
-    return bool(sent)
-
-
-def _live(data, sid, agent_id, agent_type, role, parent, pinned, meta, now, source="main"):
+def _live(data, sid, agent_id, agent_type, role, parent, pinned, meta, now, source="main",
+          tpath=""):
     entry = running.agent_ref(data, sid, agent_id, agent_type=agent_type, role=role,
                               parent=parent, model_pinned=pinned, started=now)
     entry.update({"agent_type": agent_type, "role": role, "parent": parent,
@@ -194,6 +127,8 @@ def _live(data, sid, agent_id, agent_type, role, parent, pinned, meta, now, sour
                   "model_pinned": pinned, "status": "running",
                   "description": meta.get("description"),
                   "spawn_depth": _int(meta.get("spawnDepth"))})
+    if tpath:
+        entry["transcript_path"] = tpath
     running.session_ref(data, sid)["touched"] = now
     return data
 

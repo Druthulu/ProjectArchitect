@@ -703,6 +703,8 @@ def run(env, layout_mod):
     try:
         merge_project_settings(env)
         _gitignore_transcripts(env)
+        from .project import first_run_marker
+        first_run_marker(env, "pa2")            # 3.24 T5: the curator's first-run sort
     except (OSError, ValueError, sm.MergeError) as exc:
         step("P7", "settings", "FAIL", str(exc))
         return 1

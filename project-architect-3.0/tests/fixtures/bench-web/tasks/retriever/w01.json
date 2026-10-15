@@ -1,0 +1,16 @@
+{
+  "id": "w01",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "What maximum line length does PEP 8 set for docstrings and comments?\n\nFind the answer in the published source on the web. Give the answer and the full address (URL) of the page you read it on.",
+  "expect": {
+    "tokens": [
+      "72",
+      "pep-0008"
+    ]
+  },
+  "hidden": "—"
+}

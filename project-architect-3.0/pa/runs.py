@@ -6,6 +6,7 @@ Public:
     aggregate(path, ttl_default="5m", account=None, session_id=None, run_id=None)
     link_parent(conn, run_id, parent_run_id, parent_source="agent_tool", **fields)
     residual_row(conn, session_id, total_cost, account=None, model=None, ts=None)
+    reconcile_models(conn, session_id, state, account=None, ts=None) -> dict
     defer_lock(payload)                     append to state/pending_locks.jsonl
     pending_locks(), clear_pending()
 
@@ -129,6 +130,14 @@ def lock_run_from_transcript(conn, run_id, path, session_id=None, account=None,
 
 # --------------------------------------------------------------------------- residual
 
+UNATTRIBUTED = "unattributed"     # 3.24 T13l: the residual rows' run_id prefix, never the main loop
+
+
+def unattributed_run(session_id):
+    """``run_id`` of a session's residual rows: ``unattributed:<sid>`` (classifier, unlogged calls)."""
+    return "%s:%s" % (UNATTRIBUTED, session_id)
+
+
 def session_turn_cost(conn, session_id, kind="api"):
     """Sum of ``turns.cost_usd`` attributed to one session."""
     row = conn.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM turns "
@@ -156,7 +165,7 @@ def residual_row(conn, session_id, total_cost, account=None, model=None, ts=None
     if gap <= float(min_usd):
         return None
     row = {"msg_id": "residual:%s" % session_id, "request_id": None,
-           "run_id": session_id, "session_id": session_id, "account": account,
+           "run_id": unattributed_run(session_id), "session_id": session_id, "account": account,
            "ts": ts or _now(), "model": model, "input": 0, "cache_write_5m": 0,
            "cache_write_1h": 0, "cache_write": 0, "cache_read": 0, "output": 0,
            "ctx": 0, "new_tokens": 0, "cost_usd": gap, "kind": "residual"}
@@ -165,6 +174,98 @@ def residual_row(conn, session_id, total_cost, account=None, model=None, ts=None
                                        "attributed": attributed, "residual": gap},
                     session_id=session_id, account=account)
     return row
+
+
+def _scaled(outs, target):
+    """Integer outputs proportional to ``outs`` that sum to ``target`` (cumulative rounding)."""
+    total = sum(outs)
+    new, cum, prev = [], 0, 0
+    for o in outs:
+        cum += o
+        at = int(round(cum * float(target) / total)) if total else 0
+        new.append(at - prev)
+        prev = at
+    return new
+
+
+def reconcile_models(conn, session_id, state, account=None, ts=None, min_usd=0.005):
+    """Reconcile a session's turns to the ``cost-state``, model by model (3.24 T13l).
+
+    1. Per model (``prices.normalize_model``): the estimated outputs (``turns.output_est``, a
+       placeholder-usage request, :mod:`pa.transcript`) are scaled so exact + estimated output
+       equals ``modelUsage[m].outputTokens``; each scaled row is repriced at its output rate.
+    2. What remains of ``modelUsage[m].costUSD`` is one ``kind='residual'`` row per model,
+       ``msg_id residual:<sid>:<model>``, ``run_id unattributed:<sid>`` (auto mode's classifier
+       and other calls no transcript shows), never the main loop.  Old residual rows go first.
+    Touched runs get their ``agent_runs`` output and cost re-summed.  Returns
+    ``{"scaled_usd", "residual_usd", "rows", "models"}``, or None without ``modelUsage``.
+    """
+    from . import db, prices
+
+    usage = (state or {}).get("modelUsage") if isinstance(state, dict) else None
+    if not isinstance(usage, dict) or not usage:
+        return None
+    pools = {}
+    for model, u in sorted(usage.items()):
+        if not isinstance(u, dict):
+            continue
+        p = pools.setdefault(prices.normalize_model(model), {"model": model, "out": 0, "cost": 0.0})
+        p["out"] += int(u.get("outputTokens") or 0)
+        p["cost"] += float(u.get("costUSD") or 0.0)
+    turns = {}
+    for r in conn.execute("SELECT msg_id, run_id, model, ts, ctx, output, cost_usd, output_est"
+                          " FROM turns WHERE session_id=? AND kind='api' ORDER BY ts, msg_id",
+                          (session_id,)).fetchall():
+        turns.setdefault(prices.normalize_model(r[2]), []).append(r)
+    scaled_usd, touched, models = 0.0, set(), {}
+    for nk, p in pools.items():
+        rows = turns.get(nk, [])
+        est = [r for r in rows if r[7]]
+        exact_out = sum(int(r[5] or 0) for r in rows if not r[7])
+        attributed = sum(float(r[6] or 0.0) for r in rows)
+        info = {"exact_out": exact_out, "est_out": sum(int(r[5] or 0) for r in est),
+                "target_out": p["out"], "scaled_out": None}
+        if est and info["est_out"] > 0:
+            new = _scaled([int(r[5] or 0) for r in est], max(p["out"] - exact_out, 0))
+            for r, out in zip(est, new):
+                old = int(r[5] or 0)
+                if out == old:
+                    continue
+                price = prices.price_for(r[2], r[3])
+                rate = prices.rates_for(price, ctx=int(r[4] or 0))[0]["output"] if price else 0.0
+                delta = (out - old) * float(rate) / 1e6
+                conn.execute("UPDATE turns SET output=?, cost_usd=? WHERE msg_id=?",
+                             (out, float(r[6] or 0.0) + delta, r[0]))
+                scaled_usd += delta
+                attributed += delta
+                touched.add(r[1])
+            info["scaled_out"] = sum(new)
+        info["residual_usd"] = p["cost"] - attributed
+        models[nk] = info
+    for rid in sorted(touched):
+        conn.execute("UPDATE agent_runs SET"
+                     " output=(SELECT COALESCE(SUM(output),0) FROM turns WHERE run_id=? AND kind='api'),"
+                     " cost_usd=(SELECT COALESCE(SUM(cost_usd),0) FROM turns WHERE run_id=? AND kind='api')"
+                     " WHERE run_id=?", (rid, rid, rid))
+    conn.execute("DELETE FROM turns WHERE session_id=? AND kind='residual'", (session_id,))
+    out_rows, residual_usd = [], 0.0
+    for nk, p in pools.items():
+        gap = models[nk]["residual_usd"]
+        if abs(gap) <= float(min_usd):
+            continue
+        row = {"msg_id": "residual:%s:%s" % (session_id, nk), "request_id": None,
+               "run_id": unattributed_run(session_id), "session_id": session_id,
+               "account": account, "ts": ts or _now(), "model": p["model"], "input": 0,
+               "cache_write_5m": 0, "cache_write_1h": 0, "cache_write": 0, "cache_read": 0,
+               "output": 0, "ctx": 0, "new_tokens": 0, "cost_usd": gap, "kind": "residual"}
+        db.upsert_turn(conn, row)
+        out_rows.append(row)
+        residual_usd += gap
+    db.insert_event(conn, "residual", {"session_id": session_id, "scaled_usd": scaled_usd,
+                                       "residual_usd": residual_usd, "models": models},
+                    session_id=session_id, account=account)
+    return {"scaled_usd": scaled_usd, "residual_usd": residual_usd, "rows": out_rows,
+            "models": models}
 
 
 # --------------------------------------------------------------------------- refresh grown runs

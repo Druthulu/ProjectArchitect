@@ -17,15 +17,14 @@ generation map. Written once, **never edited**. State, rules and the live plan e
 |---|---|---|
 | **This file** | permanent vision, decisions, architecture, generation map | nobody, after generation |
 | `CLAUDE.md` | ≤300 tokens: roles, pointers, the always-rules | the installer |
-| `project-architect` skill | the standing rules every agent loads | a planner session |
+| `project-architect` skill | the standing rules every agent loads | the installer |
 | `HOW_WE_WORK.md` | developer profile, tools, paths, build/test, standing decisions | any task that changes one (H7) |
-| `GENERATION_PLAN.md` | the live roadmap: phases, milestones, open/closed | the planner; `plan_edit.py gen-close` |
+| `GENERATION_PLAN.md` | the live roadmap: phases, milestones, open/closed | Claude's plan, installed by the mod; `plan_edit.py gen-close` |
 | `phase-ends/current/PHASE_PLAN.md` | the approved plan of the open phase | `tools/plan_edit.py` only |
 | `phase-ends/` | PhaseEnds, GenerationEnds, task/research indexes | scripts at each close |
 | `rules/` `cookbook/` `docs/ops/` | full rule texts, techniques, ops detail — one file per entry, found by grep on the INDEX | the task that earns the entry |
 
-**To work on this project:** run `{{PY}} tools/launch.py` in the repo. It picks the session kind
-(planner, router, review), writes the seed, and starts Claude. Governance methodology:
+**To work on this project:** open `claude` in the repo and talk with Claude (PA 3.2). Governance methodology:
 `docs/project-architect.md`.
 
 ---

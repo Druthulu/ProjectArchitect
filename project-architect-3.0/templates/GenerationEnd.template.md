@@ -2,8 +2,7 @@
 
 <!-- Script-assembled by tools/genend_index.py assemble <G> from GENERATION_PLAN.md and every
      phase-ends/PhaseEnd_Phase<G>.*.md. {{ASSEMBLED:…}} filled by the script; {{AUTHORED:recap}}
-     written by the closer of the last phase (its brief carries a GENERATION END addendum).
-     `genend_index.py lint` fails while any placeholder remains. -->
+     comes from `## Generation Recap` in the last phase's RECAP.md (Claude's report at the close). -->
 
 Goal: {{ASSEMBLED:goal}}
 Done-criteria: {{ASSEMBLED:done-criteria}}
@@ -23,5 +22,3 @@ Opened: {{ASSEMBLED:opened}}   Closed: {{ASSEMBLED:closed}}   Phases: {{ASSEMBLE
 
 ## Plain-English Recap
 {{AUTHORED:recap}}
-<!-- Closer of the last phase: 5–8 sentences. What the generation set out to do, what it
-     actually delivered, what changed course and why, what the next generation inherits. -->

@@ -182,16 +182,26 @@ class TestCardFixtureProject(unittest.TestCase):
         self.assertNotIn("## Developer", out)
         self.assertNotIn("## Rhythm", out)
 
-    def test_slice_router_includes_developer_rhythm(self):
-        """slice router includes Developer and Rhythm."""
+    def test_slice_claude_sections(self):
+        """3.24 T7b: slice claude carries Developer (the card-first write rule's home) and the
+        sections Claude needs in conversation; not the loop's Rhythm, Tools, Skills or Docs map."""
         self._run_card("interview", "--defaults")
-        r = self._run_card("slice", "router")
+        r = self._run_card("slice", "claude")
         self.assertEqual(r.returncode, 0, r.stderr)
         out = r.stdout
-        self.assertIn("## Developer", out)
-        self.assertIn("## Rhythm", out)
-        self.assertIn("## Project", out)
-        self.assertIn("## Tools", out)
+        for h in ("## Project", "## Developer", "## Paths", "## Build / run / test",
+                  "## Conventions & house style", "## Environment"):
+            self.assertIn(h, out)
+        for h in ("## Rhythm", "## Tools", "## Skills", "## Docs map"):
+            self.assertNotIn(h, out)
+
+    def test_slice_router_is_retired(self):
+        """3.24 T3: the Gen 3 router left; slice router refuses."""
+        self._run_card("interview", "--defaults")
+        r = self._run_card("slice", "router")
+        self.assertEqual(r.returncode, 2)
+        self.assertIn("no router slice", r.stderr)
+        self.assertEqual(r.stdout, "")
 
     def test_check_fails_over_cap(self):
         """check exits 1 when chars > cap."""

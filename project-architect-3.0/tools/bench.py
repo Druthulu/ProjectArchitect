@@ -6,10 +6,16 @@
   bench.py plan <light|full|canary|max|<agent>>  one line of non-zero arms: 'coder 12 · expert 8 · …'
   bench.py run [light|full|canary|max|<agent>] [--suite light|full|canary|max] [--repeat k] [--model M] [--effort E]
                [--jobs 4] [--force] [--no-stop] [--out JSON] [--work-dir DIR] [--agents-dir DIR] [--no-rubric]
-               [--preset max20|max5|pro]
+               [--preset max20|max5|pro] [--hooks-on [--read-guards on|off]]
+      --hooks-on (3.27 T6, I28): hooks fire (no PA_HOOKS_OFF), each clone gets .claude/pa.json {"toast": false}, and
+      the child's PA_LEDGER_DIR is <work>/_ledger, whose config.json is the machine config's user layer; --read-guards
+      off sets guard.whole_read_chars 10**9 and guard.reread_deny false there (the machine config is never written).
       plan and run: --preset > ./.claude/pa.json preset > max20; an arm whose agent the ladder omits at the preset
       is skipped with one line; run renders each agent via pa.install.ladder into <work>/_agents/ and runs that copy.
-      Arms coder, expert, planner, retriever, router, critic, review in that order; an <agent> runs its one arm
+      An agent with model: inherit (pa-claude) runs with the preset's shipped partner pin (pa.install.project.mod_pins)
+      as --model/--effort, recorded in the results; CLI --model/--effort win (3.28 T4d).
+      Arms coder, expert, retriever, partner in that order (3.24: router, critic, review, planner left; 3.27: partner,
+      graded on its first Agent call, recorded by settings/deny-agent.json, never run); an <agent> runs its one arm
       (role: line, else the default table, else the name prefix) on --suite (default light). --repeat k (default 1)
       runs each task k times: k >= 2 clones <task>/a<i>/, retained files <task>.a<i>.*; records carry attempt i
       (results format 2; a task passes when every ran attempt passes). Each task: a git-inited clone
@@ -19,9 +25,9 @@
       when five-hour pct + estimate > bench.window_max_pct (80) unless --force; re-polls after each arm and
       after a task when >= 60 s since the last poll, clean-stops over the cap (--no-stop: never). Writes the
       results JSON (docs/pa3-build/design/bench.md ## Results format; --out, else ./bench/results/<date>.json), the
-      README.md beside a results/ dir, else inside it, then `pa_ledger.py bench import <json>`. Planner, critic and review tasks get a
-      rubric side score after grading (rubric/grader.json's model, tools off, in an empty <work>/_rubric/<arm>-<id>/;
-      its cost added to the task's; never the pass); --no-rubric skips it.
+      README.md beside a results/ dir, else inside it, then `pa_ledger.py bench import <json>`. --no-rubric is
+      accepted and ignored (3.24: the rubric side score left with the planner, critic and review arms; old
+      results keep their rubric cell).
       Scored (suite max): a coder task whose expect has score_cmd (argv; {clone} {fixtures} {id}) is graded by
       _bench_grade.grade_scored, passing at score >= expect.pass_score (1.0); records carry score; a task's
       "timeout" (s) overrides TASK_TIMEOUT.
@@ -144,15 +150,14 @@ def cmd_fixtures(args):
 
 # --------------------------------------------------------------------------- plan / run
 HERE = Path(__file__).resolve().parent
-ARMS = ("coder", "expert", "planner", "retriever", "router", "critic", "review")
-DEFAULT_AGENT = {"coder": "coder-opus55", "expert": "expert-opus55", "planner": "planner-phase",
-                 "retriever": "retriever-code", "router": "pa-session", "critic": "critic", "review": "review"}
+ARMS = ("coder", "expert", "retriever", "partner")   # 3.24: router, critic, review, planner left; 3.27 T6: + partner
+DEFAULT_AGENT = {"coder": "pa-coder", "expert": "pa-expert", "retriever": "retriever-code",   # 3.25 T6a: was coder-opus55, expert-opus55
+                 "partner": "pa-claude"}
 SUITES = ("light", "full", "canary", "max")
 TASK_TIMEOUT = 1200
 CODER_AGENT = "bench-coder"   # 3.9.7 T3: the expert arm's consequence stage (fixture agents/bench-coder.md)
 CONSEQUENCE_PREFIX = "Implement this brief in the current repository.\n\n"
 POLL_EVERY_S = 60
-RUBRIC_ARMS = ("planner", "critic", "review")   # 3.9.7 T4: the rubric side score
 FALLBACK_COST = 0.30
 POINTS_PER_USD = 0.3
 
@@ -219,6 +224,13 @@ def _ladder_arms(arms, agents, preset):
             continue
         kept.append((arm, name, out if text is not None else None))
     return kept, skips
+
+
+def _partner_pins(preset):
+    """3.28 T4d: the shipped partner pin at the preset, ((key, value), ...), read from the installer."""
+    _pa()
+    from pa.install import project
+    return project.mod_pins(preset)
 
 
 def _agents_dir(arg):
@@ -370,18 +382,13 @@ def _retain(clone, base, out, transcript, detail):
     base.with_name(base.name + ".diff").write_text(diff, encoding="utf-8")
 
 
-def _grade(arm, task, clone, answer, transcript, fixtures):
+def _grade(arm, task, clone, answer, fixtures, transcript=None):
     exp = task.get("expect", {})
     if arm == "coder":
         return _bench_grade.grade_coder(clone, task, fixtures)
-    if arm == "planner":
-        return _bench_grade.grade_planner(clone / exp["draft"], exp)
-    if arm == "router":
-        if transcript is None:
-            return False, "no transcript"
-        return _bench_grade.grade_router(transcript, exp)
-    fn = {"retriever": _bench_grade.grade_retriever, "expert": _bench_grade.grade_expert,
-          "critic": _bench_grade.grade_critic, "review": _bench_grade.grade_review}[arm]
+    if arm == "partner":   # 3.27 T6: the decision is read from the transcript's first Agent call
+        return _bench_grade.grade_partner(transcript, exp)
+    fn = {"retriever": _bench_grade.grade_retriever, "expert": _bench_grade.grade_expert}[arm]
     return fn(answer, exp)
 
 
@@ -397,8 +404,9 @@ def _git(clone, *args):
                    capture_output=True, text=True, encoding="utf-8", errors="replace")
 
 
-def _clone(root, task, clone):
-    """A fresh git-inited clone of the task's repo dir (task["repo"], default repo/; + its overlay and files) at clone."""
+def _clone(root, task, clone, hooks=None):
+    """A fresh git-inited clone of the task's repo dir (task["repo"], default repo/; + its overlay and files) at clone;
+    hooks (3.27 T6): the clone is governed (.claude/pa.json), so the hooks' guards apply."""
     if clone.exists():
         shutil.rmtree(clone, onexc=_force_remove)
     shutil.copytree(root / task.get("repo", "repo"), clone, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
@@ -407,16 +415,38 @@ def _clone(root, task, clone):
                         ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     for rel in task.get("files", []):
         shutil.copyfile(root / rel, clone / Path(rel).name)
+    if hooks:
+        (clone / ".claude").mkdir(exist_ok=True)
+        (clone / ".claude" / "pa.json").write_text('{"toast": false}\n', encoding="utf-8", newline="\n")
     _git(clone, "init", "-q")
     _git(clone, "add", "-A")
     _git(clone, "commit", "-q", "-m", "bench fixture")
     (clone / ".claude" / "agents").mkdir(parents=True, exist_ok=True)
 
 
-def _env():
-    env = {k: v for k, v in os.environ.items() if k != "ANTHROPIC_API_KEY"}
-    env.update(PA_HOOKS_OFF="1", PYTHONIOENCODING="utf-8")
+def _env(hooks=None):
+    env = {k: v for k, v in os.environ.items() if k not in ("ANTHROPIC_API_KEY", "PA_HOOKS_OFF")}
+    env.update(PYTHONIOENCODING="utf-8")
+    if hooks:   # 3.27 T6: hooks on, their config and ledger in <work>/_ledger
+        env["PA_LEDGER_DIR"] = str(hooks)
+    else:
+        env["PA_HOOKS_OFF"] = "1"
     return env
+
+
+def _hooks_ledger(work, read_guards):
+    """3.27 T6 (I28): <work>/_ledger with config.json = the machine config's user layer; read_guards 'off' turns the
+    whole-read cap and the re-read deny off for this run only (switches the root's hooks already read)."""
+    pa = _pa()
+    cfg = pa.config.user_layer()
+    if read_guards == "off":
+        guard = dict(cfg.get("guard") or {})
+        guard.update(whole_read_chars=10 ** 9, reread_deny=False)   # 10**9: validate wants a positive integer
+        cfg["guard"] = guard
+    led = work / "_ledger"
+    led.mkdir(parents=True, exist_ok=True)
+    (led / "config.json").write_text(json.dumps(cfg, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return led
 
 
 def _consequence(ctx, task, brief, sfx=""):
@@ -426,14 +456,14 @@ def _consequence(ctx, task, brief, sfx=""):
     root, work = ctx["fixtures"], ctx["work"]
     clone = work / "expert" / f"{task['id']}{sfx}.c"
     con = {"passed": False, "cost_usd": None, "secs": None, "turns": None, "session_id": None, "detail": None}
-    _clone(root, task, clone)
+    _clone(root, task, clone, ctx.get("hooks"))
     shutil.copyfile(root / "agents" / f"{CODER_AGENT}.md", clone / ".claude" / "agents" / f"{CODER_AGENT}.md")
     cmd = [ctx["claude"], "-p", "--agent", CODER_AGENT, "--effort", "medium", "--permission-mode", "acceptEdits",
            "--permission-prompts", "none", "--settings", str((root / "settings" / "allow.json").resolve()),
            "--output-format", "json"]
     t0 = time.time()
     try:
-        r = subprocess.run(cmd, input=CONSEQUENCE_PREFIX + brief, cwd=clone, env=_env(), capture_output=True,
+        r = subprocess.run(cmd, input=CONSEQUENCE_PREFIX + brief, cwd=clone, env=_env(ctx.get("hooks")), capture_output=True,
                            text=True, encoding="utf-8", errors="replace", timeout=TASK_TIMEOUT)
     except subprocess.TimeoutExpired:
         con.update(secs=round(time.time() - t0, 1), detail=f"timeout after {TASK_TIMEOUT} s")
@@ -455,32 +485,6 @@ def _consequence(ctx, task, brief, sfx=""):
     return con
 
 
-def _rubric(ctx, arm, task, answer, rec, sfx=""):
-    """3.9.7 T4: the rubric side score. Prompt at <work>/<arm>/<id>.rubric.txt, one grader call in the empty
-    <work>/_rubric/<arm>-<id>/; rec rubric {score, max, model}, the grader cost added to cost_usd, a detail note.
-    A failure leaves rubric null with a note; never touches passed. sfx '.a<i>' (3.9.7 T5): <id>.a<i>.rubric.txt,
-    _rubric/<arm>-<id>-a<i>."""
-    root, work = ctx["fixtures"], ctx["work"]
-    try:
-        grader = json.loads((root / "rubric" / "grader.json").read_text(encoding="utf-8"))
-        prompt, mx = _bench_grade.rubric_prompt(arm, task, answer, root)
-        (work / arm / f"{task['id']}{sfx}.rubric.txt").write_text(prompt, encoding="utf-8")
-        cwd = work / "_rubric" / f"{arm}-{task['id']}{sfx.replace('.', '-')}"
-        cwd.mkdir(parents=True, exist_ok=True)
-        score, mx, d = _bench_grade.rubric_score(prompt, dict(grader, max=mx), ctx["claude"], cwd)
-    except Exception as exc:
-        rec["detail"] += f"; rubric error: {exc!r}"[:300]
-        return
-    if d.get("cost_usd"):
-        rec["cost_usd"] = round((rec["cost_usd"] or 0) + d["cost_usd"], 6)
-    cost = f" ${d['cost_usd']:.2f}" if d.get("cost_usd") else ""
-    if score is None:
-        rec["detail"] += f"; rubric failed{cost}: {d.get('error')}"
-        return
-    rec["rubric"] = {"score": score, "max": mx, "model": d.get("model")}
-    rec["detail"] += f"; rubric {score:g}/{mx}{cost}"
-
-
 def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
     """Clone, launch claude, grade; the attempt's results record. repeat 1: <work>/<arm>/<id>/ and <id>.*;
     repeat >= 2 (3.9.7 T5): clone <work>/<arm>/<id>/a<i>/, retained files <id>.a<i>.*."""
@@ -488,7 +492,7 @@ def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
     sfx = "" if repeat == 1 else f".a{attempt}"
     clone = work / arm / task["id"] / f"a{attempt}" if sfx else work / arm / task["id"]
     rec = _unrun(task, attempt)
-    _clone(root, task, clone)
+    _clone(root, task, clone, ctx.get("hooks"))
     shutil.copyfile(meta["path"], clone / ".claude" / "agents" / f"{meta['agent']}.md")
     settings = (root / (task.get("settings") or "settings/allow.json")).resolve()
     cmd = [ctx["claude"], "-p", "--agent", meta["agent"]]
@@ -496,10 +500,11 @@ def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
         cmd += ["--effort", meta["effort"]]
     cmd += ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--settings", str(settings),
             "--output-format", "json"]
-    if ctx["model"]:
-        cmd += ["--model", ctx["model"]]
+    model = meta.get("model") or ctx["model"]   # 3.28 T4d: an inherit arm's pin (or the CLI's --model)
+    if model:
+        cmd += ["--model", model]
     cmd += list(task.get("cli", []))
-    env = _env()
+    env = _env(ctx.get("hooks"))
     limit = task.get("timeout") or TASK_TIMEOUT   # T24: a task's own timeout (max suite)
     t0 = time.time()
     try:
@@ -540,7 +545,7 @@ def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
         if scored:
             ok, detail, rec["score"] = _bench_grade.grade_scored(clone, task, root)
         else:
-            ok, detail = _grade(arm, task, clone, str(out.get("result") or ""), transcript, root)
+            ok, detail = _grade(arm, task, clone, str(out.get("result") or ""), root, transcript)
     except Exception as exc:
         ok, detail = False, f"grader error: {exc!r}"
     rec.update(passed=bool(ok), detail="; ".join([str(detail)[-500:]] + notes))
@@ -554,12 +559,6 @@ def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
         rec["consequence"] = con = _consequence(ctx, task, str(out.get("result") or ""), sfx)
         rec["passed"] = bool(con["passed"])
         rec["detail"] += f"; consequence {'pass' if con['passed'] else 'FAIL'}: {str(con['detail'])[-300:]}"
-    if arm in RUBRIC_ARMS and ctx.get("rubric", True):
-        answer = str(out.get("result") or "")
-        if arm == "planner":
-            draft = clone / task.get("expect", {}).get("draft", "")
-            answer = draft.read_text(encoding="utf-8", errors="replace") if draft.is_file() else ""
-        _rubric(ctx, arm, task, answer, rec, sfx)
     # 3.11 T26: a scored attempt the grader measured keeps its kind (agent); denials or an error only
     # make it the harness's when no score came back
     measured = scored and rec["score"] is not None
@@ -693,6 +692,10 @@ def cmd_run(args):
         print(f"unknown suite or agent: {args.target}")
         return 2
     suite, arm_list = tgt
+    hooks_on, read_guards = getattr(args, "hooks_on", False), getattr(args, "read_guards", None)
+    if read_guards and not hooks_on:
+        print("--read-guards needs --hooks-on")
+        return 2
     k = max(1, args.repeat)
     preset = _preset(args.preset)
     kept, skips = _ladder_arms(arm_list, agents, preset)
@@ -711,9 +714,15 @@ def cmd_run(args):
             return 2
         rendered[name] = text
         fm, body = _frontmatter_text(text)
+        model, effort = fm.get("model"), args.effort or fm.get("effort") or None
+        run_model = None
+        if model == "inherit":   # 3.28 T4d: the partner runs with the preset's shipped pin; CLI --model/--effort win
+            pins = dict(_partner_pins(preset))
+            model = run_model = args.model or pins["model"]
+            effort = args.effort or pins["effortLevel"]
         plan.append((arm, tasks, {
             "path": path, "agent": fm.get("name") or name, "role": fm.get("role") or arm,
-            "file_model": fm.get("model"), "effort": args.effort or fm.get("effort") or None,
+            "file_model": model, "effort": effort, "model": run_model,
             "version": fm.get("version"), "body_hash": _body_hash(body)}))
     claude = shutil.which("claude")
     if not claude:
@@ -739,7 +748,8 @@ def cmd_run(args):
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     run_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + suite
     work = Path(args.work_dir or Path.home() / "pa3-bench").resolve() / run_id
-    ctx = {"fixtures": root, "work": work, "claude": claude, "model": args.model, "rubric": not args.no_rubric}
+    ctx = {"fixtures": root, "work": work, "claude": claude, "model": args.model,
+           "hooks": _hooks_ledger(work, read_guards) if hooks_on else None}
     (work / "_agents").mkdir(parents=True, exist_ok=True)
     for _, _, meta in plan:   # the ladder-rendered copy runs; never written into any .claude/agents/
         meta["path"] = work / "_agents" / f"{meta['path'].stem}.md"
@@ -748,7 +758,8 @@ def cmd_run(args):
     doc = {"format": 2, "repeat": k, "run_id": run_id, "date": now.replace(tzinfo=None).isoformat() + "Z",
            "suite": suite, "preset": preset,
            "harness_version": pa.__version__, "price_version": pa.prices.PRICES_VERSION,
-           "fixture_hash": manifest(root)["hash"], "claude_code": claude_code, "work_dir": str(work), "arms": []}
+           "fixture_hash": manifest(root)["hash"], "claude_code": claude_code, "work_dir": str(work),
+           "hooks": f"on, read guards {read_guards or 'on'}" if hooks_on else "off", "arms": []}
     state = {"pct": pct, "last": time.monotonic(), "stop": False, "left": total}
     lock = threading.Lock()
 
@@ -1139,7 +1150,8 @@ def _dscore(tasks):
 
 def _noise(docs, doc):
     """Noise lines per unstopped arm of the newest full run; repeats in that run, else the newest other doc of any
-    date with repeats for the same agent (its date shown), else unknown. T24: then 'noise max <agent> ...' per
+    date with repeats for the same agent (its date shown), else unknown. 3.27 T2: then per other agent with repeats
+    in an older full run (single-agent runs), from its newest such run, date shown. T24: then 'noise max <agent> ...' per
     unstopped arm of the newest max run, from that run's repeats only, with Δscore when scores exist."""
     lines = ["noise unknown (no full run)"] if doc is None else []
     mx = _newest(docs, "max")
@@ -1164,6 +1176,13 @@ def _noise(docs, doc):
                 when = f" ({str(d.get('date'))[:10]})"
                 break
         full.append(f"noise {agent} ±{fn[0]}/{fn[1]}{when}" if fn else f"noise {agent} unknown")
+    seen = {a.get("agent") for a in doc.get("arms", [])}   # 3.27 T2: single-agent full runs, newest repeats per agent
+    for d in (d for d in others if d.get("suite") == "full"):
+        for b in d.get("arms", []):
+            fn = None if b.get("stopped") or b.get("agent") in seen else _flips(b.get("tasks", []))
+            if fn:
+                seen.add(b.get("agent"))
+                full.append(f"noise {b.get('agent')} ±{fn[0]}/{fn[1]} ({str(d.get('date'))[:10]})")
     return full + lines
 
 
@@ -1274,10 +1293,14 @@ def main(argv=None):
     rn.add_argument("--out", metavar="JSON", help="results path (default ./bench/results/<date>.json)")
     rn.add_argument("--work-dir", metavar="DIR", help="clone root (default ~/pa3-bench)")
     rn.add_argument("--agents-dir", metavar="DIR", help="agent files (default: package agents/, else ./.claude/agents)")
-    rn.add_argument("--no-rubric", action="store_true", help="skip the rubric side score (planner, critic, review)")
+    rn.add_argument("--no-rubric", action="store_true", help="ignored (3.24: no arm has a rubric side score)")
     rn.add_argument("--suite", choices=SUITES, default="light", help="suite for an <agent> target (default light)")
     rn.add_argument("--repeat", type=int, default=1, metavar="K", help="attempts per task (default 1)")
     rn.add_argument("--preset", choices=("max20", "max5", "pro"), help="plan tier (default ./.claude/pa.json preset, else max20)")
+    rn.add_argument("--hooks-on", action="store_true",
+                    help="hooks fire in governed clones, config and ledger in <work>/_ledger (3.27 T6)")
+    rn.add_argument("--read-guards", choices=("on", "off"),
+                    help="with --hooks-on: the whole-read cap and re-read deny for this run (default: machine config)")
     rn.set_defaults(func=cmd_run)
     ab = sub.add_parser("ab", help="run two agents of one role on one suite; paired per-task table")
     ab.add_argument("a", metavar="agentA")

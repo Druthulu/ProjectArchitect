@@ -13,7 +13,7 @@ imported on cold paths only.
 
 import os as _os
 
-_FALLBACK_VERSION = "3.15.3"  # was 3.15.2
+_FALLBACK_VERSION = "3.28"  # was 3.24
 
 
 def parse_version(text):

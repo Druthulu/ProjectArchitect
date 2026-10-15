@@ -1,14 +1,20 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.15.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.28: PA 3.2 (the version is the phase that published it).
+
+PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
+approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
+session, one expert per task. There is no router session and no fallback mode.
+
+**Requirements.** Claude Code **2.1.292 or newer** (the mod's floor; see
+[If Claude Code is too old](#if-claude-code-is-too-old)), Python 3.12+ (standard library only)
+and git. PA3 follows the latest Claude Code: keep it updated. A version named anywhere else in
+these docs is the one a fact was checked on, not a supported range.
 
 Two commands: the first runs **once per machine** (once per Claude config dir), the second
 **once per repository** you want PA3 to drive. Both are idempotent — a second run writes
-nothing (each step reports `SKIP` or zero files written). Needs Python 3.12+ (standard library only), git and
-Claude Code. PA3 supports the latest Claude Code only: keep it updated; there is no fallback for an
-older version's missing features (the router's scheduled resume assumes `CronCreate`); a
-version named anywhere in these docs is the one a fact was checked on, not a supported range.
-Run them from this folder, with the interpreter the hooks should use.
+nothing (each step reports `SKIP` or zero files written). Run them from this folder, with the
+interpreter the hooks should use.
 
 ## 1. Per machine — `install.cmd` / `install.sh`, or `python pa_install.py --root`
 
@@ -28,10 +34,17 @@ that clone, so with git the script alone is enough. Neither script does anything
 installer itself stays plain Python. Already know which interpreter should run the hooks? Call it
 directly instead: `python pa_install.py --root`.
 
-Copies `pa/` and the entry scripts to `~/.claude/pa3/`, creates the usage ledger at
+First it checks Claude Code's version against the mod's floor (2.1.292); below it, it stops
+before writing anything. Then it copies `pa/`, the entry scripts, the mod (`mod/`, both plugins
+and their marketplace, without tests), the agents and `CHANGES.md` to `~/.claude/pa3/`, removes
+mod files the package no longer ships, and writes a file manifest (`MANIFEST.json`) and then
+`VERSION` last, so a half-finished copy shows. It creates the usage ledger at
 `~/.claude/usage-ledger/` (SQLite + `config.json`), and merges `settings/user.snippet.json`
 into `~/.claude/settings.json` **after backing that file up** (`settings.json.bak-<date>`):
-the Task tools off (`todoFeatureEnabled: false`, the one forced value), the eleven PA hooks and
+**the mod's registration** (`extraKnownMarketplaces.pa3` pointing at `~/.claude/pa3/mod`, and
+`enabledPlugins` `pa@pa3` and `pa-watch@pa3`, so a bare `claude` loads the mod in place from the
+root; it is active only in PA3 projects and does nothing elsewhere), the Task tools off
+(`todoFeatureEnabled: false`, the one forced value), the eleven PA hooks and
 the PA statusline (asked, default replace; the old one is kept), and — only where you have not
 set them yourself — longer bash timeouts, auto-compact off, commit and PR attribution off, and
 notifications and Remote Control on; a `CLAUDE_CODE_ENABLE_TODO_TOOLS` env value that would
@@ -86,17 +99,19 @@ which runs with `--yes`), then:
 
 - **bootstrap** — `.run/` (gitignored), `phase-ends/` with `current/{tasks,logs,research,
   discussions}` and their indexes, `.claude/pa.json`, a `.gitignore` block;
-- **files** — the 19 agents (17 on Max 5x and Pro, where expert-fable and expert-fable-5m are not installed), the
-  `project-architect` skill and the six commands into `.claude/`, the tools into `tools/`, plus
-  `templates/`, the 32 seed rules into `rules/`, `cookbook/INDEX.md` and
+- **files** — the 10 agents, the `project-architect` skill and the `/bench` command into `.claude/`, the tools into `tools/`, plus
+  `templates/`, the 31 seed rules into `rules/`, `cookbook/INDEX.md` and
   `docs/project-architect.md` (every copy is byte-compared; an edited rule or cookbook index is
   listed and left alone, and the managed files follow the classes below);
 - **CLAUDE.md and settings** — a ≤300-token `CLAUDE.md` (an older one is moved to
   `docs/retired/CLAUDE.pre-pa3.md` with `git mv`), `HOW_WE_WORK.md` from the template and the
   interview below, the memory stub, and `settings/project.snippet.json` merged into
-  `.claude/settings.json`: the `pa-session` agent as the entry, a default model and effort
-  (only where the project has none), permissions and env added, auto-compact, recaps and the
-  Task tools off — **no hooks**: those are per machine, from step 1;
+  `.claude/settings.json`: Claude's starting model and effort, `claude-opus-5-5[1m]` at
+  `medium`, `claude-sonnet-5-5[1m]` on Pro (only where the project has none; `/model` and `/effort` still change them in a
+  session), permissions (`defaultMode: auto`) and env added, thinking summaries on, auto-compact,
+  recaps and the Task tools off — **no hooks**: those are per machine, from step 1. `.claude/pa.json`
+  gets `mod: on` (the switch that makes the mod active in this repository) and
+  `upgrade: auto` unless it already says `ask`;
 - **memory link** — creates `.claude-state/memory/` in the repo with a `MEMORY.md`
   index, then junctions (Windows) or symlinks (elsewhere) `~/.claude/projects/<slug>/memory`
   to point there so Claude Code's auto-memory reads and writes go to the repo. If a real
@@ -123,10 +138,36 @@ changed by both → merged with `git merge-file` when it merges cleanly; else, f
 commands, `templates/` and the methodology doc, replaced by upstream with yours saved as
 `.claude/pa3-upgrade/<rel>.yours`; for agents and skills, a conflict: upstream staged as
 `.claude/pa3-upgrade/<rel>.upstream` with a line in `.claude/pa3-upgrade/UPGRADE.md`, which the
-router hands to an upgrade expert. `.claude/pa.json` `upgrade: auto|ask` (default `auto`):
-`ask` makes the session-start update offer wait for `update pa3`. `--force` overwrites all;
-`--dry-run` writes nothing. It touches nothing else — not the plan, the rules, the cookbook,
-`HOW_WE_WORK.md` or `CLAUDE.md`.
+mod hands to an upgrade expert. A file the package no longer ships is removed when you never
+edited it, and staged in `.claude/pa3-upgrade/` when you did. `--force` overwrites all;
+`--dry-run` writes nothing. Beyond that it changes only text PA3 itself wrote: the `CLAUDE.md`
+lines and seed rules 3.2 rewrote are refreshed where they equal a past package version; your own
+edits to them, the plan, the cookbook and `HOW_WE_WORK.md` are left alone.
+
+### Upgrading a PA3 3.15.x project to 3.2
+
+PA3 3.15.x (the router, Generation 3) is no longer supported, and there is no `mod: off` mode
+to stay on. The same command upgrades it: `python pa_install.py --project <repo>`, or the
+update at session start once the machine install is 3.24. Below the Claude Code floor it stops
+before changing anything. Otherwise it:
+
+- writes `mod: on`, and `upgrade: auto` unless the project says `ask`;
+- removes the old loop's agents (pa-session, critic, review, the discuss agents, the planners,
+  the `-5m` expert twins, plain), its commands (`/discuss`, `/plangen`, `/planphase`,
+  `/proceed`, `/thoughts`), `tools/expert_ttl.py` and the discussion template; a copy you had
+  edited is saved as `.claude/pa3-upgrade/<rel>.yours`, with a note in
+  `.claude/pa3-upgrade/UPGRADE.md`;
+- replaces the pins PA3 shipped in `.claude/settings.json` (`agent: pa-session`, the
+  `claude-sonnet-5[1m]` and `claude-sonnet-5-5[1m]` models, their `modelSettings` effort
+  entries) with Claude's starting `model` and `effortLevel`; any other value is yours, kept and
+  reported, and the run says `restart: needed`;
+- refreshes `CLAUDE.md`'s Roles line and memory clause, and the seed rules P3, P5, P8, P10 and
+  H8, where they still equal a past PA3 text;
+- marks a project that has memories (`first_run` in `.claude/pa.json`) for the curator's
+  first-run sort, which files them into the card, the rules, the cookbook, memory or the
+  archive.
+
+Restart Claude Code after it (`/exit`, then `claude`).
 
 ### Account tiers: the three presets
 
@@ -134,23 +175,26 @@ PA3 reads your plan from the Claude Code login (`rateLimitTier` and `subscriptio
 credentials file the usage poller already opens) and stamps it on your account in the ledger at
 session start: Max 20x → `max20`, Max 5x → `max5`, Pro → `pro`; anything else (team, enterprise, an
 unknown value) → the install interview's answer, `.claude/pa.json` `tier`, default `max5`. The tier
-picks a preset for six agents; every other agent (router, planners, experts, coders, retrievers,
-discuss, discuss-high, discuss-max) is the same on every tier.
+picks a preset for six agents and Claude's starting model (Opus 5.5 at medium; Sonnet 5.5 at medium on Pro);
+every other agent is the same on every tier (the retrievers run Haiku 5.5 at medium).
+The task's effort picks the expert's row; the deep row is the thinker spawned with `[effort deep]`.
 
-| rung | agents | max20 | max5 | pro |
-|---|---|---|---|---|
-| hard | expert-fable, expert-fable-5m | Fable 5.1 medium | not installed | not installed |
-| judge | critic, review, auditor, memory-curator | Fable 5.1 medium | Fable 5.1 medium | Opus 5.5 medium |
-| plain | plain | Fable 5.1 high | Fable 5.1 medium | Opus 5.5 medium |
-
-On max5 and pro no plan task carries `effort: high` (there is no hard rung): the planner splits the
-task instead and `tools/plan_edit.py` refuses the marking.
+| row | max20 | max5 | pro |
+|---|---|---|---|
+| pa-expert | Opus 5.5 medium | Opus 5.5 medium | Opus 5.5 low |
+| pa-expert, `effort: high` | Fable 5.1 medium | Opus 5.5 high | Opus 5.5 high |
+| pa-coder | Opus 5.5 medium | Opus 5.5 medium | Sonnet 5.5 medium |
+| pa-thinker | Opus 5.5 max | Opus 5.5 max | Opus 5.5 medium |
+| pa-thinker, deep | Fable 5.1 max | Fable 5.1 max | the thinker's row |
+| auditor | Fable 5.1 medium | Fable 5.1 medium | Opus 5.5 medium |
+| memory-curator | Opus 5.5 medium | Opus 5.5 medium | Opus 5.5 medium |
+| pa-planner | Opus 5.5 max | Opus 5.5 high | Opus 5.5 medium |
 
 - **Managed lines.** The `model:` and `effort:` lines of these six agents are written by PA3 (install,
   update and every session start re-render them from the package file plus the preset); do not
   hand-edit them, the next session start puts the preset back.
 - **Your own ladder.** To run one of the six on something else, set it in `.claude/pa.json`:
-  `"ladder": {"critic": {"model": "claude-opus-5-5", "effort": "medium"}}`. The override wins over
+  `"ladder": {"auditor": {"model": "claude-opus-5-5", "effort": "medium"}}`. The override wins over
   the preset and survives updates.
 - **A stale tier.** After an upgrade or a downgrade of your plan, log out and back in to Claude Code
   (`/logout`, `/login`) so the credentials carry the new tier; the next session start re-stamps it.
@@ -161,14 +205,42 @@ task instead and `tools/plan_edit.py` refuses the marking.
   two collaborators on different plans sharing a git-tracked `.claude/agents/` rewrite each other's
   lines, each until the next session start on the other tier.
 
-Then start working: open a bare `claude` in the repo; the `pa-session` agent (set by `.claude/settings.json` `agent`) detects the state and takes it from there.
+Then start working: open a bare `claude` in the repo and talk with Claude.
 
-## Updating
+## What the first session does
 
-When the clone has a newer PA3, session start offers the update: `upgrade: auto` (the default)
-runs it before the first task; `upgrade: ask` waits for you to say `update pa3`. Either way the
-offer names one command, `<python> tools/pa3_update.py`, which pulls the clone, refreshes the
-per-machine copy (`~/.claude/pa3`) and then refreshes the repository. The first install pre-approves
+Open a bare `claude` in the repository. The mod sees `mod: on` and becomes active, the
+session-start hook runs its health check (below), and Claude works out with you where the
+project stands: generation planning for a new project, the next phase plan, or the task that was
+running. Nothing starts on its own: at every session start the loop waits until you want the
+work to go on and Claude lets it. Claude drafts each plan and the mod shows it in the plan-mode
+view for your approval; then the tasks run in the same session while you keep talking with
+Claude.
+
+**The first run in 3.2.** If the project already had memories when it entered 3.2 (from plain
+Claude Code, PA2 or PA3 3.15.x), the mod asks you once, together with your first message,
+whether the memory curator sorts them now or you pause it. No plan is drafted or started until
+the sort is done or paused; a paused sort is asked again in a later session. The curator sorts
+by your policy, card first: your preferences go to the card's `## Developer` section
+(`HOW_WE_WORK.md`) and standing facts to its other sections, norms to `rules/`, traps and
+techniques to the cookbook, and memory keeps only what fits none of these. Stale items and items
+that contradict PA3's way of working are archived in the memory folder's `gen3.2.md`. Nothing is
+deleted. Claude then tells you what went where.
+
+## Updating and healing
+
+Both live in the session-start hook, which is plain Python and works whether or not the mod
+loads.
+
+**Updates.** Only released versions are installed: an update needs the clone's package
+`VERSION` to be above the installed one, and nothing ever installs older or unreleased code.
+`upgrade: auto` (the default) makes the hook start the update itself at session start; no task
+starts while it runs, and Claude then tells you what changed, from `CHANGES.md`. `upgrade: ask`
+makes Claude ask first; after your yes the mod starts the update in the background, so the
+session never waits on it. No task starts until it finishes, and Claude reports it when it does. The run is one command, `<python> tools/pa3_update.py`, which pulls the
+clone, refreshes the per-machine copy (`~/.claude/pa3`) and then refreshes the repository.
+When the mod's own files changed, Claude says once that the new mod loads at the next start or
+at `/reload-plugins`, and no task starts on the old code until then. The first install pre-approves
 it at both levels (`~/.claude/settings.json` allows `Bash(<python> tools/pa3_update.py)`, the
 project's `.claude/settings.json` allows `Bash(<python> tools/*)`). If a hand-edited
 `settings.json` lost those rules and the update is denied, the session asks once; you can also run it
@@ -177,7 +249,32 @@ yourself at the prompt: `! <python> tools/pa3_update.py`.
 Agents or skills you edited that do not merge are listed in `.claude/pa3-upgrade/UPGRADE.md`. Each
 line is settled by appending ` | resolve: keep`, ` | resolve: upstream` or ` | resolve: merged: <path>`
 (a merged file outside `.claude/`, by convention `.run/pa3-upgrade/<rel>`); the next
-`tools/pa3_update.py` run applies them.
+`tools/pa3_update.py` run applies them. When an update meets such conflicts, the mod runs
+`UPGRADE.md` as a one-off expert task at the next task boundary and then runs the update once
+more.
+
+**Healing.** In a `mod: on` project the hook also checks, at every session start: the root's
+files against `MANIFEST.json`, the plugin's registration in your user settings, the Claude Code
+version against the floor, and that the mod loaded in the last session (the first prompt checks
+this session too). A break starts the repair at once, once per session, and logged:
+`tools/pa3_update.py --repair` reinstalls the release you have (never a downgrade), or, under
+`upgrade: auto`, a newer release that fixes it is installed instead. The hook's line says what
+broke and what was done; if the mod did not load, plain Claude Code relays it. A repaired mod
+loads at the next start or at `/reload-plugins`. `python ~/.claude/pa3/pa_ledger.py doctor` runs
+the same checks.
+
+## If Claude Code is too old
+
+PA3 needs Claude Code 2.1.292 or newer. Below it:
+
+- the machine install and the project install stop before changing anything, with the line
+  `Claude Code <version> is older than 2.1.292, the oldest release PA3 runs on: update Claude
+  Code first (claude update), then run this again. Nothing was changed.`;
+- in a project, the mod stays inactive and the session-start hook changes nothing; its line
+  says to update Claude Code.
+
+Run `claude update` (or your package manager's update), check `claude --version`, then run the
+install again or start a new session.
 
 ## Verify
 
@@ -185,11 +282,11 @@ line is settled by appending ` | resolve: keep`, ` | resolve: upstream` or ` | r
 latency: it WARNs a hook whose run() exceeds `doctor.hook_warn_ms` in
 `~/.claude/usage-ledger/config.json` (2000 ms by default). `python pa_install.py --root --dry-run` should report `SKIP` for
 every step after detection, and
-`python tools/launch.py --dry-run` in the repo prints the session it would start.
+`python tools/launch.py --state-json` in the repo prints the state the mod reads.
 `/bench` pulls the public bench series, compares each installed agent (`match`, `update`, `run-offered`,
 `lightly-altered`, `no-series`) and runs only on your word. Agent versions are `<phase>.<N>` (every agent became
 `3.10.N` at 3.10; a body change sets `<phase of the change>.<N+1>`, where N counts the agent's changes for its
-lifetime and never resets: `3.10.5` changed in 4.2 becomes `4.2.6`, never `4.2.1`; the phase-end lint checks it),
+lifetime and never resets: `3.10.5` changed in 4.2 becomes `4.2.6`, never `4.2.1`),
 compared as integer tuples. Mark your own
 edits on the `version:` line: `3.10.1+u1` for an edited PA3 agent (never overwritten when light), `user/1` for your own.
 When the interview is skipped (`--yes`, the `!` line, or no terminal), the `## Developer`
@@ -249,8 +346,9 @@ rebuilt afterwards with `pa_ledger.py recalc --from transcripts`.
 
 ## Uninstall
 
-Per machine: restore the newest `~/.claude/settings.json.bak-<date>` over `settings.json`,
-then delete `~/.claude/pa3/` and the package clone `~/.claude/pa3-src/` (and
+Per machine: restore the newest `~/.claude/settings.json.bak-<date>` over `settings.json`
+(or remove PA3's entries by hand, the mod's included: `extraKnownMarketplaces.pa3` and the
+`pa@pa3` and `pa-watch@pa3` lines of `enabledPlugins`), then delete `~/.claude/pa3/` and the package clone `~/.claude/pa3-src/` (and
 `~/.claude/usage-ledger/` if you want the cost history gone too). Per repository: `git revert`
 the install commit, or delete the installed paths, and remove the `memory` link under
 `~/.claude/projects/<slug>/` — nothing outside the repo holds project state.

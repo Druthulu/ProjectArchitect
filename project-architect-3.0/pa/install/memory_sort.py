@@ -28,6 +28,11 @@ MEMORY_REL = os.path.join(".claude-state", "memory")
 
 MEMORY_INDEX = """\
 Memories are curated at the start of every generation and carried forward.
+Standing facts go to `HOW_WE_WORK.md`, rules to `rules/`, techniques to the cookbook.
+"""
+# 3.25 T7: the stub as installed before 3.25, still an installer's stub
+_OLD_INDEX = """\
+Memories are curated at the start of every generation and carried forward.
 Agents in the governance loop do not write memories; standing facts go to
 `HOW_WE_WORK.md`, rules to `rules/`, techniques to the cookbook.
 """
@@ -69,8 +74,11 @@ def _make_link(link_path, target):
         os.symlink(target, link_path, target_is_directory=True)
 
 
-def _move_files(src_dir, dst_dir, machine):
-    """Move every file from *src_dir* into *dst_dir*, renaming on collision."""
+def _move_files(src_dir, dst_dir, machine, moved=None):
+    """Move every file from *src_dir* into *dst_dir*, renaming on collision.
+
+    The destination names land in *moved* (when given) so the install commit names them.
+    """
     merged_index_lines = []
     for name in sorted(os.listdir(src_dir)):
         src = os.path.join(src_dir, name)
@@ -93,6 +101,8 @@ def _move_files(src_dir, dst_dir, machine):
                 except OSError:
                     pass
         shutil.move(src, dst)          # copies across drives; os.replace cannot
+        if moved is not None:
+            moved.append(os.path.basename(dst))
     # append merged index lines to the existing MEMORY.md
     if merged_index_lines:
         idx = os.path.join(dst_dir, "MEMORY.md")
@@ -117,7 +127,8 @@ def _is_stub(path):
             text = fh.read().strip()
     except OSError:
         return False
-    return text == MEMORY_INDEX.strip() or text.startswith("Memory is retired under PA3")
+    return (text in (MEMORY_INDEX.strip(), _OLD_INDEX.strip())
+            or text.startswith("Memory is retired under PA3"))
 
 
 def _guess(name, first_line):
@@ -258,7 +269,16 @@ def link(env):
         # move files from a pre-existing real directory
         leftover = False
         if os.path.isdir(proj_mem) and not _is_junction_or_symlink(proj_mem):
-            _move_files(proj_mem, repo_mem, machine)
+            # 3.24 T5: memories arriving from Claude Code (the index aside) mark the first-run sort
+            env.memories_moved = len([n for n in os.listdir(proj_mem) if n.upper() != "MEMORY.MD"
+                                      and os.path.isfile(os.path.join(proj_mem, n))])
+            moved = []
+            _move_files(proj_mem, repo_mem, machine, moved)
+            # 3.24 T12e: memories are committed project knowledge; the install commit names them
+            for name in moved:
+                rel = MEMORY_REL + "/" + name
+                if rel not in env.man.created:
+                    env.man.created.append(rel)
             try:
                 os.rmdir(proj_mem)      # never rmtree: anything not moved stays where it is
             except OSError:

@@ -199,6 +199,9 @@ def build_parser():
     proj.add_argument("--interphase", metavar="NAME", default=None,
                       help="override the interphase PhaseEnd label "
                            "(default: PA3 migration)")
+    proj.add_argument("--mod", choices=("on",), default=None,
+                      help="accepted for old scripts; a no-op: every install is the 3.2 mod form "
+                           "(3.24: 3.15.x and --mod off are no longer supported)")
     return p
 
 

@@ -902,6 +902,60 @@ class UnweightedFamilyShareTest(unittest.TestCase):
         self.assertAlmostEqual(a["pct_est"]["seven_day"], 20.0, places=3)    # report figure unchanged
 
 
+class ExtraRootAccountTest(unittest.TestCase):
+    """I43 (3.24): each account's project slice reads an extra root as that account, never as
+    the root's default account."""
+
+    def test_each_slice_reads_the_other_root_as_its_own_account(self):
+        from unittest import mock
+
+        from pa import savings
+
+        local, other = _make_db(), _make_db()
+        _seed_two_accounts(local)
+        readers = [{"conn": other, "account": ACCT_B, "root": "other"}]
+        calls = []
+
+        def _rec(conn, account, t0, t1, **kw):
+            if conn is other:
+                calls.append(account)
+            return 0.0
+        with mock.patch.object(savings, "window_saved_measured", side_effect=_rec):
+            summary.projects_block(local, cfg=_CFG, readers=readers, accounts=_accounts_block())
+        local.close()
+        other.close()
+        self.assertEqual(calls.count(ACCT_A), 2)                 # A's two windows read as A
+        self.assertEqual(calls.count(ACCT_B), 2)
+
+
+class ExpiredWindowEndTest(unittest.TestCase):
+    """I44 (3.24): accounts_block's measured savings of an expired window end at its
+    resets_at; a live window stays open-ended."""
+
+    def test_expired_window_has_an_end_bound(self):
+        from unittest import mock
+
+        from pa import db, savings
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        db.init_schema(conn)
+        conn.execute("INSERT OR IGNORE INTO accounts(email) VALUES(?)", (ACCT_A,))
+        gone, live = NOW - 600, NOW + 3 * 86400
+        for win, ra in (("five_hour", gone), ("seven_day", live)):
+            conn.execute("INSERT INTO utilization(ts, account, session_id, window, pct, resets_at)"
+                         " VALUES(?, ?, 's-l', ?, 40, ?)", (_iso(NOW - 900), ACCT_A, win, ra))
+        conn.commit()
+        ends = []
+        with mock.patch.object(savings, "window_saved_measured",
+                               side_effect=lambda c, a, t0, t1, **kw: ends.append((t0, t1)) or 0.0):
+            summary.accounts_block(conn, cfg=_CFG)
+        conn.close()
+        self.assertIn(_iso(gone), [t1 for _t0, t1 in ends])
+        self.assertIn(None, [t1 for _t0, t1 in ends])
+        self.assertTrue(all(t1 is None or t1 == _iso(gone) for _t0, t1 in ends))
+
+
 class ExtraRootRebuildTest(unittest.TestCase):
     """T17 (3.15): a rebuild without readers opens the config's extra_roots itself; the
     projects' shares divide by the account's whole spend; the read rule keeps the windows
@@ -983,6 +1037,16 @@ class ExtraRootRebuildTest(unittest.TestCase):
         self.assertIn("summary_extra_root_failed", text)
         self.assertIn("bad", text)
         self.assertNotIn("summary_rebuild_failed", text)
+        # I45 (3.24): a caller's own readers that lack a configured root go through the rule
+        open(os.path.join(self.tmp, "hooks.log"), "w").close()
+        with mock.patch.object(db, "union_readers", side_effect=real) as ur:
+            doc = summary.rebuild(self.conn, self._cfg(os.path.join(self.tmp, "gone")), readers=[])
+        self.assertEqual(ur.call_count, 1)                      # the retry's own readers
+        self.assertEqual(doc["accounts"], {"old": 1})
+        with open(os.path.join(self.tmp, "hooks.log"), encoding="utf-8") as fh:
+            text = fh.read()
+        self.assertIn("summary_extra_root_failed", text)
+        self.assertIn("gone", text)
         os.remove(self.path)                                     # absent: no windows group at all
         doc = summary.rebuild(self.conn, self._cfg(os.path.join(self.tmp, "missing")))
         self.assertNotIn("windows", doc["meta"]["computed_at"])

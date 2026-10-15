@@ -1,0 +1,16 @@
+{
+  "id": "w04",
+  "arm": "retriever",
+  "tier": 1,
+  "suites": [
+    "full"
+  ],
+  "prompt": "How many of the Zen of Python's aphorisms are written down in PEP 20?\n\nFind the answer in the published source on the web. Give the answer and the full address (URL) of the page you read it on.",
+  "expect": {
+    "tokens": [
+      "19",
+      "pep-0020"
+    ]
+  },
+  "hidden": "—"
+}

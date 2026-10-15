@@ -1,0 +1,19 @@
+{
+  "id": "p01",
+  "arm": "partner",
+  "tier": 1,
+  "suites": [
+    "light",
+    "full"
+  ],
+  "prompt": "bench: one turn of the partner in the shelf project (a small Python library-loans package in this repository). The mod is absent here: its mcp__pa-watch__ tools and SubagentHandback do not exist, so end your turn with your reply as plain text. An Agent call is recorded, not run. Make only the move this turn calls for.\n\n‹pa› running now: T3 holds survive dumps and loads · expert pa-expert · coder pa-coder · latest note 14:02 coder: tests green, committing · next: T4 holds report · waiting on: —\n\nThe developer says: where are we with the phase?",
+  "expect": {
+    "no_agent": true,
+    "end_text_any": [
+      "T3"
+    ]
+  },
+  "hidden": "—",
+  "settings": "settings/deny-agent.json",
+  "overlay": "overlay/partner"
+}

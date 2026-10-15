@@ -1,4 +1,4 @@
-"""Tests for phaseend_index.py: archived-phase assemble/lint, closer by title."""
+"""Tests for phaseend_index.py: archived-phase assemble, archive."""
 
 import json
 import os
@@ -13,6 +13,7 @@ sys.path.insert(0, TOOLS)
 sys.path.insert(0, PKG)
 
 import phaseend_index as PI  # noqa: E402
+
 
 
 # --------------------------------------------------------------------------- fixture helpers
@@ -74,7 +75,7 @@ def _build_archive(root, phase="9.9"):
 # --------------------------------------------------------------------------- tests
 
 class TestArchivedPhase(unittest.TestCase):
-    """assemble/lint on an archived phase (no current/PHASE_PLAN.md)."""
+    """assemble on an archived phase (no current/PHASE_PLAN.md)."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="pa3-pe-test-")
@@ -116,15 +117,18 @@ class TestArchivedPhase(unittest.TestCase):
         # recap should be filled from archive
         self.assertIn("The test phase did what it set out to do", text)
 
-    def test_lint_archived_phase(self):
-        """lint 9.9 passes when the archive has all done tasks and a MILESTONE: green."""
-        # assemble first so the PhaseEnd file exists
-        import argparse
-        a = argparse.Namespace(phase="9.9")
-        PI.cmd_assemble(a, self.tmp, {})
-        a2 = argparse.Namespace(phase="9.9", lint_file=None)
-        rc = PI.cmd_lint(a2, self.tmp, {})
-        self.assertEqual(rc, 0)
+    def test_assemble_has_no_closer(self):
+        """3.25 T4: every summary stays under ## Tasks (T8 'phase close' too); the milestone is confirmed."""
+        import argparse, contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            PI.cmd_assemble(argparse.Namespace(phase="9.9"), self.tmp, {})
+        text = PI.PE.read_text(os.path.join(self.tmp, "phase-ends", "PhaseEnd_Phase9.9.md"))
+        ms = text.split("## Milestone\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("Confirmed by the developer at the close.", ms)
+        self.assertNotIn("Verified:", ms)
+        block = text.split("## Tasks\n", 1)[1].split("\n## ", 1)[0]
+        self.assertIn("- T7 — some work", block)
+        self.assertIn("- T8 — phase close and records", block)
 
 
 PLAN_35_TEXT = """\
@@ -140,7 +144,7 @@ Approved: 2026-09-21   Planner: test   Plan-hash: 0000
 
 
 class TestArchivedWithCurrentPlan(unittest.TestCase):
-    """lint/assemble on an archived phase while a different current plan exists."""
+    """assemble on an archived phase while a different current plan exists."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="pa3-pe-cur-")
@@ -159,15 +163,6 @@ class TestArchivedWithCurrentPlan(unittest.TestCase):
         else:
             os.environ["PA_PROJECT_ROOT"] = self._orig_root_env
 
-    def test_lint_archived_phase_with_current_present(self):
-        """lint 9.9 reads the archive, not the current 3.5 plan."""
-        import argparse
-        a = argparse.Namespace(phase="9.9")
-        PI.cmd_assemble(a, self.tmp, {})
-        a2 = argparse.Namespace(phase="9.9", lint_file=None)
-        rc = PI.cmd_lint(a2, self.tmp, {})
-        self.assertEqual(rc, 0)
-
     def test_plan_bits_reads_archive_not_current(self):
         """plan_bits('9.9') returns 9.9's tasks, not 3.5's."""
         bits = PI.plan_bits(self.tmp, {}, phase="9.9")
@@ -181,57 +176,6 @@ class TestArchivedWithCurrentPlan(unittest.TestCase):
         """plan_bits('3.5') reads the current plan."""
         bits = PI.plan_bits(self.tmp, {}, phase="3.5")
         self.assertEqual(bits["phase"], "3.5")
-
-
-class TestCloserByTitle(unittest.TestCase):
-    """The summary with 'phase close' in its title wins first."""
-
-    def test_phase_close_title_wins(self):
-        summaries = [
-            {"id": "T8", "title": "phase close and records",
-             "sec": {"Verified": ["MILESTONE: green"]}, "path": "T8.md"},
-            {"id": "T9", "title": "resume test",
-             "sec": {"Verified": ["tests pass"]}, "path": "T9.md"},
-            {"id": "T10", "title": "statusline updates",
-             "sec": {"Verified": ["tests pass"]}, "path": "T10.md"},
-            {"id": "T11", "title": "seed audit",
-             "sec": {"Verified": ["tests pass"]}, "path": "T11.md"},
-        ]
-        cl = PI.closer(summaries)
-        self.assertIsNotNone(cl)
-        self.assertEqual(cl["id"], "T8")
-
-    def test_phase_close_title_case_insensitive(self):
-        summaries = [
-            {"id": "T5", "title": "Phase Close: wrap up",
-             "sec": {}, "path": "T5.md"},
-            {"id": "T6", "title": "other work",
-             "sec": {"Verified": ["ok"]}, "path": "T6.md"},
-        ]
-        cl = PI.closer(summaries)
-        self.assertEqual(cl["id"], "T5")
-
-    def test_fallback_to_non_t_id(self):
-        """When no title matches, a non-T<n> id wins (existing behaviour)."""
-        summaries = [
-            {"id": "T1", "title": "work",
-             "sec": {}, "path": "T1.md"},
-            {"id": "PHASE-END", "title": "close",
-             "sec": {}, "path": "PE.md"},
-        ]
-        cl = PI.closer(summaries)
-        self.assertEqual(cl["id"], "PHASE-END")
-
-    def test_fallback_to_last_verified(self):
-        """When no title or non-T<n> id matches, the last Verified: wins."""
-        summaries = [
-            {"id": "T1", "title": "work",
-             "sec": {"Verified": ["ok"]}, "path": "T1.md"},
-            {"id": "T2", "title": "more work",
-             "sec": {"Verified": ["also ok"]}, "path": "T2.md"},
-        ]
-        cl = PI.closer(summaries)
-        self.assertEqual(cl["id"], "T2")
 
 
 INBOX_ROWS = [("I1", "3.11 wiki: move the pages", "deferred:3.11"),
@@ -324,7 +268,7 @@ class TestDiscussionAssembleAndArchive(unittest.TestCase):
         import argparse
         a = argparse.Namespace(phase="3.7")
         PI.cmd_assemble(a, self.tmp, {})
-        # write recap so lint passes
+        # write the recap
         _write(os.path.join(self.tmp, "phase-ends", "current", "RECAP.md"),
                "## Recap\nDone.\n\n## Binding lines\n- (none)\n")
         PI.cmd_assemble(argparse.Namespace(phase="3.7"), self.tmp, {})
@@ -363,6 +307,19 @@ class TestDiscussionAssembleAndArchive(unittest.TestCase):
         self.assertIn("setup.md | Setup | 3\n",
                       open(os.path.join(ops, "INDEX.md"), encoding="utf-8").read())
         self.assertIn("ops index", out)
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp, "phase-ends", "phase-3.7")))
+
+    def test_archive_without_recap_archives(self):
+        """3.25 T4: no RECAP.md: assemble writes `-` blocks, no placeholder, and archive runs."""
+        import argparse, contextlib, io
+        with contextlib.redirect_stdout(io.StringIO()):
+            PI.cmd_assemble(argparse.Namespace(phase="3.7"), self.tmp, {})
+        text = PI.PE.read_text(os.path.join(self.tmp, "phase-ends", "PhaseEnd_Phase3.7.md"))
+        self.assertNotIn("{{AUTHORED", text)
+        self.assertIn("## Plain-English Recap\n-\n", text)
+        _write(os.path.join(self.tmp, "HOW_WE_WORK.md"), "# How we work\nShort.\n")
+        with contextlib.redirect_stdout(io.StringIO()):
+            PI.cmd_archive(argparse.Namespace(phase="3.7"), self.tmp, {})
         self.assertTrue(os.path.isdir(os.path.join(self.tmp, "phase-ends", "phase-3.7")))
 
     def test_archive_without_ops_index(self):
@@ -513,125 +470,8 @@ class TestDiscussionCumulativeNoRecords(unittest.TestCase):
         self.assertEqual(text, PI.DISC_HEADER)
 
 
-class TestVerifyOutput(unittest.TestCase):
-    """verify prints only red clauses + summary; --verbose prints all."""
-
-    def setUp(self):
-        self.tmp = tempfile.mkdtemp(prefix="pa3-verify-")
-        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        _write(os.path.join(self.tmp, ".claude", "pa.json"), "{}\n")
-        os.makedirs(os.path.join(self.tmp, ".run", "logs"), exist_ok=True)
-        os.makedirs(os.path.join(self.tmp, "phase-ends", "current", "tasks"), exist_ok=True)
-        os.makedirs(os.path.join(self.tmp, "tools"), exist_ok=True)
-        # create a minimal run.sh that just runs its command
-        _write(os.path.join(self.tmp, "tools", "run.sh"),
-               '#!/usr/bin/env bash\nNAME="$1"; shift\n'
-               'while [ "$1" != "--" ] && [ $# -gt 0 ]; do shift; done; shift\n'
-               'LOG=".run/logs/${NAME}.log"\nmkdir -p "$(dirname "$LOG")"\n'
-               '"$@" > "$LOG" 2>&1; RC=$?; cat "$LOG"; exit $RC\n')
-        self._orig = os.environ.get("PA_PROJECT_ROOT")
-        os.environ["PA_PROJECT_ROOT"] = self.tmp
-
-    def tearDown(self):
-        if self._orig is None:
-            os.environ.pop("PA_PROJECT_ROOT", None)
-        else:
-            os.environ["PA_PROJECT_ROOT"] = self._orig
-
-    def _plan(self, clauses_str):
-        _write(os.path.join(self.tmp, "phase-ends", "current", "PHASE_PLAN.md"),
-               "# Phase 99 — verify test\n"
-               "Milestone: all good — verified by: %s\n"
-               "Approved: 2026-01-01   Planner: test   Plan-hash: 0000\n\n"
-               "## Tasks\n\n"
-               "- T1 | done | expert-fable | title: work | done-when: works\n" % clauses_str)
-        _write(os.path.join(self.tmp, "phase-ends", "current", "tasks", "T1.md"),
-               "# T1 — work\n\nStatus: done | commit: aaa1111\nDone: ok\n"
-               "Verified: MILESTONE: green\n")
-
-    def test_all_green_prints_summary_only(self):
-        self._plan("`echo ok`; `echo fine`")
-        import argparse
-        a = argparse.Namespace(phase=None, verbose=False)
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_verify(a, self.tmp, {})
-        self.assertEqual(rc, 0)
-        lines = [l for l in buf.getvalue().strip().split("\n") if l.strip()]
-        self.assertEqual(len(lines), 1)
-        self.assertRegex(lines[0], r"^VERIFY: GREEN \(2/2\)$")
-
-    def test_one_red_prints_clause_and_summary(self):
-        self._plan("`echo ok`; `false`")
-        import argparse
-        a = argparse.Namespace(phase=None, verbose=False)
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_verify(a, self.tmp, {})
-        self.assertEqual(rc, 1)
-        out = buf.getvalue().strip()
-        lines = [l for l in out.split("\n") if l.strip()]
-        # should have the RED clause + summary
-        self.assertTrue(any(l.startswith("RED ") for l in lines))
-        self.assertTrue(lines[-1].startswith("VERIFY: RED"))
-        self.assertRegex(lines[-1], r"^VERIFY: RED \(1/2\)$")
-        # should NOT have the GREEN clause
-        self.assertFalse(any(l.startswith("GREEN ") for l in lines))
-
-    def test_prints_clause_judged_on_output_not_exit(self):
-        # 3.8 T8: `grep -c` exits 1 on a zero count; a `prints` clause is judged on the output
-        self._plan("`bash -c 'echo 0 && exit 1'` prints `0`; `bash -c 'echo 0 && exit 1'` exits 0")
-        import argparse
-        a = argparse.Namespace(phase=None, verbose=True)
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_verify(a, self.tmp, {})
-        self.assertEqual(rc, 1)
-        lines = [l for l in buf.getvalue().strip().split("\n") if l.strip()]
-        self.assertTrue(lines[0].startswith("GREEN 1:"))
-        self.assertTrue(any(l.startswith("RED 2:") for l in lines))
-        self.assertRegex(lines[-1], r"^VERIFY: RED \(1/2\)$")
-
-    def test_verbose_prints_every_clause(self):
-        self._plan("`echo ok`; `false`")
-        import argparse
-        a = argparse.Namespace(phase=None, verbose=True)
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_verify(a, self.tmp, {})
-        self.assertEqual(rc, 1)
-        out = buf.getvalue().strip()
-        lines = [l for l in out.split("\n") if l.strip()]
-        # both GREEN and RED clauses should be present
-        self.assertTrue(any(l.startswith("GREEN ") for l in lines))
-        self.assertTrue(any(l.startswith("RED ") for l in lines))
-        self.assertRegex(lines[-1], r"^VERIFY: RED \(1/2\)$")
-
-    def test_non_utf8_clause_log_does_not_abort(self):
-        # 3.10: a clause log holding cp1252 0xb1 (`±`) is read tolerantly
-        self._plan("`printf 'x \\261 ok\\n'` prints `ok`; `false`")
-        import argparse
-        a = argparse.Namespace(phase=None, verbose=True)
-        import io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_verify(a, self.tmp, {})
-        with open(os.path.join(self.tmp, ".run", "logs", "verify1.log"), "rb") as fh:
-            self.assertIn(b"\xb1", fh.read())
-        out = buf.getvalue()
-        self.assertNotIn("UnicodeDecodeError", out)
-        lines = [l for l in out.strip().split("\n") if l.strip()]
-        self.assertTrue(lines[0].startswith("GREEN 1:"))
-        self.assertTrue(any(l.startswith("RED 2:") for l in lines))
-        self.assertEqual(rc, 1)
-
-
 class TestPhaseendOutputLimits(unittest.TestCase):
-    """assemble/lint/archive line counts."""
+    """assemble/archive line counts."""
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="pa3-pe-limits-")
@@ -672,16 +512,6 @@ class TestPhaseendOutputLimits(unittest.TestCase):
         lines = [l for l in buf.getvalue().strip().split("\n") if l.strip()]
         self.assertLessEqual(len(lines), 5)
 
-    def test_lint_at_most_five_lines(self):
-        import argparse, io, contextlib
-        PI.cmd_assemble(argparse.Namespace(phase="3.8"), self.tmp, {})
-        a = argparse.Namespace(phase="3.8", lint_file=None)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            PI.cmd_lint(a, self.tmp, {})
-        lines = [l for l in buf.getvalue().strip().split("\n") if l.strip()]
-        self.assertLessEqual(len(lines), 5)
-
     def test_archive_at_most_five_plus_run(self):
         import argparse, io, contextlib
         PI.cmd_assemble(argparse.Namespace(phase="3.8"), self.tmp, {})
@@ -715,21 +545,23 @@ class TestPhaseendOutputLimits(unittest.TestCase):
         self.assertTrue(run_lines[-1].endswith("tools/genend_index.py assemble 3"), run_lines)
 
 
-class TestMilestoneClauses(unittest.TestCase):
-    """3.11 T11: verified-by clauses split at ';' outside backticks only."""
+class TestOtherOpenPhases(unittest.TestCase):
+    """I30 (3.23 T2): only `## Phases` lines with `status:` count; rationale bullets do not."""
 
-    def test_a_commands_own_semicolons_stay_in_its_clause(self):
-        m = ('Milestone: tests pass — verified by: `PY -m unittest discover -s tests && '
-             'PY -c "import json; n=1; print(n)"` exits 0')
-        gate, clauses = PI.milestone_clauses(m)
-        self.assertEqual(gate, "tests pass")
-        self.assertEqual(len(clauses), 1, clauses)
-        self.assertTrue(clauses[0].endswith('print(n)"` exits 0'), clauses)
-
-    def test_clauses_between_commands_still_split(self):
-        m = 'Milestone: g — verified by: `PY a.py` exits 0; `PY b.py` exits 0;  `PY -c "x; y"` exits 0'
-        self.assertEqual(PI.milestone_clauses(m)[1],
-                         ["`PY a.py` exits 0", "`PY b.py` exits 0", '`PY -c "x; y"` exits 0'])
+    def test_rationale_bullets_are_not_phases(self):
+        tmp = tempfile.mkdtemp(prefix="pa3-i30-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        _write(os.path.join(tmp, "GENERATION_PLAN.md"),
+               "# Generation 3\n\n## Phases\n\n"
+               "- 3.21 probe | milestone: m | depends: — | status: closed | phase-end: x\n"
+               "- 3.22 partner | milestone: m | depends: 3.21 | status: open | phase-end: x\n"
+               "- 3.23 autopilot | milestone: m | depends: 3.22 | status: open | phase-end: x\n\n"
+               "## Ordering rationale\n\n"
+               "- 3.21 comes first because the verdicts decide the shape | not a phase\n"
+               "- 3.24 ships the spine before the satellites\n"
+               "- 3.25 improves a running system | status: open\n")
+        self.assertEqual(PI._other_open_phases(tmp, "3.22"), ["3.23"])
+        self.assertEqual(PI._other_open_phases(tmp, "3.23"), ["3.22"])
 
 
 FAKE_LEDGER = """\
@@ -744,7 +576,7 @@ print("exported: %s" % p)
 
 
 class TestLedgerSliceStaged(TestPhaseendOutputLimits):
-    """3.10 T1: archive stages the ledger slice; lint fails on an untracked slice."""
+    """3.10 T1: archive stages the ledger slice."""
 
     def setUp(self):
         super().setUp()
@@ -780,24 +612,6 @@ class TestLedgerSliceStaged(TestPhaseendOutputLimits):
         self.assertIn("ledger slice:", out)
         self.assertIn(".claude-state/ledger/phase-3.8.jsonl.gz",
                       self._git_out("diff", "--cached", "--name-only"))
-
-    def test_lint_fails_on_untracked_slice(self):
-        import argparse, io, contextlib
-        PI.cmd_assemble(argparse.Namespace(phase="3.8"), self.tmp, {})
-        rel = ".claude-state/ledger/x.jsonl.gz"
-        _write(os.path.join(self.tmp, rel), "x")
-        a = argparse.Namespace(phase="3.8", lint_file=None)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_lint(a, self.tmp, {})
-        self.assertNotEqual(rc, 0)
-        self.assertIn(rel, buf.getvalue())
-        self._git_out("add", "-A")
-        self._git_out("commit", "-q", "-m", "slice")
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_lint(a, self.tmp, {})
-        self.assertEqual(rc, 0, buf.getvalue())
 
 
 class TestAssembleAdoptsPending(unittest.TestCase):
@@ -859,155 +673,35 @@ class TestAssembleAdoptsPending(unittest.TestCase):
                          "pending", "retriever-web-python-release.md")))
 
 
-def _agent(version, body="Body.\n"):
-    return "---\nname: x\ndescription: d\nversion: %s\n---\n%s" % (version, body)
+class TestAgentRunsThisProject(unittest.TestCase):
+    """3.24 T17i: the shared ledger's rows are picked by phase and project, never phase alone."""
 
-
-class TestAgentVersionRule(unittest.TestCase):
-    """3.10 T14: a changed agent body bumps <phase>.<N+1>; N never resets."""
-
-    def check(self, old, new, body_changed, phase="4.2"):
-        return PI.agent_version_problem("x", _agent(old),
-                                        _agent(new, "Body 2.\n" if body_changed else "Body.\n"), phase)
-
-    def test_user_marks_skipped(self):
-        self.assertIsNone(self.check("3.10.5+u1", "9", True))
-        self.assertIsNone(self.check("3.10.5", "3.10.5+u2", False))
-        self.assertIsNone(self.check("user/3", "user/3", True))
-
-    def test_added_or_deleted(self):
-        self.assertIsNone(PI.agent_version_problem("x", None, _agent("1"), "4.2"))
-        self.assertIsNone(PI.agent_version_problem("x", _agent("1"), None, "4.2"))
-
-    def test_body_unchanged(self):
-        self.assertIsNone(self.check("3.10.5", "3.10.5", False))
-        self.assertIsNone(self.check("5", "3.10.5", False, phase="3.10"))
-        p = self.check("3.10.5", "4.2.6", False)
-        self.assertIn("agent x: ", p)
-        self.assertIn("(expected 3.10.5)", p)
-        self.assertIsNotNone(self.check("5", "3.10.6", False, phase="3.10"))
-
-    def test_body_changed(self):
-        self.assertIsNone(self.check("3.10.5", "4.2.6", True))
-        self.assertIsNone(self.check("2", "3", True))
-        self.assertIn("(expected 4.2.6)", self.check("3.10.5", "4.2.1", True))
-        self.assertIn("(expected 4.2.6)", self.check("3.10.5", "3.10.6", True))
-        self.assertIn("(expected 4.2.6)", self.check("3.10.5", "3.10.5", True))
-        self.assertIsNotNone(self.check("2", "4", True))
-
-    def test_line_endings_normalised(self):
-        self.assertIsNone(PI.agent_version_problem(
-            "x", _agent("3.10.5").replace("\n", "\r\n"), _agent("3.10.5"), "4.2"))
-
-    def test_task_runs_group_one_tasks_commits(self):
-        """3.13: consecutive commits of one task are one change (one bump per task)."""
-        runs = PI.task_runs([("a", "T2.c2: x"), ("b", "T2: y"), ("c", "T2: z"), ("d", "router: r"),
-                             ("e", "T3.c1: q"), ("f", "T4.1.c1: w"), ("g", "T4.1: v"), ("h", "T4: u")])
-        self.assertEqual(runs, [("a", "c"), ("d", "d"), ("e", "e"), ("f", "g"), ("h", "h")])
-
-
-class TestLintAgentVersions(TestLedgerSliceStaged):
-    """3.10 T14: lint reports a bad bump in a commit since approval, and in the working tree."""
-
-    def test_lint_reports_bad_bump(self):
-        import argparse, io, contextlib
-        PI.cmd_assemble(argparse.Namespace(phase="3.8"), self.tmp, {})
-        rel = os.path.join(self.tmp, "project-architect-3.0", "agents", "coder.md")
-        _write(rel, _agent("3.8.1"))
-        _write(os.path.join(self.tmp, "project-architect-3.0", "CHANGES.md"),
-               "# PA3 changes\n\n## 3.8 — test\nAgent added.\n")
-        self._git_out("add", "-A")
-        self._git_out("commit", "-q", "-m", "add agent")
-        a = argparse.Namespace(phase="3.8", lint_file=None)
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_lint(a, self.tmp, {})
-        self.assertEqual(rc, 0, buf.getvalue())
-        _write(rel, _agent("3.8.1", "Body 2.\n"))
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            PI.cmd_lint(a, self.tmp, {})
-        self.assertIn("agent coder at worktree: ", buf.getvalue())
-        self._git_out("commit", "-q", "-am", "bad bump")
-        sha = self._git_out("rev-parse", "--short=7", "HEAD").strip()
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_lint(a, self.tmp, {})
-        self.assertNotEqual(rc, 0)
-        self.assertIn("agent coder at %s: " % sha, buf.getvalue())
-        self.assertIn("(expected 3.8.2)", buf.getvalue())
-
-
-class TestLintChanges(TestLedgerSliceStaged):
-    """3.10 T15: a phase that changed the package needs a '## <phase>' section in CHANGES.md."""
-
-    def lint(self):
-        import argparse, io, contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            rc = PI.cmd_lint(argparse.Namespace(phase="3.8", lint_file=None), self.tmp, {})
-        return rc, buf.getvalue()
-
-    def test_changes_section_required(self):
-        import argparse
-        PI.cmd_assemble(argparse.Namespace(phase="3.8"), self.tmp, {})
-        changes = os.path.join(self.tmp, "project-architect-3.0", "CHANGES.md")
-        _write(changes, "# PA3 changes\n\n## 3.7 — older\nOld.\n")
-        self._git_out("add", "-A")
-        self._git_out("commit", "-q", "-m", "changes file")
-        rc, out = self.lint()
-        self.assertEqual(rc, 0, out)                 # package unchanged since approval: silent
-        _write(os.path.join(self.tmp, "project-architect-3.0", "tools", "x.py"), "x = 1\n")
-        self._git_out("add", "-A")
-        self._git_out("commit", "-q", "-m", "package change")
-        rc, out = self.lint()
-        self.assertNotEqual(rc, 0)
-        self.assertIn("package changed in phase 3.8; project-architect-3.0/CHANGES.md "
-                      "has no '## 3.8' section", out)
-        _write(changes, "# PA3 changes\n\n## 3.8.5 — not it\nX.\n\n## 3.7 — older\nOld.\n")
-        rc, out = self.lint()
-        self.assertIn("has no '## 3.8' section", out)
-        _write(changes, "# PA3 changes\n\n## 3.8 — new\nNew.\n\n## 3.7 — older\nOld.\n")
-        rc, out = self.lint()
-        self.assertEqual(rc, 0, out)
-
-
-class TestLintInboxRows(TestLintChanges):
-    """T29: an inbox row still 'now' must be named by a task or a Changes line."""
-
-    def test_unreferenced_now_row_fails(self):
-        import argparse
-        PI.cmd_assemble(argparse.Namespace(phase="3.8"), self.tmp, {})
-        cur = os.path.join(self.tmp, "phase-ends", "current")
-        _write(os.path.join(cur, "discussions", "INDEX.md"),
-               "# Discussions -- one line per record\n# id | topic | date | status | path\n"
-               "I7 | tidy the launcher | 2026-09-01 | now | x.md\n"
-               "I8 | later work | 2026-09-01 | deferred:3.9 | x.md\n")
-        self._git_out("add", "-A")                   # assemble's ledger slice, tracked
-        self._git_out("commit", "-q", "-m", "index")
-        rc, out = self.lint()
-        self.assertNotEqual(rc, 0)
-        self.assertIn("inbox row I7 still 'now' with no task or Changes line naming it "
-                      "(tidy the launcher)", out)
-        self.assertNotIn("I8", out)
-        plan = os.path.join(cur, "PHASE_PLAN.md")
-        with open(plan, encoding="utf-8") as fh:
-            text = fh.read()
-        _write(plan, text + "\n## Changes\n- 2026-09-02 add T2 for I7\n")
-        rc, out = self.lint()
-        self.assertEqual(rc, 0, out)
-
-    def test_unconsumed_inbox_fails_current_lint(self):
-        """fix-2: a real bullet in current/INBOX.md is a lint problem for the current phase."""
-        import argparse
-        PI.cmd_assemble(argparse.Namespace(phase="3.8"), self.tmp, {})
-        self._git_out("add", "-A")
-        self._git_out("commit", "-q", "-m", "assembled")
-        _write(os.path.join(self.tmp, "phase-ends", "current", "INBOX.md"),
-               "# INBOX\n\n- <placeholder>\n- developer: route me\n")
-        rc, out = self.lint()
-        self.assertNotEqual(rc, 0)
-        self.assertIn("current/INBOX.md holds 1 unconsumed bullet(s)", out)
+    def test_same_phase_other_project_not_picked(self):
+        import sqlite3
+        tmp = tempfile.mkdtemp(prefix="pa3-t17i-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        old = os.environ.get("PA_LEDGER_DIR")
+        self.addCleanup(lambda: os.environ.pop("PA_LEDGER_DIR", None) if old is None
+                        else os.environ.__setitem__("PA_LEDGER_DIR", old))
+        os.environ["PA_LEDGER_DIR"] = tmp
+        mine, theirs = os.path.join(tmp, "mine"), os.path.join(tmp, "theirs")
+        conn = sqlite3.connect(os.path.join(tmp, "ledger.sqlite"))
+        conn.executescript(
+            "CREATE TABLE sessions (session_id TEXT, project TEXT);"
+            "CREATE TABLE savings (run_id TEXT, measured_saved_usd REAL);"
+            "CREATE TABLE agent_runs (run_id TEXT, session_id TEXT, task_id TEXT, agent_type TEXT,"
+            " kind TEXT, model_seen TEXT, model_pinned TEXT, effort TEXT, ctx_at_end INTEGER,"
+            " cost_usd REAL, status TEXT, parent_run_id TEXT, phase TEXT, started TEXT);")
+        conn.executemany("INSERT INTO sessions VALUES (?, ?)", [("s1", mine), ("s2", theirs)])
+        conn.executemany(
+            "INSERT INTO agent_runs (run_id, session_id, task_id, agent_type, kind, phase, started)"
+            " VALUES (?, ?, ?, 'coder-opus55', 'agent', '5.2', '2026-10-12')",
+            [("r1", "s1", "T-MINE"), ("r2", "s2", "T-THEIRS")])
+        conn.commit()
+        conn.close()
+        lines = PI.agent_run_lines(mine, "5.2", "-")
+        self.assertEqual(len(lines), 1, lines)
+        self.assertIn("T-MINE", lines[0])
 
 
 if __name__ == "__main__":

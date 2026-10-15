@@ -15,7 +15,7 @@ from pa import hooks  # noqa: E402
 from pa.hooks import post_tool_use  # noqa: E402
 
 SID = "credit-test-sid-0000"
-AGENT_ID = "aaaa1111000000014"
+AGENT_ID = "aaaa111100000001f"
 ACCOUNT = "credit@example.com"
 
 
@@ -785,12 +785,13 @@ class LadderMismatchTest(CreditCase):
             conn.close()
 
     def test_pro_and_max5_models_no_mismatch(self):
+        # 3.24 T3.6: auditor and deep-thinker (was critic and plain, both gone with the Gen 3 loop)
         config._set_ladder_tier("pro")
-        self.assertEqual(self._events("critic", "claude-opus-5-5[1m]", "r-pro"), 0)
+        self.assertEqual(self._events("auditor", "claude-opus-5-5[1m]", "r-pro"), 0)
         config._set_ladder_tier("max5")
-        self.assertEqual(self._events("plain", "claude-fable-5-1[1m]", "r-max5"), 0)
+        self.assertEqual(self._events("deep-thinker", "claude-fable-5-1[1m]", "r-max5"), 0)
         config._set_ladder_tier("max20")
-        self.assertEqual(self._events("critic", "claude-opus-5-5[1m]", "r-max20"), 1)
+        self.assertEqual(self._events("auditor", "claude-opus-5-5[1m]", "r-max20"), 1)
 
 
 if __name__ == "__main__":

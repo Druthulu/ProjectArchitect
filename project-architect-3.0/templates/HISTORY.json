@@ -1,0 +1,406 @@
+{
+  "CLAUDE.template.md": [
+    [
+      [
+        "Every agent, always: never push; no AI trailers; never write memories (Claude keeps the project's memory);",
+        "never `/compact`, `/model`, `/effort`;"
+      ],
+      [
+        "Every agent, always: never push; no AI trailers; never `/compact`, `/model`, `/effort`;"
+      ]
+    ],
+    [
+      [
+        "Every agent, always: never push; no AI trailers; never write memories (under `mod: on`, Claude keeps the project",
+        "memory); never `/compact`, `/model`, `/effort`;"
+      ],
+      [
+        "Every agent, always: never push; no AI trailers; never `/compact`, `/model`, `/effort`;"
+      ]
+    ],
+    [
+      [
+        "Every agent, always: never push; no AI trailers; never write memories; never `/compact`, `/model`, `/effort`;"
+      ],
+      [
+        "Every agent, always: never push; no AI trailers; never `/compact`, `/model`, `/effort`;"
+      ]
+    ],
+    [
+      [
+        "Roles: Claude (the partner) · expert · coder · retriever; under `mod: off` also planner · router · critic. Rules: the `project-architect` skill."
+      ],
+      [
+        "Roles: Claude (the partner) · expert · coder · retriever. Rules: the `project-architect` skill."
+      ]
+    ],
+    [
+      [
+        "Roles: planner · router · expert · coder · retriever · critic. Rules: the `house-rules` skill."
+      ],
+      [
+        "Roles: Claude (the partner) · expert · coder · retriever. Rules: the `project-architect` skill."
+      ]
+    ],
+    [
+      [
+        "Roles: planner · router · expert · coder · retriever · critic. Rules: the `project-architect` skill."
+      ],
+      [
+        "Roles: Claude (the partner) · expert · coder · retriever. Rules: the `project-architect` skill."
+      ]
+    ]
+  ],
+  "HOW_WE_WORK.template.md": [
+    [
+      [
+        "## Build / run / test"
+      ],
+      [
+        "## Build / run / test <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Build / run / test <!-- roles: expert coder planner review auditor curator -->"
+      ],
+      [
+        "## Build / run / test <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Build / run / test <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Build / run / test <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Conventions & house style"
+      ],
+      [
+        "## Conventions & house style <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Conventions & house style <!-- roles: expert coder planner review auditor curator -->"
+      ],
+      [
+        "## Conventions & house style <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Conventions & house style <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Conventions & house style <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Developer"
+      ],
+      [
+        "## Developer <!-- roles: claude planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Developer <!-- roles: planner review auditor curator -->"
+      ],
+      [
+        "## Developer <!-- roles: claude planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Developer <!-- roles: router planner review discuss auditor curator -->"
+      ],
+      [
+        "## Developer <!-- roles: claude planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Docs map"
+      ],
+      [
+        "## Docs map <!-- roles: expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Docs map <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Docs map <!-- roles: expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Environment <!-- roles: expert coder planner review auditor curator -->"
+      ],
+      [
+        "## Environment <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Environment <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Environment <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Paths <!-- roles: expert coder planner review auditor curator -->"
+      ],
+      [
+        "## Paths <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Paths <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Paths <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Project"
+      ],
+      [
+        "## Project <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Project <!-- roles: expert coder planner review auditor curator -->"
+      ],
+      [
+        "## Project <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Project <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Project <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Rhythm <!-- roles: router planner review discuss auditor curator -->",
+        "{{RHYTHM}}  <!-- autonomous: the loop (the mod; under mod off the router) runs the phase end to end, stopping"
+      ],
+      [
+        "## Rhythm <!-- roles: planner review auditor curator -->",
+        "{{RHYTHM}}  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping"
+      ]
+    ],
+    [
+      [
+        "## Rhythm <!-- roles: router planner review discuss auditor curator -->",
+        "{{RHYTHM}}  <!-- autonomous: the router runs the phase end to end, stopping only at the two gates.",
+        "                  review: tasks marked `review: yes` end the turn with REVIEW.md and wait. -->",
+        "Gates: plan approval (planner session) and the milestone (verified by the closer expert)."
+      ],
+      [
+        "## Rhythm <!-- roles: planner review auditor curator -->",
+        "{{RHYTHM}}  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping",
+        "                  only at the two gates. review: tasks marked `review: yes` stop the queue with REVIEW.md. -->",
+        "Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the",
+        "developer at the close question)."
+      ]
+    ],
+    [
+      [
+        "## Standing decisions",
+        "<!-- ≤20 lines. Appended by the closer at each phase close from the PhaseEnd's",
+        "     ## Decisions that still bind. Oldest superseded lines are deleted, not stacked. -->",
+        "- <date, phase>: <decision that binds until reversed>",
+        "",
+        "## Environment"
+      ],
+      [
+        "## Environment <!-- roles: claude expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "## Tools <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Tools <!-- roles: expert coder planner review auditor curator -->"
+      ]
+    ],
+    [
+      [
+        "<!-- Standing facts: who the developer is, what the tools are, where things live, what was",
+        "     decided and still binds. 2–3k tokens; lint warns above 3.5k. Loaded by every agent, so",
+        "     nothing transient belongs here — plan state lives in PHASE_PLAN.md, rule texts in rules/.",
+        "     Written at install (interview) and edited in the same task as whatever changed it (H7).",
+        "     ## Standing decisions is appended at each phase close by the closer expert. -->"
+      ],
+      [
+        "<!-- The card: standing facts for every agent. Never appended to; the cap is",
+        "     card.max_chars in .claude/pa.json (default 7000), enforced by the archive.",
+        "     Each role prints its slice with `tools/card.py slice <role>`.",
+        "     Written at install (interview) and edited in the same task as whatever changed it (H7). -->"
+      ]
+    ],
+    [
+      [
+        "<!-- project-specific only; the general house style is in the house-rules skill -->"
+      ],
+      [
+        "<!-- project-specific only; the general house style is in the project-architect skill -->"
+      ]
+    ],
+    [
+      [
+        "Gates: plan approval (in the plan-mode view) and the milestone (verified by the",
+        "closer expert)."
+      ],
+      [
+        "Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the",
+        "developer at the close question)."
+      ]
+    ],
+    [
+      [
+        "Gates: plan approval (in the plan-mode view; under mod off the planner session) and the milestone (verified by the",
+        "closer expert)."
+      ],
+      [
+        "Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the",
+        "developer at the close question)."
+      ]
+    ],
+    [
+      [
+        "Smoke tests for changes only: a task runs the tests covering what it touches; the full suite runs at the milestone, or",
+        "for a wide blast radius (a shared module, a schema change); tests run in parallel where possible."
+      ],
+      []
+    ],
+    [
+      [
+        "The developer pushes; agents never do. They ratify rules at the next planner session."
+      ],
+      [
+        "The developer pushes; agents never do. They ratify rules at the next plan approval."
+      ]
+    ],
+    [
+      [
+        "whenever anything waits on him. Autonomy: {{AUTONOMY_POSTURE}}. Notification channel: {{NOTIFY_CHANNEL}}.",
+        "He pushes; agents never do. He ratifies rules at the next planner session."
+      ],
+      [
+        "whenever anything waits on them. Autonomy: {{AUTONOMY_POSTURE}}. Notification channel: {{NOTIFY_CHANNEL}}.",
+        "The developer pushes; agents never do. They ratify rules at the next plan approval."
+      ]
+    ],
+    [
+      [
+        "| expert_ttl | `PY tools/expert_ttl.py --coder <coder>` | prints `1h` or `5m`: a task's expert agent or its `-5m` twin |"
+      ],
+      [
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `how-we-work --retire`; `--dry-run` first |"
+      ]
+    ],
+    [
+      [
+        "| launch | `PY tools/launch.py --seed-only` | the pa-session's state detector; writes `.run/seed.md`; never typed by the developer |"
+      ],
+      [
+        "| launch | `PY tools/launch.py --state-json` | the state detector: the mod's read-only report; never typed by the developer |"
+      ]
+    ],
+    [
+      [
+        "| launch | `PY tools/launch.py --state-json` / `--seed-only` | the state detector: `--state-json` is the mod's read-only report; `--seed-only` writes `.run/seed.md` for the pa-session (mod off); never typed by the developer |"
+      ],
+      [
+        "| launch | `PY tools/launch.py --state-json` | the state detector: the mod's read-only report; never typed by the developer |"
+      ]
+    ],
+    [
+      [
+        "| launch | `{{PY}} tools/launch.py --seed-only` | the pa-session's state detector; writes `.run/seed.md`; never typed by the developer |",
+        "| plan_edit | `{{PY}} tools/plan_edit.py` | the only writer of `PHASE_PLAN.md` (status, Changes, add/reopen) |",
+        "| status | `{{PY}} tools/status.py` | `.run/status.json` for the statusline; INBOX consume; waiting flags |",
+        "| task_log | `{{PY}} tools/task_log.py` | lint and finish a task summary (`Verified:` required) |",
+        "| research_add | `{{PY}} tools/research_add.py` | allocate a report id, write the index line |",
+        "| rules_add | `{{PY}} tools/rules_add.py` | add, supersede, promote, retire a rule |",
+        "| skill_add | `{{PY}} tools/skill_add.py` | turn a `workflow:` gotcha into `.claude/skills/<name>/SKILL.md` |"
+      ],
+      [
+        "| launch | `PY tools/launch.py --state-json` | the state detector: the mod's read-only report; never typed by the developer |",
+        "| plan_edit | `PY tools/plan_edit.py` | the only writer of `PHASE_PLAN.md` (status, Changes, add/reopen) |",
+        "| status | `PY tools/status.py` | `.run/status.json` for the statusline; INBOX consume; waiting flags |",
+        "| task_log | `PY tools/task_log.py` | lint and finish a task summary |",
+        "| research_add | `PY tools/research_add.py` | allocate a report id, write the index line |",
+        "| rules_add | `PY tools/rules_add.py` | add, supersede, promote, retire a rule |",
+        "| skill_add | `PY tools/skill_add.py` | turn a `workflow:` gotcha into `.claude/skills/<name>/SKILL.md` |"
+      ]
+    ],
+    [
+      [
+        "| launch | `{{PY}} tools/launch.py` | pick the session kind, write `.run/seed.md`, start Claude |",
+        "| plan_edit | `{{PY}} tools/plan_edit.py` | the only writer of `PHASE_PLAN.md` (status, Changes, add/reopen) |",
+        "| status | `{{PY}} tools/status.py` | `.run/status.json` for the statusline; INBOX consume; waiting flags |",
+        "| task_log | `{{PY}} tools/task_log.py` | lint and finish a task summary (`Verified:` required) |",
+        "| research_add | `{{PY}} tools/research_add.py` | allocate a report id, write the index line |",
+        "| rules_add | `{{PY}} tools/rules_add.py` | add, supersede, promote, retire a rule |",
+        "| skill_add | `{{PY}} tools/skill_add.py` | turn a `workflow:` gotcha into `.claude/skills/<name>/SKILL.md` |"
+      ],
+      [
+        "| launch | `PY tools/launch.py --state-json` | the state detector: the mod's read-only report; never typed by the developer |",
+        "| plan_edit | `PY tools/plan_edit.py` | the only writer of `PHASE_PLAN.md` (status, Changes, add/reopen) |",
+        "| status | `PY tools/status.py` | `.run/status.json` for the statusline; INBOX consume; waiting flags |",
+        "| task_log | `PY tools/task_log.py` | lint and finish a task summary |",
+        "| research_add | `PY tools/research_add.py` | allocate a report id, write the index line |",
+        "| rules_add | `PY tools/rules_add.py` | add, supersede, promote, retire a rule |",
+        "| skill_add | `PY tools/skill_add.py` | turn a `workflow:` gotcha into `.claude/skills/<name>/SKILL.md` |"
+      ]
+    ],
+    [
+      [
+        "| phaseend_index | `PY tools/phaseend_index.py` | assemble, lint and archive a PhaseEnd |",
+        "| genend_index | `PY tools/genend_index.py` | assemble and lint a GenerationEnd |"
+      ],
+      [
+        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd |",
+        "| genend_index | `PY tools/genend_index.py` | assemble a GenerationEnd |"
+      ]
+    ],
+    [
+      [
+        "| phaseend_index | `{{PY}} tools/phaseend_index.py` | assemble, lint and archive a PhaseEnd |",
+        "| genend_index | `{{PY}} tools/genend_index.py` | assemble and lint a GenerationEnd |"
+      ],
+      [
+        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd |",
+        "| genend_index | `PY tools/genend_index.py` | assemble a GenerationEnd |"
+      ]
+    ],
+    [
+      [
+        "| task_log | `PY tools/task_log.py` | lint and finish a task summary (`Verified:` required) |"
+      ],
+      [
+        "| task_log | `PY tools/task_log.py` | lint and finish a task summary |"
+      ]
+    ]
+  ]
+}

@@ -104,19 +104,6 @@ class DiscussionStatusTest(unittest.TestCase):
         self.assertEqual(p.returncode, 1, p.stdout + p.stderr)
         self.assertIn("no record", p.stdout)
 
-    def test_on_off_status_bare(self):
-        """Bare status (no args) still shows on/off."""
-        p = self._run("status")
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertIn("off", p.stdout)
-
-    def test_off_new_record_without_flag(self):
-        """3.9.7 T9: open-mode /discuss raises no flag; off --new-record still writes."""
-        p = self._run("off", "--new-record")
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        self.assertTrue(os.path.isfile(os.path.join(self.disc, "D2.md")), p.stdout)
-        self.assertIn("D2 | ", read(os.path.join(self.disc, "INDEX.md")))
-
 
 class DiscussionTriageTest(unittest.TestCase):
     """discussion.py triage writes a deferred item's status into its index row (T4.c1)."""
