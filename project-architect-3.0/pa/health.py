@@ -264,8 +264,9 @@ def start_run(root, repair, why):
     kwargs = {"cwd": root, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
               "stderr": subprocess.DEVNULL, "close_fds": True}
     if os.name == "nt":
-        kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-                                   | getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000))
+        # a hidden console its children inherit (DETACHED_PROCESS overrode CREATE_NO_WINDOW: the installer it
+        # starts opened a visible python window)
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
     else:
         kwargs["start_new_session"] = True
     try:

@@ -71,7 +71,7 @@ describe('state file', () => {
     expect(s?.gen).toBe(2)
     expect(s?.inboxDone).toEqual({ '1-1-plan': 500 })
     expect(s?.partner).toEqual({ agentId: 'a1', spawnedAt: 0, lastTurnAt: 0, model: 'opus', ctx: 0, topic: false, modelSwitchAt: 0, pingInFlight: false, firstCtx: 0 })
-    expect(s?.warm).toEqual({ pings: 4, pingUsd: 0, avoidedUsd: 0, lastPingAt: 0, waitStart: 0, waitUsd: 0, waitPings: 0 })
+    expect(s?.warm).toEqual({ pings: 4, pingUsd: 0, avoidedUsd: 0, lastPingAt: 0, waitStart: 0, waitUsd: 0, waitPings: 0, waitCount: 0 })
     expect([s?.journal, s?.toasts]).toEqual([[], []])
     expect(s?.children).toEqual({})
     expect(s?.hold).toBe(null)

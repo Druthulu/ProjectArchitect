@@ -1,7 +1,7 @@
 // The autopilot's loop state and its pure decisions (3.23-autopilot.md, "The loop (router `pa`)" and "Stops, holds and
 // decisions"): `.run/mod/loop.json`, project-level, written at every transition and read first at session start. Its
 // types live in the contract, types/index.d.ts. Pure, no `$`: autopilot.tsx reads the clock and files and acts.
-import type { HoldName, LoopState, LoopStateName, LoopTask, WaitFor } from '../types'
+import type { HoldName, LoopState, LoopStateName, LoopTask, Shell, WaitFor } from '../types'
 
 import { parseExpertContract } from './contract'
 
@@ -36,7 +36,7 @@ const HOLDS: readonly HoldName[] = ['talk', 'review', 'question', 'plan', 'close
 export function defaultLoop(): LoopState {
   return {
     v: LOOP_V, ownerSid: '', heartbeatAt: 0, state: 'off', holds: [], task: null, queuedEdits: [], chainStep: '',
-    dialog: false, waitFor: null, resumeAt: 0, lastDevAt: 0, lastAnswerAt: 0, lastAnswerAsked: false,
+    dialog: false, waitFor: null, resumeAt: 0, lastDevAt: 0, lastAnswerAt: 0, talkAnswerAt: 0, lastAnswerAsked: false,
   }
 }
 
@@ -111,7 +111,8 @@ export function parseLoop(text: string | null): LoopState {
       return str(e['command']) === '' ? [] : [{ command: str(e['command']), why: str(e['why']), at: num(e['at']), caller: str(e['caller']) }]
     }),
     chainStep: str(o['chainStep']), dialog: o['dialog'] === true, waitFor: parseWaitFor(o['waitFor']), resumeAt: num(o['resumeAt']),
-    lastDevAt: num(o['lastDevAt']), lastAnswerAt: num(o['lastAnswerAt']), lastAnswerAsked: o['lastAnswerAsked'] === true,
+    lastDevAt: num(o['lastDevAt']), lastAnswerAt: num(o['lastAnswerAt']),
+    talkAnswerAt: num(o['talkAnswerAt'] ?? o['lastAnswerAt']), lastAnswerAsked: o['lastAnswerAsked'] === true,
   }
 }
 
@@ -158,6 +159,52 @@ export function ownsLoop(s: LoopState, sid: string, now: number, prevSid = ''): 
 export function takesOver(s: LoopState, sid: string, now: number, prevSid = ''): boolean {
   return ownsLoop(s, sid, now, prevSid) && (s.ownerSid !== sid || now - s.heartbeatAt > OWNER_STALE_MS)
 }
+
+/** 3.28.1 T15: background shells (Bash `run_in_background`), recorded by pa-watch per agent in
+ * `.run/mod/<sid>/shells.json` (`{ <agentId>: Shell[] }`) from start to completion notice; `exit` set when it ended badly. */
+export const SHELLS_FILE = 'shells.json'
+
+/** shells.json's records by agent, each well-formed; {} for a missing or broken file. */
+export function shellsOf(text: string | null): Record<string, Shell[]> {
+  let v: unknown
+  try {
+    v = JSON.parse(text ?? '')
+  } catch {
+    return {}
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return {}
+  const out: Record<string, Shell[]> = {}
+  for (const [agentId, list] of Object.entries(v as Record<string, unknown>)) {
+    const shells = (Array.isArray(list) ? list : []).flatMap((x: unknown) => {
+      const j = typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {}
+      if (str(j['id']) === '') return []
+      const sh: Shell = { id: str(j['id']), name: str(j['name']), at: num(j['at']), type: str(j['type']) }
+      if (typeof j['exit'] === 'number') sh.exit = j['exit']
+      return [sh]
+    })
+    if (shells.length > 0) out[agentId] = shells
+  }
+  return out
+}
+
+/** What a hand-back or answer waits on (`WAITING: shell <what is running>`), null when it is not a shell wait. */
+export function waitingShell(text: string): string | null {
+  const m = /^\s*WAITING:\s*shell\b[ \t:]*(.*)/i.exec(text)
+  return m === null ? null : (m[1] ?? '').trim()
+}
+
+/** The live shells (no `exit`) of these agents. */
+export function shellsOut(shells: Record<string, Shell[]>, ids: string[]): Shell[] {
+  return ids.flatMap((id) => (shells[id] ?? []).filter((s) => s.exit === undefined))
+}
+
+/** The spinner's frames; the frame comes from the clock. */
+export const SPINNER = ['◐', '◓', '◑', '◒'] as const
+
+/** The note Claude gets when a task's expert or coder hands back to wait on its background shell (3.28.1 T15 part d). */
+export const shellNotice = (task: string, role: string, id: string, what: string): string =>
+  `‹pa› ${task}'s ${role} (${id}) is waiting on a background shell${what === '' ? '' : `: ${what}`}. It picks up by itself ` +
+  'when the shell ends. Tell the developer in one plain line: what is running, for which task, and that it picks up by itself.'
 
 /** The text recovery sends the running task's expert (T5d1). */
 export const CONTINUE_TEXT = 'continue: the session restarted; continue your task from your last step; your brief and the plan are unchanged'
@@ -279,10 +326,10 @@ export function editIsDecision(s: LoopState): boolean {
 
 /**
  * Silence ends `talk` (the only hold it ends): on top, 15 min since the developer's last message and Claude's last
- * answer, and that answer asked nothing.
+ * answer to him (3.28.1 T9b: an answer after a mod notice does not count), and that answer asked nothing.
  */
 export function silenceReleases(s: LoopState, now: number): boolean {
-  return topHold(s) === 'talk' && !s.lastAnswerAsked && now - Math.max(s.lastDevAt, s.lastAnswerAt) >= TALK_SILENCE_MS
+  return topHold(s) === 'talk' && !s.lastAnswerAsked && now - Math.max(s.lastDevAt, s.talkAnswerAt) >= TALK_SILENCE_MS
 }
 
 /** The task after `running` from `plan_edit.py show --tasks` rows (`T3 | next | agent | …`): the first next or queued one; '' none. */
@@ -665,6 +712,13 @@ export function contextLines(text: string): { kind: 'update' | 'renewal'; line: 
   })
 }
 
+/** 3.28.6 T19: an update line's fact without its steps (`Upgrade: auto: … run …`, `Say \`update pa3\` to run …`): in a
+ * `mod: on` session the mod owns the update, so neither Claude nor the journal's seed gets a pre-3.2 router's command. */
+export function updateFact(line: string): string {
+  const i = line.search(/\s(?:Upgrade: |Say `update pa3`)/)
+  return i < 0 ? line : line.slice(0, i).trim()
+}
+
 // 3.24 T6: the update ask is on in production, so this notice (a trial without PA_MOD_UPDATE=1) only reports the line.
 export const updateNotice = (line: string): string =>
   `‹pa› PA3 says: ${line.replace(/\.\s*$/, '')}. Mention it to the developer once.`
@@ -683,6 +737,54 @@ export function updateOf(s: LoopState): UpdateAsk | null {
     ? null
     : { line: str(o['line']), asked: str(o['asked']), answer: typeof o['answer'] === 'string' ? o['answer'] : null }
 }
+
+/** 3.28.1 T14: a running session checks for a newer release this often (the session start checks too). */
+export const RELEASE_CHECK_MS = 8 * 3_600_000
+/** The check's release (`{version, kind, state}`, state `later` | `install`) for the statusline's green line
+ * (pa/statusline.py): "available", "installs after the current task", then "installed" once the installed VERSION
+ * reaches it. The mod empties it when it starts. */
+export const RELEASE_MARKER = '.run/mod/release.json'
+/** The restart that loads an installed update: a resume is a new process (the mod, the agents, the session-start
+ * check all load) and keeps the session id; /clear starts none of it. */
+export const RESTART = '/exit, then claude --continue (not /clear); you\'ll pick up where you left off'
+/** 3.28.2 T16: the restart line Claude relays on its own line, after a blank line, in bold. */
+export const RESTART_LINE = '**To load it: /exit, then claude --continue (not /clear)**'
+/** 3.28.2 T16: the first start after an installed release: Claude's first line, so the restart doesn't read as a loop. */
+export const loadedNotice = (version: string): string =>
+  `‹pa› PA3 ${version} was installed and this start loaded it. Say this one line first, before anything else:\n\n` +
+  `**Project Architect ${version} is installed and loaded. Ready to continue work.**\n\nThen carry on as usual.`
+/** loop.json `release`: the check's release, asked once per version (`asked` the picker's request id); `step` asked →
+ * install (the developer's yes) → running (pa3_update.py started) → done, or later (not now, or no answer). */
+export type Release = { version: string; kind: string; asked: string; step: 'asked' | 'install' | 'running' | 'later' | 'done' }
+export const RELEASE_OPTIONS: readonly string[] = ['Install after the current task', 'Not now (I\'m away or busy)']
+
+/** loop.json's release record, null none. */
+export function releaseOf(s: LoopState): Release | null {
+  const v = (s as LoopState & { release?: unknown }).release
+  const o = typeof v === 'object' && v !== null ? (v as Record<string, unknown>) : null
+  const step = str(o?.['step'])
+  return o === null || str(o['version']) === '' || !['asked', 'install', 'running', 'later', 'done'].includes(step)
+    ? null
+    : { version: str(o['version']), kind: str(o['kind']) || 'hotfix', asked: str(o['asked']), step: step as Release['step'] }
+}
+
+/** The release picker's question: the release, its title, what "Not now" does. */
+export function releaseQuestion(version: string, kind: string, title: string): string {
+  return `Project Architect ${version}, a ${kind}${title === '' ? '' : ` (${title})`}, is out. Install it? Tasks keep ` +
+    'running while you decide.\nNot now: when you\'re back at this machine, just tell Claude you\'re back and want the ' +
+    'update — it installs after the current task. Or restart (/exit, then claude --continue) and it installs on the way in.'
+}
+
+/** The check's line to Claude, once, with the picker. */
+export function releaseNotice(version: string, kind: string): string {
+  return `‹pa› PA3 ${version}, a ${kind}, is out; the developer is asked with a picker whether to install it after the ` +
+    'current task. Tasks keep running; no answer means not now. Tell the developer this once, in one line. Whenever ' +
+    'they say, in any words, that they want the update now, call release({hold: "update"}).'
+}
+/** 3.28.5 T18: the chosen release's run started (once per install): Claude says so in one line. */
+export const installingNotice = (version: string): string =>
+  `‹pa› the install of PA3 ${version} has started. Tell the developer this one line now:\n\n` +
+  `Installing Project Architect ${version} now; please wait, I'll tell you when it's done.`
 
 // 3.24 T6: the update run's marker and log (tools/pa3_update.py writes both; pa/health.py writes the running marker of a
 // run the session-start hook starts). The mod starts no task while the marker says running and reports a finished run once.
@@ -734,7 +836,7 @@ export function updateOutcome(log: string): { conflicts: boolean; restart: boole
 const recordText = (r: RunRecord): string => (r.phase || '?') + (r.git === '' ? '' : ` (${r.git.slice(0, 8)})`)
 
 /** The finished run's notice to Claude: from X to Y and where the changes are, else the failure; a restart; conflicts. */
-export function updateDoneNotice(m: UpdateMarker, o: { conflicts: boolean; restart: boolean }, pa3: string, tail: string): string {
+export function updateDoneNotice(m: UpdateMarker, o: { conflicts: boolean; restart: boolean; loaded?: boolean }, pa3: string, tail: string): string {
   const what = m.mode === 'repair' ? 'reinstall' : 'update'
   if (m.rc !== 0) {
     return `‹pa› the PA3 ${what} failed (exit ${String(m.rc)}); its whole output is in ${UPDATE_LOG}. Its end:\n${tail}\nTell the developer in plain words what failed.`
@@ -743,14 +845,20 @@ export function updateDoneNotice(m: UpdateMarker, o: { conflicts: boolean; resta
     ? `‹pa› the PA3 reinstall finished: the installed release is restored (the project at ${recordText(m.to)}). Tell the developer in plain words.`
     : m.from.phase === m.to.phase && m.from.git === m.to.git
       ? `‹pa› the PA3 update finished; the project stays at ${recordText(m.to)}. Tell the developer once.`
-      : `‹pa› PA3 updated from ${recordText(m.from)} to ${recordText(m.to)}. Read ${pa3}/CHANGES.md for the entries after ${m.from.phase || 'the old version'} up to ${m.to.phase || 'the new one'} and tell the developer in plain words what changed.`
+      : `‹pa› PA3 updated from ${recordText(m.from)} to ${recordText(m.to)}. Read ${pa3}/CHANGES.md for the entries after ${m.from.phase || 'the old version'} up to ${m.to.phase || 'the new one'} and tell the developer in plain words what changed.` +
+        // 3.28.1 T14: the mod and the agents load at a session start; /clear starts none, /reload-plugins skips the agents
+        // 3.28.2 T16: the restart on its own bold line after a blank line, so it stands out
+        // 3.28.2 T17: a restart already loaded the new mod before the run ended: the loaded line, no restart
+        (o.loaded === true
+          ? ` This session already runs ${m.to.phase} (a restart loaded it before the run ended): no restart for it. Then say this one line:\n\n**Project Architect ${m.to.phase} is installed and loaded. Ready to continue work.**\n\nThen carry on as usual.`
+          : ` Then tell them once, in this shape: the line "Project Architect ${m.to.phase}, a ${m.to.phase.split('.').length >= 3 ? 'hotfix' : 'feature update'} (<the title of its CHANGES.md heading>), is installed.", a blank line, then on its own line:\n\n${RESTART_LINE}\n\nStart no work until then: if they ask for work, say that bold line again.`)
   return head +
     (o.restart ? ' A setting changed that takes effect only once Claude Code restarts (restart: needed): tell the developer to restart it.' : '') +
     (o.conflicts ? ` Some files the developer edited also changed in PA3 (${UPGRADE_MD}): an expert resolves them at the next boundary, then the project step runs once more.` : '')
 }
 
 /** Said once when the mod's own files changed under a running session (3.24 T2 row P11i: no hot reload). */
-export const RELOAD_NOTICE = '‹pa› the PA3 mod\'s own files changed in this update: the new mod loads at the next start of Claude Code or at /reload-plugins (no hot reload). Tell the developer once; no task starts until then.'
+export const RELOAD_NOTICE = `‹pa› the PA3 mod's own files changed in this update: the new mod and agents load at the next start of Claude Code (${RESTART}). No task starts until then; tell the developer once, with the update.`
 
 /** The conflicts' notice when the rounds are spent. */
 export const upgradeLeftNotice = (rounds: number): string =>

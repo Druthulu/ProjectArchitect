@@ -3,8 +3,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, On } from 'claude-code'
 
-import { freshStartUsd, pingUsd } from './policy'
-import { SEED_BUDGET_TOKENS } from './seed'
+import { pingUsd } from './policy'
 
 const ROOT = '/r'
 const BASE = `${ROOT}/.run/mod`
@@ -619,22 +618,21 @@ describe('router journal, rotation, warming, toast', () => {
     expect(n.runs.filter(r => r.includes('prices')).length).toBe(1)
   })
 
-  test('no rates: no ping while waiting on the developer, norates logged once', async ($, on) => {
+  test('3.28.1 T12: a partner listed waiting on its own background work after its turn ended is pinged (TerrainDiffusion a3dff244)', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
-    const w = world(on, {
+    world(on, {
       [`${ROOT}/.claude/pa.json`]: PY,
       [`${BASE}/S1/state.json`]: prior({ agentId: 'P1', model: 'claude-opus-5-5', ctx: 50_000, lastTurnAt: OCT - 56 * 60_000 }),
-    }, { USERPROFILE: 'H', PA_MOD_DEBUG: '1' })
+    }, { USERPROFILE: 'H' })
     const n = net(on)
-    n.list = [{ id: 'P1', status: 'idle' }]
+    n.list = [{ id: 'P1', status: 'waiting' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
     await $.session.start(ISTART)
     await clock.advance(60_000)
-    await clock.advance(60_000)
-    expect(n.sends).toEqual([])
-    expect(debugKinds(w).filter(k => k === 'pa.warm.norates').length).toBe(1)
+    expect(n.sends).toEqual([{ to: 'P1', text: '.' }])
   })
 
-  test('no rates: a child out still gets its ping', async ($, on) => {
+  test('no rates: the ping still goes (warming is by size, not cost)', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
     world(on, {
       [`${ROOT}/.claude/pa.json`]: PY,
@@ -701,6 +699,30 @@ describe('router journal, rotation, warming, toast', () => {
     await clock.advance(1_000)
     expect(n.runs.filter(r => r[2] === 'toast').length).toBe(1)
   })
+
+  for (const listed of ['idle', 'waiting']) {
+    test(`3.28.1 T12: a notice to a cold Claude (listed ${listed}) goes to a fresh one seeded from the journal, never the old`, async ($, on) => {
+      const clock = mock.clock(on, { now: OCT })
+      const [qp, qt] = entryFile('2026-10-14', '090000-001r-dev-msg.md', '2026-10-14T09:00:00.000Z', 'Train the masks.')
+      const [r1, b1] = stopNotice(OCT - 500, { text: '‹pa› T1 stopped for your review.', toast: 'review' })
+      const w = world(on, {
+        [`${ROOT}/.claude/pa.json`]: ON, [qp]: qt, [r1]: b1,
+        [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', lastTurnAt: OCT - 2 * 3_600_000, ctx: 50_000 }),
+      }, {})
+      const n = net(on)
+      n.list = [{ id: 'OLD', status: listed }]
+      await $.session.start(ISTART)
+      await clock.advance(1_000)
+      await clock.advance(1_000)
+      expect(n.sends.filter(s => s.to === 'OLD')).toEqual([])
+      expect(n.spawns.length).toBe(1)
+      const seed = n.spawns[0] ?? ''
+      expect(seed.startsWith('JOURNAL SEED\n')).toBe(true)
+      expect(seed).toContain('Train the masks.')
+      expect(seed).toContain('T1 stopped for your review.')
+      expect(w.files.get(entries(w, 'mod-start')[0] ?? '')).toMatch(/\(cold\)/)
+    })
+  }
 
   test('Claude\'s picker first: its input toast is the stop\'s one; the reply after raises none', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
@@ -1468,7 +1490,7 @@ describe('router warms the loop expert (3.23 T5d2b)', () => {
     expect(stateOf(w).warm.pings).toBe(0) // the partner's totals untouched
   })
 
-  test('held on a question: rent-or-buy, pings stop once they cost a fresh start', async ($, on) => {
+  test('3.28.1 T12: held on a question at 200k: the stretch gets 2 pings, then none', { timeoutMs: 30_000 }, async ($, on) => { // 3.28.1 T8: 14 ticks ran 3.0-4.4 s under load (was the 5 s default)
     const clock = mock.clock(on, { now: OCT })
     const ctx = 200_000
     const w = expertWorld(on, loopFile({ lastCompleteAt: OCT - 3 * 60_000 }, ['question']), ctx, { PA_MOD_PING_AFTER_MS: '120000' })
@@ -1483,15 +1505,79 @@ describe('router warms the loop expert (3.23 T5d2b)', () => {
         await $.turn.complete({ turnId: `X${String(i)}`, agentId: 'E1', answer: '.', durationMs: 1, isAborted: false, reason: 'answer', usage: USAGE })
       }
     }
-    const k = Math.floor(freshStartUsd(SEED_BUDGET_TOKENS, 0, RATES) / pingUsd(ctx, RATES))
-    expect(k).toBe(3)
-    expect(n.sends.length).toBe(k)
+    expect(n.sends.length).toBe(2)
     expect(warmA(w, 'E1')?.waitKind).toBe('question')
+  })
+
+  test('3.28.1 T12: at 250k one ping a stretch; a real turn starts a new stretch with its own count', { timeoutMs: 30_000 }, async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const w = expertWorld(on, loopFile({ lastCompleteAt: OCT - 3 * 60_000 }, ['question']), 250_000, { PA_MOD_PING_AFTER_MS: '120000' })
+    const n = net(on)
+    n.list = [{ id: 'E1', status: 'idle' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+    await $.session.start(ISTART)
+    const ticks = async (k: number, tag: string): Promise<void> => {
+      for (let i = 0; i < k; i += 1) {
+        const before = n.sends.length
+        await clock.advance(60_000)
+        if (n.sends.length > before) {
+          await $.turn.complete({ turnId: `${tag}${String(i)}`, agentId: 'E1', answer: '.', durationMs: 1, isAborted: false, reason: 'answer', usage: USAGE })
+        }
+      }
+    }
+    await ticks(5, 'X')
+    expect(n.sends.length).toBe(1)
+    await $.turn.complete({ turnId: 'R1', agentId: 'E1', answer: 'a real answer', durationMs: 1, isAborted: false, reason: 'answer', usage: USAGE })
+    expect([warmA(w, 'E1')?.waitKind, warmA(w, 'E1')?.pings]).toEqual(['', 1])
+    w.files.set(`${BASE}/loop.json`, loopFile({ lastCompleteAt: OCT + 5 * 60_000 }, ['question']))
+    await ticks(5, 'Y')
+    expect(n.sends.length).toBe(2)
+  })
+
+  for (const listed of ['waiting', 'running']) {
+    test(`3.28.1 T8: a background child, the expert's turn ended, listed ${listed}: pinged at 55 min`, async ($, on) => {
+      const clock = mock.clock(on, { now: OCT })
+      const w = expertWorld(on, loopFile({ childBusy: true }), 80_000)
+      const n = net(on)
+      n.list = [{ id: 'E1', status: listed }, { id: 'C1', status: 'running', parentId: 'E1' }]
+      n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+      await $.session.start(ISTART)
+      await clock.advance(60_000)
+      expect(n.sends).toEqual([{ to: 'E1', text: '.' }])
+      expect(warmA(w, 'E1')?.waitKind).toBe('child')
+    })
+  }
+
+  test('3.28.1 T12: a cold expert (its last request over an hour old) is never pinged', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    expertWorld(on, loopFile({ childBusy: true, spawnedAt: OCT - 4 * 3_600_000, lastCompleteAt: OCT - 3 * 3_600_000 }), 80_000)
+    const n = net(on)
+    n.list = [{ id: 'E1', status: 'waiting' }, { id: 'C1', status: 'running', parentId: 'E1' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(60_000)
+    expect(n.sends).toEqual([])
+  })
+
+  test('3.28.1 T12: a hand-back for a cold loop expert is not sent; the loop gets it in a forward request with the text', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const w = expertWorld(on, loopFile({ spawnedAt: OCT - 4 * 3_600_000, lastCompleteAt: OCT - 3 * 3_600_000 }), 80_000)
+    const n = net(on)
+    n.list = [{ id: 'E1', status: 'idle' }, { id: 'C1', status: 'completed', parentId: 'E1' }]
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: '<task-notification><task-id>C1</task-id>done</task-notification>', origin: { kind: 'task-notification' }, wait: false })
+    await $.prompt.submit({ text: '<agent-message from="C1">done</agent-message>', origin: { kind: 'peer' }, wait: false })
+    await clock.advance(1_000)
+    await clock.advance(1_000)
+    expect(n.sends).toEqual([])
+    const reqs = [...w.files].filter(([p]) => p.startsWith(`${BASE}/S1/inbox/`) && p.endsWith('-forward.json')).map(([, b]) => JSON.parse(b) as { input: Record<string, string> })
+    expect(reqs.map(r => [r.input['agentId'], r.input['child'], (r.input['text'] ?? '').startsWith('Hand-back from your background agent C1:\n')]))
+      .toEqual([['E1', 'C1', false], ['E1', 'C1', true]])
   })
 
   test('no ping while the expert works (running, pending) or outside a wait', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
-    const w = expertWorld(on, loopFile({ childBusy: true }, ['question']), 80_000)
+    const w = expertWorld(on, loopFile({ childBusy: true, lastCompleteAt: 0 }, ['question']), 80_000)
     const n = net(on)
     n.list = [{ id: 'E1', status: 'running' }, { id: 'C1', status: 'running', parentId: 'E1' }]
     n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
@@ -1514,15 +1600,28 @@ describe('router warms the loop expert (3.23 T5d2b)', () => {
     n.list = [{ id: 'E1', status: 'idle' }, { id: 'C1', status: 'running', parentId: 'E1' }]
     n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
     await $.session.start(ISTART)
-    await clock.advance(60_000)
+    await clock.advance(30_000)
     expect(lib(n.order)).toEqual(['run:prices', 'run:event', 'send:.'])
     const a = warmA(w, 'E1')
     expect([a?.pingInFlight, a?.pings, a?.pingUsd]).toEqual([false, 0, 0])
   })
+
+  // 3.28.1 T15: an expert waiting on a background shell (its own or its coder's, pa-watch's shells.json) is warmed.
+  test('3.28.1 T15: an expert whose coder runs a background shell: pinged at 55 min, waitKind shell', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const w = expertWorld(on, loopFile({}), 80_000)
+    w.files.set(`${BASE}/S1/shells.json`, JSON.stringify({ C1: [{ id: 'b1', name: 'gate.sh', at: OCT - 50 * 60_000, type: 'pa-coder' }] }))
+    const n = net(on)
+    n.list = [{ id: 'E1', status: 'idle' }, { id: 'C1', status: 'completed', parentId: 'E1' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(60_000)
+    expect(n.sends).toEqual([{ to: 'E1', text: '.' }])
+    expect(warmA(w, 'E1')?.waitKind).toBe('shell')
+  })
 })
 
-// 3.23 T6a1: the presentation tick reads loop.json (a dialog only while the loop is off or held) and flags dialog.json
-// open meanwhile; an approved generation or phase plan becomes the loop's `install`, the loop's own ask its `answer`;
+// 3.23 T6a1: the presentation tick flags dialog.json open while a dialog shows (3.28.1 T7: whatever the loop does); an approved generation or phase plan becomes the loop's `install`, the loop's own ask its `answer`;
 // the decision line goes to the request's caller; PA_MOD_TRIAL_APPROVE=1 answers with no dialog.
 const callerReq = (ms: number, seq: number, kind: string, caller: string, input: unknown): [string, string] =>
   [`${BASE}/S1/inbox/${String(ms)}-${String(seq)}-${kind}.json`, JSON.stringify({ id: `${String(ms)}-${String(seq)}-${kind}`, kind, caller, input, at: ms })]
@@ -1532,7 +1631,7 @@ const inboxOf = (w: World, kind: string): { caller: string; input: unknown }[] =
   .map(p => JSON.parse(w.files.get(p) ?? '{}') as { caller: string; input: unknown })
 
 describe('plans via the loop (T6a1)', () => {
-  test('no dialog while loop.json is running; held, the ask shows with dialog.json open, then closed', async ($, on) => {
+  test('3.28.1 T7: an ask shows at once while a task runs, with dialog.json open, then closed', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
     const [r1, b1] = inboxReq(OCT - 500, 1, 'ask', { question: 'A or B?', options: ['A', 'B'] })
     const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/loop.json`]: loopState('running'), [r1]: b1 }, { PA_MOD_DEBUG: '1' })
@@ -1544,15 +1643,9 @@ describe('plans via the loop (T6a1)', () => {
       release = res
     })
     await $.session.start(START)
-    await clock.advance(3_000)
-    expect(d.calls).toEqual([])
-    expect(debugKinds(w)).toContain('pa.present.defer')
-    w.files.set(`${BASE}/loop.json`, loopState('boundary', ['talk']))
-    await clock.advance(2_000)
-    expect(d.calls).toEqual([])
-    w.files.set(`${BASE}/loop.json`, loopState('boundary', ['question']))
     await clock.advance(1_000)
     expect(d.calls).toEqual(['ask:A or B?'])
+    expect(debugKinds(w)).not.toContain('pa.present.defer')
     expect(JSON.parse(w.files.get(`${BASE}/S1/dialog.json`) ?? '{}')).toMatchObject({ open: true, id: `${String(OCT - 500)}-1-ask` })
     release()
     await clock.advance(1_000)
@@ -1584,6 +1677,26 @@ describe('plans via the loop (T6a1)', () => {
     expect(n.sends.map(s => s.text)).toEqual(['Plan decision: approved'])
     expect(entries(w, 'dev-decision').length).toBe(3)
     expect(entries(w, 'mod-plan').length).toBe(2)
+  })
+
+  test('3.28.1 T6: a replan\'s draft (REPLAN.md, an approved plan) is not presented: it goes to the loop as install', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [r1, b1] = callerReq(OCT - 500, 1, 'plan', 'P1', { path: '.run/PHASE_PLAN.draft.md', kind: 'phase', title: 'Phase 1.1 (replan)' })
+    const w = world(on, {
+      [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: P1(), [`${BASE}/loop.json`]: loopState('boundary', ['question']),
+      [`${ROOT}/phase-ends/current/PHASE_PLAN.md`]: '# Phase 1.1\nApproved: 2026-10-14   Planner: x/y   Plan-hash: ab\n',
+      [`${ROOT}/phase-ends/current/REPLAN.md`]: '# REPLAN\n', [r1]: b1,
+    }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    const d = dialog(on, w)
+    await $.session.start(ISTART)
+    await clock.advance(3_000)
+    expect(d.calls).toEqual([])
+    expect(inboxOf(w, 'install')).toMatchObject([{ caller: 'P1', input: {
+      kind: 'phase', path: '.run/PHASE_PLAN.draft.md', title: 'Phase 1.1 (replan)', rules: [], candidates: [],
+    } }])
+    expect((JSON.parse(w.files.get(`${BASE}/S1/state.json`) ?? '{}') as { present: unknown[] }).present).toEqual([])
   })
 
   test('3.24 T7b-2c: a pending first run: a plan is not presented nor sent to install; Claude is told why; an ask still shows', async ($, on) => {
@@ -1768,6 +1881,20 @@ describe('cards (3.23 T13)', () => {
     expect(fed).not.toContain('engine')
     const next = await answer('T1', '<agent-message from="E1">\nApproach: one edit.\n</agent-message>')
     expect((JSON.parse(w.files.get(`${BASE}/drawn.json`) ?? '{}') as { cards: string[] }).cards).toEqual([CARD, next])
+  })
+
+  test('3.28.2 T16: Claude\'s installed-update card draws the restart line bold green, "(not /clear)" red', async ($, on) => {
+    const CARD = '**🟧 Claude**\n\nProject Architect 3.28.2, a hotfix (Fixes), is installed.\n\n**To load it: /exit, then claude --continue (not /clear)**'
+    const TIGHT = '**🟧 Claude**\n\nProject Architect 3.28.2, a hotfix (Fixes), is installed.\n**To load it: /exit, then claude --continue (not /clear)**'
+    await cards($, on, true, { [`${BASE}/drawn.json`]: JSON.stringify({ cards: [CARD, TIGHT], feedRuns: [] }) })
+    const drawn = JSON.stringify(await (await $.ui.mount({ plugin: 'pa', surface: 'terminal', component: 'AssistantMessage', props: { text: CARD, isFirstOfReply: true } })).drawn())
+    expect(drawn).toContain('is installed.')
+    expect(drawn).toContain('{"type":"Text","props":{"bold":true,"color":"#00af00"},"children":["To load it: /exit, then claude --continue"]}')
+    expect(drawn).toContain('{"type":"Text","props":{"color":"#d70000"},"children":["(not /clear)"]}')
+    expect(drawn).not.toContain('**To load it')
+    // 3.28.2 T17: Claude dropped the gap: the drawing still puts one empty line before the restart line
+    const tight =JSON.stringify(await (await $.ui.mount({ plugin: 'pa', surface: 'terminal', component: 'AssistantMessage', props: { text: TIGHT, isFirstOfReply: true } })).drawn())
+    expect(tight).toContain('is installed."}},{"type":"Text","children":[" "]},{"type":"Text","children":[{"type":"Text","props":{"bold":true')
   })
 
   test('card_style plain: no border, the bullet and the colored title', { options: { card_style: 'plain' } }, async ($, on) => {

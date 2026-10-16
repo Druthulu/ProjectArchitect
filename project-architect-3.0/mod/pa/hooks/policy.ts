@@ -1,13 +1,44 @@
-// Pure policy of the router (design.md "Warming (rent-or-buy)", 3.22-partner.md): resume or seed a fresh partner,
-// the per-token rates from `pa_ledger.py prices --json`, and when to ping an idle agent to keep its cache warm.
+// Pure policy of the router (design.md "Warming", 3.22-partner.md): resume or seed a fresh partner, the per-token
+// rates from `pa_ledger.py prices --json`, when to ping an idle agent to keep its cache warm, and when it is cold.
 
 export const TTL_MS = 3_600_000 // the 1h cache TTL
-export const MARGIN_MS = 300_000
-export const CTX_MAX = 300_000 // rotate (and stop warming) at ~300k context
+export const CTX_MAX = 300_000 // rotate at ~300k context
 export const PING_AFTER_MS = 55 * 60_000
-export const CHILD_WARM_MS = 24 * 3_600_000
+export const PING_AFTER_5M_MS = 270_000 // 3.28.1 T11: a 5-minute agent (a coder) is pinged at 4.5 min
 export const PING_WRITE_TOKENS = 150
 export const PING_OUTPUT_TOKENS = 30
+
+/** An agent's cache tier: its agent file's `cacheTtl` (cacheTtlOf). */
+export type Ttl = '5m' | '1h'
+
+/**
+ * 3.28.1 T12 (developer 2026-10-15): size-based warming. An idle stretch (from a real turn's end: the developer's
+ * message, a message between agents, a hand-back, a background shell's end) gets round(over / ctx) pings, at least 1, at most `max`,
+ * worked out from its context when the stretch starts: 1-hour agents 300k / ctx up to 5, 5-minute agents 600k / ctx up to 12.
+ */
+export const PING_BUDGET = { '1h': { over: 300_000, max: 5 }, '5m': { over: 600_000, max: 12 } } as const
+const LIFE_MS = { '1h': TTL_MS, '5m': 300_000 } as const
+
+/** The pings an idle stretch gets at `ctx` (an unknown context, 0, gets the most). */
+export function pingCount(ctx: number, ttl: Ttl): number {
+  const b = PING_BUDGET[ttl]
+  return ctx > 0 ? Math.min(b.max, Math.max(1, Math.round(b.over / ctx))) : b.max
+}
+
+/** When a ping falls due after the last request: 55 min (`override`: the trial knob), 4.5 min for a 5-minute agent. */
+export function pingAfterOf(ttl: Ttl, override?: number): number {
+  return ttl === '5m' ? PING_AFTER_5M_MS : override ?? PING_AFTER_MS
+}
+
+/**
+ * 3.28.1 T12: an idle agent is cold once its last request (a turn's end or a ping) is older than its cache's life, or,
+ * its stretch's pings spent (`pingsLeft` false), older than the ping time. Nothing is sent to a cold agent: a fresh one
+ * of its role, seeded from the journal, takes the message and its place.
+ */
+export function isCold(lastRequestAt: number, now: number, ttl: Ttl, pingsLeft: boolean, pingAfterMs?: number): boolean {
+  const age = now - lastRequestAt
+  return age >= LIFE_MS[ttl] || (!pingsLeft && age >= pingAfterOf(ttl, pingAfterMs))
+}
 
 export type PartnerFacts = {
   lastTurnAt: number
@@ -16,15 +47,15 @@ export type PartnerFacts = {
   modelSwitchAt?: number
 }
 
-/** `'resume'` the recorded partner or seed a `'fresh'` one; never rotate with a child out. */
+/** `'resume'` the recorded partner or seed a `'fresh'` one: a cold one never resumes; else never rotate with a child out. */
 export function decideRoute(
   partner: PartnerFacts | null | undefined,
   now: number,
-  opts: { childOut?: boolean } = {},
+  opts: { childOut?: boolean; pingsLeft?: boolean } = {},
 ): 'resume' | 'fresh' {
   if (!partner) return 'fresh'
+  if (isCold(partner.lastTurnAt, now, '1h', opts.pingsLeft === true)) return 'fresh'
   if (opts.childOut) return 'resume'
-  if (!(now - partner.lastTurnAt < TTL_MS - MARGIN_MS)) return 'fresh'
   if (!(partner.ctx < CTX_MAX)) return 'fresh'
   if (partner.topicFlag) return 'fresh'
   if ((partner.modelSwitchAt ?? 0) > partner.lastTurnAt) return 'fresh'
@@ -89,63 +120,65 @@ export function ratesFrom(pricesJson: string | Record<string, unknown>, model: s
   return perToken(row)
 }
 
+/** 3.28.1 T11: an agent file's cache tier (`cacheTtl: 5m` or `1h`); `1h` when it names none. */
+export function cacheTtlOf(agentMd: string | null): '5m' | '1h' {
+  return /^\s*cacheTtl:\s*5m\b/m.test(agentMd ?? '') ? '5m' : '1h'
+}
+
+/** Rates at an agent's tier: a 5-minute agent writes at write_5m (pingUsd and a cold rewrite read `write_1h`). */
+export function tierRates(rates: Rates, ttl: '5m' | '1h'): Rates {
+  return ttl === '5m' ? { ...rates, write_1h: rates.write_5m } : rates
+}
+
 /** One ping: the context read, a small write at write_1h, a short output. */
 export function pingUsd(ctx: number, rates: Rates): number {
   return ctx * rates.read + PING_WRITE_TOKENS * rates.write_1h + PING_OUTPUT_TOKENS * rates.output
 }
 
-/** A fresh start: the seed plus the measured prefix written at write_1h. */
-export function freshStartUsd(seedTokens: number, prefixTokens: number, rates: Rates): number {
-  return (seedTokens + prefixTokens) * rates.write_1h
-}
-
 export type AgentFacts = { status: string; lastRequestAt: number; ctx: number }
 
 export type PingOptions = {
-  childOut?: boolean
-  waitStart?: number // when the wait began; defaults to lastRequestAt
-  spentUsd?: number // pings already spent in this wait
-  seedTokens?: number
-  prefixTokens?: number
-  pingAfterMs?: number // the trial knob PA_MOD_PING_AFTER_MS; defaults to PING_AFTER_MS
+  ttl?: Ttl // its tier; defaults to 1h
+  pings?: number // pings already sent in this idle stretch
+  count?: number // the stretch's pings (pingCount at its start); defaults to pingCount at agent.ctx
+  pingAfterMs?: number // the trial knob PA_MOD_PING_AFTER_MS (1-hour agents); defaults to PING_AFTER_MS
 }
 
 /**
  * The loop expert's status for warming (3.23 T13b.c4): `$.agent.list()` forgets a finished agent (design.md "Warming"),
  * and one dropped from it is still resumed by a send. So an expert absent from the list, in a wait (`kind`: question or
  * child) after a recorded turn end and not stopped, counts as `completed`; else its listed status (undefined: unknown).
+ * 3.28.1 T8: with a child out, an expert whose own turn has ended (`turnEnded`: a turn.complete after its last request)
+ * counts as `idle` whatever the list says: the list holds it `waiting` (or `running`) while its background child runs.
+ * 3.28.1 T15: so does one waiting on a background shell (`kind` shell).
  */
-export function expertStatus(listed: string | undefined, kind: string, lastCompleteAt: number, stopped: boolean): string | undefined {
+export function expertStatus(listed: string | undefined, kind: string, lastCompleteAt: number, stopped: boolean, turnEnded = false): string | undefined {
+  if ((kind === 'child' || kind === 'shell') && turnEnded && !stopped && (listed === 'waiting' || listed === 'running')) return 'idle'
   return listed ?? (kind !== '' && lastCompleteAt > 0 && !stopped ? 'completed' : undefined)
 }
 
 /**
  * The partner's status for warming (3.23, as expertStatus): one dropped from `$.agent.list()` after a recorded turn
  * end counts as `completed`, since a send still resumes it; else its listed status (undefined: unknown).
+ * 3.28.1 T12: one whose own turn has ended (`turnEnded`: a turn end after the last message sent to it) counts as `idle`
+ * when listed `waiting`: the list holds it so while background work it owns runs (TerrainDiffusion a3dff244: its own
+ * background shell never ended, and it was never pinged).
  */
-export function partnerStatus(listed: string | undefined, lastTurnAt: number): string | undefined {
+export function partnerStatus(listed: string | undefined, lastTurnAt: number, turnEnded = false): string | undefined {
+  if (turnEnded && listed === 'waiting') return 'idle'
   return listed ?? (lastTurnAt > 0 ? 'completed' : undefined)
 }
 
-/** Whether to ping now, when the ping is due (`at`), and the rule that decided (`why`). */
-export function pingDecision(
-  agent: AgentFacts,
-  now: number,
-  rates: Rates,
-  opts: PingOptions = {},
-): { ping: boolean; at: number; why: string } {
-  const at = agent.lastRequestAt + (opts.pingAfterMs ?? PING_AFTER_MS)
+/**
+ * Whether to ping now, when the ping is due (`at`), and the rule that decided (`why`): an idle agent is pinged just
+ * before its cache lapses while its stretch has pings left (3.28.1 T12, size-based; pingCount); never a cold one.
+ */
+export function pingDecision(agent: AgentFacts, now: number, opts: PingOptions = {}): { ping: boolean; at: number; why: string } {
+  const ttl = opts.ttl ?? '1h'
+  const at = agent.lastRequestAt + pingAfterOf(ttl, opts.pingAfterMs)
   if (agent.status !== 'idle' && agent.status !== 'completed') return { ping: false, at, why: `status ${agent.status}` }
+  if ((opts.pings ?? 0) >= (opts.count ?? pingCount(agent.ctx, ttl))) return { ping: false, at, why: 'count' }
   if (now < at) return { ping: false, at, why: 'not due' }
-  // A child out wakes the agent with its hand-back, and it is never rotated meanwhile, so it stays warm at any size
-  // (a cold wake rewrites the whole context: ~$2.40 at 300k on Opus 5.5 against ~$0.06 a ping).
-  if (opts.childOut) {
-    const waited = now - (opts.waitStart ?? agent.lastRequestAt)
-    return waited < CHILD_WARM_MS ? { ping: true, at, why: 'child out' } : { ping: false, at, why: 'child out 24h' }
-  }
-  // Waiting on the developer near 300k: the next message rotates to a fresh partner, so warming buys nothing.
-  if (agent.ctx >= CTX_MAX) return { ping: false, at, why: 'skip300k' }
-  const spent = (opts.spentUsd ?? 0) + pingUsd(agent.ctx, rates)
-  const fresh = freshStartUsd(opts.seedTokens ?? 0, opts.prefixTokens ?? 0, rates)
-  return spent <= fresh ? { ping: true, at, why: 'rent' } : { ping: false, at, why: 'buy' }
+  if (now - agent.lastRequestAt >= LIFE_MS[ttl]) return { ping: false, at, why: 'cold' }
+  return { ping: true, at, why: 'size' }
 }

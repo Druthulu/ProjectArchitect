@@ -1,6 +1,6 @@
 {
   "name": "pa-watch",
-  "version": "3.28.0",
+  "version": "3.28.7",
   "description": "Project Architect 3.2 watcher: sees every agent's steps and tool calls, serves the PA tools as inbox requests to the pa router, and writes the live feed's records",
   "author": { "name": "Drew T" },
   "types": "./types/index.d.ts",

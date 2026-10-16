@@ -727,3 +727,40 @@ describe('the ladder: model at spawn, effort per request (3.24 T17b)', () => {
     expect(got.efforts).toEqual({ P1: 'medium' })
   })
 })
+
+// 3.28.1 T15: background shells per agent in shells.json, from the Bash call to its completion notice.
+describe('background shells (3.28.1 T15)', () => {
+  const SHELLS = `${ROOT}/.run/mod/S1/shells.json`
+  const LIST: Row[] = [{ id: 'C1', description: 'T1.c1', type: 'pa-coder', status: 'running', parentId: 'E1' } as Row]
+  const notice = (id: string, status: string, summary: string): string =>
+    `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n<summary>${summary}</summary>\n</task-notification>`
+  const append = async ($: Engine, text: string): Promise<void> => {
+    await $.session.append({ message: { type: 'user', role: 'user', content: [{ type: 'text', text }] },
+      door: 'delivery', origin: { kind: 'task-notification' }, uuid: `u${String(text.length)}`, agentId: 'C1' } as never)
+  }
+  const shells = (m: Map<string, string>): Record<string, { id: string; name: string; type: string; exit?: number }[]> =>
+    JSON.parse(m.get(SHELLS) ?? '{}') as Record<string, { id: string; name: string; type: string; exit?: number }[]>
+  test('a background Bash call is recorded by its script name; a clean completion notice removes it', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b1' } }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: 'cd x && bash tools/bake_rest.sh --full', run_in_background: true, agentId: 'C1' } as never)
+    expect(shells(m)['C1']?.map(s => [s.id, s.name, s.type])).toEqual([['b1', 'bake_rest.sh', 'pa-coder']])
+    await append($, notice('b1', 'completed', 'Background command "bake" completed (exit code 0)'))
+    expect(shells(m)).toEqual({})
+  })
+
+  test('a failed shell keeps its record with the exit code until its agent reports', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b2' } }) as never)
+    on('tool.call', { tool: 'SendMessage' }, async () => ({ result: 'sent' }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: 'make gate', run_in_background: true, agentId: 'C1' } as never)
+    await append($, notice('b2', 'failed', 'Background command "make gate" failed with exit code 2'))
+    expect(shells(m)['C1']?.map(s => [s.name, s.exit])).toEqual([['make', 2]])
+    await $.tool.call({ tool: 'SendMessage', to: 'E1', message: 'STATUS: blocked', agentId: 'C1' } as never)
+    expect(shells(m)).toEqual({})
+  })
+})

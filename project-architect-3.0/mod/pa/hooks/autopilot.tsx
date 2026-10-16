@@ -58,6 +58,9 @@
 // 3.23 T13d.c11: nothing starts on its own. Every session start (startup, resume, /clear) whose loop would act (a spawn, a
 // recovery, the close chain, the next generation's start, a plan to draft) pushes `held(session)`; silence never ends it,
 // the developer's message pushes no `talk` under it, and Claude's `release({hold: "session"})` lets the loop go on.
+// 3.28.1 T9c: a task cut off by a session end (a restart, an update, a closed terminal) is no stop: its recovery runs
+// under `held(session)` and Claude tells the developer in one line. Only an agent this process saw at work and then
+// killed is the developer's stop.
 // 3.24 T6: the update ask and run and the health FIX spawn are on in production (PA_MOD_PA3_DIR empty); a trial forces
 // them with PA_MOD_UPDATE=1 (was: only PA_MOD_UPDATE=1 / PA_MOD_FIX_SPAWN=1 with PA_MOD_PA3_DIR unset). Under `upgrade:
 // auto` the session-start hook starts `pa3_update.py` itself (its line does not match contextLines); under `ask` the
@@ -73,7 +76,7 @@ import type { On } from 'claude-code'
 
 import type { Band, HoldName, LoopState, LoopTask, ToastOut } from '../types'
 
-import { paSetting } from './activation'
+import { paSetting, versionAtLeast } from './activation'
 import { auditorBrief, curatorBrief, expertBrief, type ExpertOpts, fixBrief, type PlanTask, upgradeBrief } from './brief'
 import { acceptedCard, type BandAgent, bandIds, bandRows, bandStepOf } from './card'
 import { CHAIN_SCRIPTS, parseAuditorReturn, parseExpertContract, splitCommand } from './contract'
@@ -88,12 +91,13 @@ import {
   contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, FIRST_RUN_WAITS, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
   archiveLines, bandLine, CHAIN_STEPS, closeNotice, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withPhaseSid,
-  markerOf, modFilesKey, RELOAD_NOTICE, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateOutcome, updateSeenOf,
-  UPGRADE_MD, upgradeLeftNotice, upgradeOf, UPGRADE_ROUNDS,
+  installingNotice, loadedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
+  UPGRADE_MD, upgradeLeftNotice, upgradeOf, UPGRADE_ROUNDS, FORWARD_TTL_MS, SHELLS_FILE, shellNotice, shellsOf, shellsOut, waitingShell,
 } from './loop'
 import { APPROVED, changesAsked, DIALOG_FILE, dialogOpen, planFilePath } from './planview'
-import { asksQuestion, classify, handbackChild, journalOut, partnerReport } from './route'
+import { asksQuestion, classify, handbackChild, isNote, journalOut, noteBody, partnerReport } from './route'
 import { DONE_TTL_MS, feedDirOf } from './state'
+import { cacheTtlOf, isCold } from './policy'
 import { modRecord, nudgeName, startRecord } from './feed'
 
 /** The router's generation token (register.tsx `genAtom`, the same key): a re-arm moves it on and old ticks stop. */
@@ -134,11 +138,22 @@ const AT_WORK = new Set(['pending', 'running'])
 const OFF_RECHECK_MS = 30_000
 /** Every process call's timeout, at most. */
 const PROC_MS = 60_000
+/**
+ * 3.28.1 T10: a git write's timeout (`commit_task.sh`, every mod commit goes through it). A commit in a repo of several
+ * GB outran PROC_MS and was killed mid-commit, leaving `.git/index.lock` (TerrainDiffusion 2026-10-15). Five minutes: a
+ * held child stalls the session's queue while it runs (3.24 T10b), but only a slow commit holds it, and a killed one costs
+ * the commit and a stale lock.
+ */
+export const GIT_WRITE_MS = 300_000
+/**
+ * Prints `none` (no lock), `busy` (a git process that may hold it is running: kept) or `removed`. Any repo's git process
+ * counts (Windows cannot tell which repo a process works in), except `--no-optional-locks` ones (Claude Code's own
+ * `git status`; they take no lock). A failing check exits non-zero, printing nothing: kept. No double quote.
+ */
+const GIT_LOCK_PY = "import os,sys,subprocess as s;p=sys.argv[1];w=os.name=='nt';o=os.path.isfile(p) and s.run(['powershell','-NoProfile','-Command','Get-CimInstance Win32_Process | ? Name -eq git.exe | % CommandLine'] if w else ['ps','-eo','args'],capture_output=True,text=True,check=True).stdout;g=[l for l in (o or '').splitlines() if l.strip() and (w or os.path.basename(l.split()[0])=='git') and '--no-optional-locks' not in l];print('none' if o is False else 'busy' if g else (os.remove(p) or 'removed'))"
 /** A spawn recorded without its agentId this long is lost (a crash between the spawn and its save): a block. */
 const SPAWN_LOST_MS = 60_000
 const HANDBACK_KINDS = new Set(['task-notification', 'peer', 'peer-send-message'])
-/** A released question resumes its expert when the expert's last request is this recent (its 1h cache), else respawns. */
-const RESUME_TTL_MS = 55 * 60_000
 const HOLD_NAMES: readonly string[] = ['talk', 'review', 'question', 'plan', 'close', 'window', 'stopped', 'generation', 'session']
 const MILESTONE = 'milestone: `PY tools/plan_edit.py show --section Milestone`'
 const DECIDE = 'Decide small changes inside the milestone yourself (plan_edit, then release({hold: "question", note})); ask the developer about the milestone or the scope.'
@@ -179,7 +194,7 @@ let clearSid = '' // a session whose SessionStart was `clear`: it owns the loop 
 const procSids = new Set<string>() // every session this process armed the loop for (T13b.c4)
 let devAt = 0 // the developer's last prompt (ms), for the tick's `talk`
 let devSid = '' // the session of the developer's last prompt: a pending first run is asked with it (3.24 T7b-2c)
-let partnerSaid = { at: 0, asked: false } // Claude's last answer (ms) and whether it asked the developer something
+let partnerSaid = { at: 0, asked: false, notice: false } // Claude's last answer (ms), whether it asked the developer something, whether it followed a mod notice
 let waitPolledAt = 0 // the WAIT-FOR file's last poll (ms); 0 polls at once (T5d2a)
 let genMode: { sid: string; at: number; doc: Record<string, unknown> | null } = { sid: '', at: 0, doc: null } // launch.py, cached (T6a2)
 let sideAgent = '' // the generation start's running agent (curator or auditor), from loop.json at each tick (T6a2)
@@ -188,12 +203,25 @@ let contextQ: { sid: string; kind: 'update' | 'renewal'; line: string }[] = [] /
 const bandSince = new Map<string, number>() // agent id -> first seen by the band's tick (ms; the expert's spawnedAt)
 const contextSeen = new Set<string>() // `<sid>\n<line>`: each handled once a session
 const driftAsked = new Set<string>() // `<sid>\n<rel>`: each drift row asked once a session
+// 3.28.1 T9c: loop agents this process saw not stopped in `$.agent.list()`: only these can be the developer's stop; one
+// killed or absent and never seen was cut off by a session end and is recovered.
+const seenLive = new Set<string>()
+// 3.28.1 T15: `WAITING: shell <what>` hand-backs seen by the hooks, for the tick to tell Claude (part d).
+let shellQ: { agentId: string; what: string; at: number }[] = []
+function waitsOnShell(agentId: string | undefined, text: string, at: number): void {
+  const what = waitingShell(text)
+  if (what !== null && agentId !== undefined && agentId !== '') {
+    shellQ = [...shellQ.filter(q => q.agentId !== agentId), { agentId, what, at }]
+  }
+}
 // 3.24 T6: the root MANIFEST.json's `mod/` entries read at the first arm of this load (null unread), and whether an
 // update changed them since: the loaded code is then the old one, so no task starts until a reload or the next start
 // (both drop these). `updWait`: the last no-start reason logged, so a long wait logs once.
 let modSeen: string | null = null
 let modStale = false
 let updWait = ''
+let releaseCheckedAt = 0 // 3.28.1 T14: the 8-hour release check's last run (ms); 0 until the first tick
+let modLoaded = '' // 3.28.2 T17: the PA3 release this process loaded (`<pa3>/VERSION` at its session start)
 
 const quiet = (): undefined => undefined
 
@@ -215,6 +243,25 @@ export function resolveBash(paBash: string, envBash: string, execPath: string, w
     return `${m[1] ?? ''}/bin/bash.exe`
   }
   return win32 ? '' : 'bash'
+}
+
+type GitRan = { exitCode: number; stdout: string; stderr: string }
+/**
+ * 3.28.1 T10: a git write under GIT_WRITE_MS. Killed or timed out (exit -1), or refused on `index.lock`: `clearLock`
+ * (GIT_LOCK_PY's answer), then one retry unless a git process kept the lock; `note` says what happened when it still fails.
+ */
+export async function gitWrite(argv: string[], run: (argv: string[], ms: number) => Promise<GitRan>,
+  clearLock: () => Promise<string>): Promise<{ r: GitRan; note: string }> {
+  const r = await run(argv, GIT_WRITE_MS)
+  if (r.exitCode === 0 || (r.exitCode !== -1 && !/index\.lock/.test(`${r.stderr}${r.stdout}`))) {
+    return { r, note: '' }
+  }
+  const lock = (await clearLock()).trim()
+  if (lock !== 'removed' && lock !== 'none') {
+    return { r, note: 'index.lock kept: a git process is running, not retried' }
+  }
+  const again = await run(argv, GIT_WRITE_MS)
+  return { r: again, note: again.exitCode === 0 ? '' : `retried once${lock === 'removed' ? ' after removing a stale index.lock' : ''}` }
 }
 
 /** The last assistant text of a transcript (JSONL, `{type: "assistant", message: {content: [...]}}` rows); null if none. */
@@ -411,8 +458,15 @@ export function armAutopilot(on: On): void {
         if (bash === '') {
           return 'no Git Bash (pa.json bash, CLAUDE_CODE_GIT_BASH_PATH, git --exec-path)'
         }
-        const r = await run([bash, 'tools/commit_task.sh', id, msg, ...paths])
-        return r.exitCode === 0 ? '' : `commit "${msg}" exit ${String(r.exitCode)}: ${clip(r.stderr || r.stdout, 200)}`
+        // 3.28.1 T10: its own limit; a killed one clears a stale lock and retries once, its note in the caller's one line.
+        const { r, note } = await gitWrite([bash, 'tools/commit_task.sh', id, msg, ...paths], run, async () => {
+          const at = await run(['git', 'rev-parse', '--git-path', 'index.lock'])
+          const lock = at.exitCode === 0 ? at.stdout.trim() : ''
+          const out = lock === '' ? 'busy' : (await run([python, '-c', GIT_LOCK_PY, lock])).stdout
+          await log('git.lock', { lock, out: clip(out.trim(), 100) })
+          return out
+        })
+        return r.exitCode === 0 ? '' : `commit "${msg}" exit ${String(r.exitCode)}: ${clip(r.stderr || r.stdout, 200)}${note === '' ? '' : ` (${note})`}`
       }
       const journal = async (who: string, kind: string, meta: Meta, body: string): Promise<void> => {
         jseq += 1
@@ -475,7 +529,8 @@ export function armAutopilot(on: On): void {
           }
           return { id: a.id, type: a.type || (a.id === t?.agentId ? t.agent : ''), name: a.name, status: a.status, parentId: a.parentId, description: a.description, since: bandSince.get(a.id) ?? now }
         })
-        for (const { id } of bandIds(agents, roots)) {
+        const shells = shellsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${SHELLS_FILE}`).catch(() => null))
+        for (const { id } of bandIds(agents, roots, new Set(Object.keys(shells)))) {
           // 3.23 T13d.c2: the agent's latest working line (the facts' `line`), else its last step.
           const step = bandStepOf(jsonOf((await $.fs.read(`${root}/.run/mod/${sidNow}/agents/${id}.json`).catch(() => null)) ?? ''))
           const a = agents.find(x => x.id === id)
@@ -484,7 +539,7 @@ export function armAutopilot(on: On): void {
           }
         }
         const phase = planPhase((await $.fs.read(`${root}/${PLAN}`).catch(() => null)) ?? '').phase
-        const band: Band = { line: bandLine(s, phase), rows: bandRows(agents, roots, now) }
+        const band: Band = { line: bandLine(s, phase), rows: bandRows(agents, roots, now, shells) }
         if (JSON.stringify(band) !== JSON.stringify(await read($, bandAtom))) {
           await update($, bandAtom, () => band)
         }
@@ -555,6 +610,23 @@ export function armAutopilot(on: On): void {
             await journal('mod', 'hold', { task: s.task?.id }, 'session: a session start; the loop waits for the developer (release session).')
           }
         }
+        // 3.28.1 T15: the running task's expert or one of its children handed back `WAITING: shell <what>`: Claude tells
+        // the developer in one line (part d); the shell's completion notice wakes the agent by itself.
+        if (shellQ.length > 0) {
+          const seen = shellQ
+          shellQ = []
+          const t = s.task
+          const list = t === null || t.agentId === '' ? [] : await $.agent.list().catch(() => [])
+          for (const q of seen) {
+            const child = list.find(a => a.id === q.agentId && a.parentId === t?.agentId)
+            if (t === null || (q.agentId !== t.agentId && child === undefined)) {
+              continue
+            }
+            const role = q.agentId === t.agentId ? 'expert' : /coder/.test(child?.type ?? '') ? 'coder' : child?.type || 'agent'
+            await journal(t.id, 'shell', { task: t.id, agentId: q.agentId }, `${q.agentId} waits on its background shell: ${q.what}`)
+            await notice(shellNotice(t.id, role, q.agentId, q.what))
+          }
+        }
         // A block: status.json waits on a question, `held(question)`; the journal says why; Claude gets the stop's notice
         // (`what`, else the reason). Every block is a stop: its toast cause is `question` by default (T13b; raised by
         // Claude's presentation, router side).
@@ -575,7 +647,7 @@ export function armAutopilot(on: On): void {
         if (s.ownerSid !== sidNow || now - s.heartbeatAt >= HEARTBEAT_MS) {
           await save(s, taken ? 'takeover' : '')
         }
-        // 3.23 T13d.c11: under `held(session)` the recovery is recorded and runs after the release.
+        // 3.23 T13d.c11: under `held(session)` the recovery is recorded; 3.28.1 T9c: it runs at once (no release needed).
         if (taken && s.state === 'running' && s.task !== null && !s.holds.some(h => h !== 'talk' && h !== 'session')) {
           await save({ ...s, task: { ...s.task, recovery: { phase: 'start', at: now } } }, 'recover')
         }
@@ -589,13 +661,14 @@ export function armAutopilot(on: On): void {
         if (ctx.length > 0) {
           contextQ = contextQ.filter(c => c.sid !== sidNow)
           for (const c of ctx) {
-            await journal('mod', 'context', {}, c.line)
+            const line = c.kind === 'renewal' ? c.line : updateFact(c.line) // 3.28.6 T19: the fact, never the steps
+            await journal('mod', 'context', {}, line)
             if (c.kind === 'renewal') {
               await notice(renewalNotice(c.line))
             } else if (updateOn && updateOf(s) === null) {
-              await save({ ...s, update: { line: c.line, asked: '', answer: null } } as LoopState, 'update')
+              await save({ ...s, update: { line, asked: '', answer: null } } as LoopState, 'update')
             } else {
-              await notice(updateNotice(c.line))
+              await notice(updateNotice(line))
             }
           }
         }
@@ -613,7 +686,8 @@ export function armAutopilot(on: On): void {
             `${um.from.phase || '?'} ${um.from.git} to ${um.to.phase || '?'} ${um.to.git}; its whole output:\n\n${whole}`)
           await log('update.done', { mode: um.mode, rc: um.rc, from: um.from, to: um.to, conflicts, restart: o.restart, output: whole })
           await save({ ...s, updateSeenAt: um.atMs, upgrade } as LoopState, 'update.seen')
-          await notice(updateDoneNotice(um, { restart: o.restart, conflicts: upgrade !== null }, pa3, whole.trimEnd().split(/\r?\n/).slice(-12).join('\n')))
+          const loaded = um.mode !== 'repair' && versionAtLeast(modLoaded, um.to.phase) === true // 3.28.2 T17: a restart loaded it
+          await notice(updateDoneNotice(um, { restart: o.restart, conflicts: upgrade !== null, loaded }, pa3, whole.trimEnd().split(/\r?\n/).slice(-12).join('\n')))
           if (conflicts && upgrade === null) {
             await notice(upgradeLeftNotice(rounds))
           }
@@ -622,6 +696,62 @@ export function armAutopilot(on: On): void {
             modStale = true
             await journal('mod', 'hold', {}, 'The update changed the mod\'s own files: no task starts until the new mod loads (the next start or /reload-plugins).')
             await notice(RELOAD_NOTICE)
+          }
+          // 3.28.1 T14: the release the developer chose to install is installed: no task starts on the old code until
+          // the restart (updateDoneNotice told Claude: /exit, then claude --continue); a toast says so too.
+          const rl = releaseOf(s)
+          if (rl !== null && rl.step === 'running') {
+            if (um.rc === 0 && !loaded) {
+              modStale = true
+              await journal('mod', 'hold', {}, `PA3 ${rl.version} is installed: no task starts until Claude Code restarts (/exit, then claude --continue).`)
+              nseq += 1
+              const r = requestFile(now, nseq, 'toast', 'loop', { cause: 'input', body: `Project Architect ${rl.version} ${rl.kind} installed · /exit, then claude --continue (not /clear)` })
+              await $.fs.write(`${inboxDir}/${r.name}`, r.body).catch(quiet)
+              // 3.28.5 T18: the run finished with exit 0: the statusline's "installed" stage
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rl.version, kind: rl.kind, state: 'installed' })}\n`).catch(quiet)
+            } else if (um.rc !== 0) {
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet) // failed (told above): the line goes
+            }
+            await save({ ...s, release: { ...rl, step: 'done' } } as LoopState, 'release.done')
+          } else if (rl !== null && rl.step !== 'done' && um.rc === 0) {
+            // 3.28.2 T17: the session start's run installed the release (a restart before the clean stop): the marker
+            // names it again, so the next start gives the loaded line once (the start emptied it before the run ended).
+            const installed = ((await $.fs.read(`${pa3}/VERSION`).catch(() => null)) ?? '').split(/\r?\n/)[0]?.replace(/^version:/, '').trim() ?? ''
+            if (installed === rl.version) {
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rl.version, kind: rl.kind, state: 'install' })}\n`).catch(quiet)
+              await save({ ...s, release: { ...rl, step: 'done' } } as LoopState, 'release.done')
+            }
+          }
+        }
+        // 3.28.2 T17: this process runs the release (whichever path installed it): the record and the statusline's line go.
+        const rlLoaded = releaseOf(s)
+        if (rlLoaded !== null && versionAtLeast(modLoaded, rlLoaded.version) === true) {
+          await save({ ...s, release: null } as LoopState, 'release.loaded')
+          await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
+        }
+        // 3.28.1 T14: every RELEASE_CHECK_MS of a running session, the session start's release check (pa_ledger.py
+        // update-check: the clone's fetch, I48). A release not asked about before: the loop's picker (tasks keep running;
+        // no answer is not now), one line to Claude, and the statusline's marker.
+        if (releaseCheckedAt === 0) { // the last check's time: the session start's (update.json `checked_at`, s), else now
+          const at = jsonOf((await $.fs.read(`${pa3}/update.json`).catch(() => null)) ?? '')?.['checked_at']
+          releaseCheckedAt = typeof at === 'number' && Number.isFinite(at) && at > 0 && at * 1000 <= now ? at * 1000 : now
+        } else if (now - releaseCheckedAt >= RELEASE_CHECK_MS && updateOn && !modStale && !runRunning(um, now)) {
+          releaseCheckedAt = now
+          const r = await run([python, `${pa3}/pa_ledger.py`, 'update-check', root])
+          const found = r.exitCode === 0 ? jsonOf(r.stdout.trim()) : null
+          const version = strOf(found?.['version'])
+          await log('release.check', { exitCode: r.exitCode, version })
+          if (version !== '' && version !== releaseOf(s)?.version) {
+            const kind = strOf(found?.['kind']) || 'hotfix'
+            const title = strOf(found?.['title'])
+            // 3.28.6 T19: the facts only; the hook's line (its pa3_update.py steps) never reaches Claude or the seed
+            await journal('mod', 'context', {}, `PA3 ${version}, a ${kind}${title === '' ? '' : ` (${title})`}, is out (the release check).`)
+            nseq += 1
+            const q = requestFile(now, nseq, 'ask', 'loop', { question: releaseQuestion(version, kind, title), options: [...RELEASE_OPTIONS] })
+            await $.fs.write(`${inboxDir}/${q.name}`, q.body)
+            await save({ ...s, release: { version, kind, asked: q.name.slice(0, -'.json'.length), step: 'asked' } } as LoopState, 'release.ask')
+            await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version, kind, state: 'later' })}\n`).catch(quiet)
+            await notice(releaseNotice(version, kind))
           }
         }
         const t0 = s.task
@@ -644,7 +774,8 @@ export function armAutopilot(on: On): void {
           }
         }
         if (partnerSaid.at > s.lastAnswerAt) {
-          await save({ ...s, lastAnswerAt: partnerSaid.at, lastAnswerAsked: partnerSaid.asked }, '')
+          const said = partnerSaid
+          await save({ ...s, lastAnswerAt: said.at, ...(said.notice ? {} : { talkAnswerAt: said.at, lastAnswerAsked: said.asked }) }, '')
         }
         if (silenceReleases(s, now)) {
           await save(popHold(s, 'talk'), 'talk.silence')
@@ -958,6 +1089,21 @@ export function armAutopilot(on: On): void {
             await confirm(line, req.caller) // 3.23 T13d.c3: a confirmation that only says done is journaled, not sent
             await log('release', { id: req.id, hold, line: clip(line, 200), sent: !quietReply(line) })
           }
+          if (hold === 'update') { // 3.28.1 T14: the developer wants the found release installed after the current task
+            const rel = releaseOf(s)
+            if (rel === null || rel.step === 'done') {
+              await reply('refused: there is no newer PA3 release')
+              return
+            }
+            if (rel.step === 'install' || rel.step === 'running') { // 3.28.2 T17: already chosen: accepted, never refused
+              await reply(rel.step === 'running' ? `released: update (PA3 ${rel.version} is installing now)`
+                : `released: update (the install of PA3 ${rel.version} is already chosen; it runs at the clean stop, now if no expert or coder is working)`)
+              return
+            }
+            await releaseAnswer(rel, true)
+            await reply('released: update')
+            return
+          }
           if (!HOLD_NAMES.includes(hold)) {
             await reply(`refused: unknown hold "${hold}"`)
             return
@@ -1009,7 +1155,7 @@ export function armAutopilot(on: On): void {
             const fresh = input['fresh'] === true
             const k = t.attempt + 1
             const meta: Meta = { task: t.id, agentId: t.agentId }
-            if (!fresh && t.agentId !== '') {
+            if (!fresh && t.agentId !== '' && !(await expertCold(t))) {
               const sent = await $.session.send({ to: { agentId: t.agentId }, text: stoppedText(note) })
               await log('release.resume', { agentId: t.agentId, delivered: sent.isDelivered, reason: sent.reason ?? '' })
               if (sent.isDelivered) {
@@ -1065,14 +1211,13 @@ ${REPLAN_NOTICE}`)
             return
           }
           if (hold === 'question' && t !== null) {
-            // The task continues with the note: its expert resumed inside the cache TTL, else respawned with NOTE.
+            // The task continues with the note: its expert resumed unless cold (3.28.1 T12), else respawned with PROGRESS and NOTE.
             const k = t.attempt + 1
             await py('tools/status.py', 'set', '--task', t.id, '--agent', t.agent, '--kind', 'relaunch', '--attempt', String(k), '--session', sidNow)
             const at = await $.clock.now()
             let how = 'respawned'
-            // 3.26 T2: a keep-warm ping refreshes the cache too, so the clock counts the last one delivered.
-            const pingAt = (await read($, stateAtom))?.warmAgents?.[t.agentId]?.lastPingAt ?? 0
-            if (t.agentId !== '' && at - Math.max(t.lastCompleteAt, t.spawnedAt, pingAt) < RESUME_TTL_MS) {
+            // 3.26 T2: a keep-warm ping refreshes the cache too, so the clock counts the last one delivered (coldOf).
+            if (t.agentId !== '' && !(await coldOf(t.agentId, t.agent, Math.max(t.lastCompleteAt, 1), t.spawnedAt))) {
               const sent = await $.session.send({ to: { agentId: t.agentId }, text: `NOTE: ${note}` })
               await log('release.resume', { agentId: t.agentId, delivered: sent.isDelivered })
               if (sent.isDelivered) {
@@ -1093,8 +1238,10 @@ ${REPLAN_NOTICE}`)
                 await block(s, `release of ${t.id}: no plan entry to respawn from`, 'mod', 'hold', '')
                 return
               }
-              await spawnTask(plan, k, 'relaunch', { note })
-              await journal('mod', 'hold', { task: t.id }, `${t.id} question released: respawned with the note (attempt ${String(k)}).`)
+              const progress = await progressDigest(t)
+              await spawnTask(plan, k, 'relaunch', { progress: PROGRESS, note })
+              await journal('mod', 'hold', { task: t.id },
+                `${t.id} question released: respawned with PROGRESS (TASK_PROGRESS.md ${progress}) and the note (attempt ${String(k)}).`)
             }
             await reply('released: question')
             return
@@ -1104,6 +1251,35 @@ ${REPLAN_NOTICE}`)
           await reply(`released: ${hold}`)
         }
 
+        // 3.28.1 T12 (developer 2026-10-15): nothing is sent to a cold agent (policy.isCold: its turn ended, `lastAt`, and
+        // its last request, that end or a warming ping, older than its cache's life, or than the ping time with its idle
+        // stretch's pings spent). A fresh agent of its role, seeded from the journal, takes the message and its place.
+        const coldOf = async (id: string, role: string, lastAt: number, spawnedAt: number): Promise<boolean> => {
+          if (id === '' || lastAt <= 0) {
+            return false
+          }
+          const w = (await read($, stateAtom) as { warmAgents?: Record<string, { lastPingAt: number; waitPings: number; waitCount: number }> } | null)
+            ?.warmAgents?.[id]
+          const ttl = cacheTtlOf(role === '' ? null : await $.fs.read(`${root}/.claude/agents/${role}.md`).catch(() => null))
+          const pingsLeft = w === undefined || w.waitCount === 0 || w.waitPings < w.waitCount
+          return isCold(Math.max(lastAt, spawnedAt, w?.lastPingAt ?? 0), await $.clock.now(), ttl, pingsLeft)
+        }
+        const expertCold = async (t: LoopTask): Promise<boolean> => coldOf(t.agentId, t.agent, t.lastCompleteAt, t.spawnedAt)
+        // A cold expert's message goes to a fresh expert: the brief, PROGRESS (the digest when absent) and the message.
+        const relaunchCold = async (t: LoopTask, note: string, why: string): Promise<boolean> => {
+          const plan = planOf(t)
+          if (plan === null) {
+            return false
+          }
+          const k = t.attempt + 1
+          const progress = await progressDigest(t)
+          await py('tools/status.py', 'set', '--task', t.id, '--agent', t.agent, '--kind', 'relaunch', '--attempt', String(k), '--session', sidNow)
+          await journal('mod', 'hold', { task: t.id, agentId: t.agentId }, `${t.id}: ${t.agentId} is cold; nothing sent to it (${why}). ` +
+            `A fresh expert takes it with PROGRESS (TASK_PROGRESS.md ${progress}) (attempt ${String(k)}).`)
+          delete facts[t.agentId]
+          await spawnTask(plan, k, 'relaunch', { progress: PROGRESS, note })
+          return true
+        }
         // TASK_PROGRESS.md for a respawn after a restart (T5d1): the hook's kill digest when present (`claude --continue`),
         // else the mod's: git status, the commits since the task's start, its agents' journal notes and reasoning.
         const progressDigest = async (t: LoopTask): Promise<string> => {
@@ -1125,16 +1301,21 @@ ${REPLAN_NOTICE}`)
               }
             }
           }
+          // 3.28.1 T12: what it waits on: its children still at work.
+          const waiting = [
+            ...(await $.agent.list()).filter(a => a.parentId === t.agentId && BUSY.has(a.status)).map(a => `${a.type || 'agent'} ${a.id}: ${a.status}`),
+          ]
           await $.fs.write(`${root}/${PROGRESS}`, recoveryDigest({
             id: t.id, attempt: t.attempt, startSha: t.startSha, since: t.spawnedAt, status: status.stdout,
-            log: gitLog === null ? '' : gitLog.exitCode === 0 ? gitLog.stdout : `(git log exit ${String(gitLog.exitCode)})`, entries,
+            log: gitLog === null ? '' : gitLog.exitCode === 0 ? gitLog.stdout : `(git log exit ${String(gitLog.exitCode)})`, entries, waiting,
           }))
           return `written by the mod (${String(entries.length)} journal entries)`
         }
 
         // A stopped loop agent (T11-fix2): killed (Ctrl+C), failed, or gone from `$.agent.list()` (as killed), with no
-        // contract. The stop is the developer's: the `stopped` hold and one notice to Claude (no toast); nothing is
-        // resumed or respawned until release(stopped), and nothing new starts while it is held.
+        // contract, after this process saw it at work (3.28.1 T9c; else a session end, recovered). The stop is the
+        // developer's: the `stopped` hold and one notice to Claude (no toast); nothing is resumed or respawned until
+        // release(stopped), and nothing new starts while it is held.
         const stopHold = async (t: LoopTask, status: string): Promise<void> => {
           const who = `${t.id}'s expert`
           const how = status === 'failed'
@@ -1151,7 +1332,9 @@ ${REPLAN_NOTICE}`)
         // Recovery after a takeover (T5d1), a step a tick, each journaled (`mod/recover`): launch.py's view; a stale
         // `run_in_flight` or no agentId respawns at once; else the expert is sent `continue:` and watched in
         // `$.agent.list()`; not delivered, or not seen running within RECOVER_WAIT_MS, it is respawned (status relaunch,
-        // the brief plus PROGRESS). Nothing is stopped.
+        // the brief plus PROGRESS). Nothing is stopped. 3.28.1 T9c: Claude tells the developer in one line.
+        const cutOff = (t: LoopTask): string => `‹pa› ${t.id}'s expert was cut off when the session ended (a restart, an update ` +
+          "or a closed terminal), not by the developer's stop; "
         const recover = async (t: LoopTask, r: { phase: 'start' | 'sent'; at: number }): Promise<void> => {
           const meta: Meta = { task: t.id, agentId: t.agentId }
           const respawn = async (why: string): Promise<void> => {
@@ -1167,6 +1350,7 @@ ${REPLAN_NOTICE}`)
               `recovery: ${t.id} respawned with PROGRESS: ${PROGRESS} (attempt ${String(k)}): ${why}. TASK_PROGRESS.md ${progress}.`)
             delete facts[t.agentId]
             await spawnTask(plan, k, 'relaunch', { progress: PROGRESS })
+            await notice(`${cutOff(t)}I respawned it with its progress (attempt ${String(k)}). Tell the developer in one line.`)
           }
           if (r.phase === 'start') {
             const st = await py('tools/launch.py', '--state-json')
@@ -1181,14 +1365,12 @@ ${REPLAN_NOTICE}`)
               await respawn('no agentId recorded')
               return
             }
-            // T11-fix2: an agent killed, failed or gone (a Ctrl+C before the restart) is the developer's stop, not resumed.
-            const me = (await $.agent.list()).find(a => a.id === t.agentId)
-            if (liveness(me?.status, now - t.spawnedAt) === 'stopped') {
-              await stopHold({ ...t, recovery: null }, me?.status ?? 'absent')
-              return
-            }
             if (stale) {
               await respawn('its run_in_flight is stale')
+              return
+            }
+            if (await expertCold(t)) {
+              await respawn('its cache is cold')
               return
             }
             const sent = await $.session.send({ to: { agentId: t.agentId }, text: CONTINUE_TEXT })
@@ -1200,6 +1382,7 @@ ${REPLAN_NOTICE}`)
             }
             await save({ ...s, task: { ...t, recovery: { phase: 'sent', at: await $.clock.now() } } }, 'recover.sent')
             await journal('mod', 'recover', meta, `recovery: sent ${t.agentId} continue: (delivered); watching for it running.`)
+            await notice(`${cutOff(t)}I resumed it under its id (${t.agentId}). Tell the developer in one line.`)
             return
           }
           if ((await $.agent.list()).some(a => a.id === t.agentId && AT_WORK.has(a.status))) {
@@ -1233,6 +1416,13 @@ ${REPLAN_NOTICE}`)
             return
           }
           const at = await $.clock.now()
+          if (await expertCold(t)) {
+            if (await relaunchCold(t, text, 'a steer')) {
+              await journal('mod', 'steer', { task: id }, `${id} steered (a fresh expert): ${text}`)
+              await reply(`steered: ${id} (its expert was cold: a fresh one has the correction)`)
+              return
+            }
+          }
           const sent = await $.session.send({ to: { agentId: t.agentId }, text: steerText(text) })
           await log('steer.send', { agentId: t.agentId, delivered: sent.isDelivered, reason: sent.reason ?? '' })
           if (!sent.isDelivered) {
@@ -1249,6 +1439,15 @@ ${REPLAN_NOTICE}`)
         const forwarded = async (req: Request): Promise<void> => {
           const input = typeof req.input === 'object' && req.input !== null ? (req.input as Record<string, unknown>) : {}
           const t = s.task
+          // 3.28.1 T12: with `text`, the router found the expert cold and sent nothing: a fresh expert takes the text.
+          const text = typeof input['text'] === 'string' ? input['text'] : ''
+          if (text !== '' && t !== null && s.state === 'running' && t.agentId !== '' && input['agentId'] === t.agentId &&
+            (await expertCold(t)) && (await relaunchCold(t, text, 'a message for it'))) {
+            return
+          }
+          if (text !== '') { // not sent to the cold agent; with no plan to relaunch from, the journal keeps it
+            await journal('mod', 'hold', { agentId: String(input['agentId'] ?? '') }, `Not delivered (its agent is cold, no fresh one started): ${text}`)
+          }
           if (t === null || s.state !== 'running' || t.agentId === '' || input['agentId'] !== t.agentId || (t.forwardAt ?? 0) >= req.at) {
             await log('forward.skip', { id: req.id, agentId: input['agentId'] })
             return
@@ -1277,6 +1476,17 @@ ${REPLAN_NOTICE}`)
           }
           await save({ ...s, install: inst } as LoopState, `install:${kind}`)
         }
+        // 3.28.1 T14: the release picker's answer, or Claude's release({hold: "update"}): install after the current task
+        // (the statusline's line says so), else not now (the update installs at the next start).
+        const releaseAnswer = async (rel: NonNullable<ReturnType<typeof releaseOf>>, install: boolean): Promise<void> => {
+          if (rel.step !== 'asked' && rel.step !== 'later') {
+            return
+          }
+          const step = install ? 'install' : 'later'
+          await journal('mod', 'decision', {}, `PA3 ${rel.version}: ${install ? 'installs after the current task' : 'not now; it installs at the next start'} (the developer's answer).`)
+          await save({ ...s, release: { ...rel, step } } as LoopState, `release.${step}`)
+          await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rel.version, kind: rel.kind, state: step })}\n`).catch(quiet)
+        }
         // The answer to the loop's own ask (the router's `answer`, `{id, line}`), kept for the asking record's step: the
         // install or the generation start (T6a2).
         const answered = async (req: Request): Promise<void> => {
@@ -1286,6 +1496,7 @@ ${REPLAN_NOTICE}`)
           const g = genStartOf(s)
           const d = driftOf(s)
           const u = updateOf(s)
+          const rel = releaseOf(s)
           if (inst !== null && inst.asked !== '' && input['id'] === inst.asked) {
             await save({ ...s, install: { ...inst, answer } } as LoopState, 'install.answer')
           } else if (g !== null && g.asked !== '' && input['id'] === g.asked) {
@@ -1294,6 +1505,8 @@ ${REPLAN_NOTICE}`)
             await save({ ...s, drift: { ...d, answer } } as LoopState, 'drift.answer')
           } else if (u !== null && u.asked !== '' && input['id'] === u.asked) {
             await save({ ...s, update: { ...u, answer } } as LoopState, 'update.answer')
+          } else if (rel !== null && rel.asked !== '' && input['id'] === rel.asked) {
+            await releaseAnswer(rel, /^install\b/i.test(answer)) // 3.28.1 T14
           } else {
             await log('answer.skip', { id: req.id, for: input['id'] })
           }
@@ -1675,7 +1888,9 @@ ${REPLAN_NOTICE}`)
           }
         }
         const inst = installOf(s)
-        if (inst !== null) {
+        // 3.28.1 T6: a replan's install waits while a task runs and nothing holds the loop (talk aside), so it lands at
+        // the next task boundary.
+        if (inst !== null && (s.task === null || s.holds.some(h => h !== 'talk'))) {
           await runInstall(inst)
           return
         }
@@ -1696,6 +1911,25 @@ ${REPLAN_NOTICE}`)
         const ul = updateOf(s)
         if (ul !== null && s.task === null) {
           await runUpdate(ul)
+          return
+        }
+        // 3.28.1 T14: the release the developer chose installs at this clean stop (no task running); no task starts while
+        // the run's marker says running (the task gate below), and its report (above) ends the step. 3.28.2 T17: a task
+        // held (a stop, a question) with no expert or coder working is a clean stop too; a paused task never ends.
+        const rel = releaseOf(s)
+        const t1 = s.task
+        if (rel !== null && rel.step === 'install' && (t1 === null || (s.holds.some(h => h !== 'talk') &&
+          !(await $.agent.list()).some(a => (a.id === t1.agentId || a.parentId === t1.agentId) && BUSY.has(a.status))))) {
+          if (!runRunning(markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)), now)) {
+            const ok = await runPa3(`PA3 ${rel.version}, the developer's choice`)
+            await save({ ...s, release: { ...rel, step: ok ? 'running' : 'done' } } as LoopState, ok ? 'release.run' : 'release.failed')
+            if (!ok) {
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet) // runPa3 told Claude why; the line goes
+            } else { // 3.28.5 T18: the statusline's "installing" stage and Claude's one line, once per install
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rel.version, kind: rel.kind, state: 'running' })}\n`).catch(quiet)
+              await notice(installingNotice(rel.version))
+            }
+          }
           return
         }
         // The close chain (T6b) runs before the no-plan path: the archive moves the plan away mid-chain.
@@ -1749,6 +1983,12 @@ ${REPLAN_NOTICE}`)
               await save({ ...popHold(s, 'close'), state: 'boundary', closeAsked: false }, 'close.resume')
             }
           }
+          return
+        }
+        // 3.28.1 T9c: a recovery runs under `talk` and `session` (a session end is not the developer's stop).
+        if (s.state === 'running' && s.task !== null && (s.task.recovery ?? null) !== null &&
+          s.holds.every(h => h === 'talk' || h === 'session')) {
+          await recover(s.task, s.task.recovery!)
           return
         }
         // Any hold but `talk` stops the loop; `talk` only stops a new task (the running one is captured and routed).
@@ -2002,10 +2242,6 @@ ${REPLAN_NOTICE}`)
           return
         }
         if (s.state === 'running') {
-          if (t.recovery !== undefined && t.recovery !== null) {
-            await recover(t, t.recovery)
-            return
-          }
           if (t.agentId === '') {
             if (now - t.spawnedAt >= SPAWN_LOST_MS) {
               await block(s, `spawn of ${t.id} lost (no agentId recorded)`, 'mod', 'hold', '')
@@ -2023,12 +2259,28 @@ ${REPLAN_NOTICE}`)
           }
           // T11-fix2: the agent's own status, every tick. pending, running, waiting: busy. killed, failed, or absent
           // ABSENT_MS after its spawn: with a STATUS, routed at once; with none, the `stopped` hold. A release(stopped)
-          // resume gets ABSENT_MS before a stale `killed` counts again.
+          // resume gets ABSENT_MS before a stale `killed` counts again. 3.28.1 T9c: killed or absent and never seen at work
+          // by this process: a session end cut it off; recovered (continue:, else a respawn), no hold.
           const list = await $.agent.list()
           const me = list.find(a => a.id === t.agentId)
-          const live = liveness(me?.status, now - t.spawnedAt)
+          // 3.28.1 T15: a background shell its run waits on (its own or a child's, pa-watch's shells.json) keeps it busy;
+          // dropped from the list meanwhile, it waits (the shell's completion notice wakes it), never stopped; so it does
+          // for FORWARD_TTL_MS after a send to it (`forwardAt`) until its next turn ends.
+          const shellsLive = shellsOut(shellsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${SHELLS_FILE}`).catch(() => null)),
+            [t.agentId, ...list.filter(a => a.parentId === t.agentId).map(a => a.id)]).length
+          const sentTo = (t.forwardAt ?? 0) > t.lastCompleteAt && now - (t.forwardAt ?? 0) < FORWARD_TTL_MS
+          const live = me === undefined && (shellsLive > 0 || sentTo) ? 'idle' : liveness(me?.status, now - t.spawnedAt)
+          if (me !== undefined && live !== 'stopped') {
+            seenLive.add(t.agentId)
+          }
           if (live === 'stopped') {
             if (cur.stopped?.status === 'resumed' && now - cur.stopped.at < ABSENT_MS) {
+              return
+            }
+            if ((cur.pendingContract ?? null) === null && !seenLive.has(t.agentId) && me?.status !== 'failed') {
+              await save({ ...s, task: { ...cur, recovery: { phase: 'start', at: now } } }, 'recover')
+              await journal('mod', 'recover', { task: t.id, agentId: t.agentId },
+                `recovery: ${t.agentId} ${me?.status ?? 'absent'}, never seen at work by this process: a session end, not a stop.`)
               return
             }
             if ((cur.pendingContract ?? null) === null) {
@@ -2048,7 +2300,7 @@ ${REPLAN_NOTICE}`)
           if (live === 'busy') {
             return
           }
-          if (!runEnded(cur, busy, queuedTo(cur, now), now, (cur.pendingContract ?? null) === null ? await activityAt(t.agentId) : 0,
+          if (!runEnded(cur, busy + shellsLive, queuedTo(cur, now), now, (cur.pendingContract ?? null) === null ? await activityAt(t.agentId) : 0,
             f?.handbackAt ?? 0)) {
             return
           }
@@ -2117,7 +2369,7 @@ ${REPLAN_NOTICE}`)
               const why = clip((rv.stdout || rv.stderr).trim(), 200)
               // A summary without a Review: block: its expert is asked for it once by message (it resumes, nothing is
               // killed) and the route runs again on its next contract; still missing, a review hold presented from the summary.
-              if (t.reviewAsked !== true && t.agentId !== '') {
+              if (t.reviewAsked !== true && t.agentId !== '' && !(await expertCold(t))) {
                 const sent = await $.session.send({ to: { agentId: t.agentId }, text: reviewAskText(t.id, summary, why) })
                 await log('review.ask', { agentId: t.agentId, delivered: sent.isDelivered })
                 if (sent.isDelivered) {
@@ -2189,7 +2441,9 @@ ${REPLAN_NOTICE}`)
     offCheckedAt = 0
     devAt = 0
     devSid = ''
-    partnerSaid = { at: 0, asked: false }
+    partnerSaid = { at: 0, asked: false, notice: false }
+    seenLive.clear()
+    shellQ = []
     waitPolledAt = 0
     genMode = { sid: '', at: 0, doc: null }
     sideAgent = ''
@@ -2197,7 +2451,25 @@ ${REPLAN_NOTICE}`)
     modSeen = null
     modStale = false
     updWait = ''
+    releaseCheckedAt = 0
     apRearm = arm
+    // 3.28.2 T17: the release this process loads (the tick's update report and release record compare with it).
+    const pa3 = ((await $.env.get('PA_MOD_PA3_DIR')) ?? '') ||
+      `${((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')}/.claude/pa3`
+    const installed = ((await $.fs.read(`${pa3}/VERSION`).catch(() => null)) ?? '').split(/\r?\n/)[0]?.replace(/^version:/, '').trim() ?? ''
+    modLoaded = installed
+    if (await $.fs.exists(`${root}/${RELEASE_MARKER}`)) {
+      // 3.28.2 T16: the release the marker names is the installed VERSION: this start loaded it; Claude says so first,
+      // so the resumed conversation's last line (the restart) doesn't read as a loop.
+      const relm = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+      const v = typeof relm?.['version'] === 'string' ? relm['version'] : ''
+      if (v !== '' && v === installed) {
+        nseq += 1
+        const r = noticeRequest(await $.clock.now(), nseq, loadedNotice(v))
+        await $.fs.write(`${root}/.run/mod/${sid}/inbox/${r.name}`, r.body).catch(quiet)
+      }
+      await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet) // 3.28.1 T14: the restart loaded it
+    }
     await arm(sid, true)
     return out
   })
@@ -2261,7 +2533,9 @@ ${REPLAN_NOTICE}`)
     }
     const child = HANDBACK_KINDS.has(e.origin.kind) ? handbackChild(e.text) : null
     if (child !== null && child !== '' && child === loopAgent) {
-      const report = partnerReport(e.text)
+      // 3.28.1 T15: an expert woken by its shell's notice reports with SendMessage (its hand-back was spent): a note
+      // whose body is a contract is its report.
+      const report = partnerReport(e.text) ?? (isNote(e.text) ? noteBody(e.text) : null)
       const f = facts[child] ?? { status: null, lastCompleteAt: 0 }
       if (report !== null && routedText.trim() !== '' && report.trim() === routedText.trim()) {
         // T6a2: a repeat of the routed contract, ignored (3.25 T3: without a journal line)
@@ -2279,6 +2553,12 @@ ${REPLAN_NOTICE}`)
     }
     return out
   })
+  // 3.28.1 T15: an agent's `WAITING: shell <what>` hand-back: the tick tells Claude.
+  on('tool.check', { tool: 'SubagentHandback' }, async ($, e, next) => {
+    const m = (e.input as { message?: unknown } | null)?.message
+    waitsOnShell(e.agentId, typeof m === 'string' ? m : '', await $.clock.now())
+    return next(e)
+  }).catch(($, e, next) => next(e)) // a failure leaves the verdict beneath
   on('turn.complete', {}, async ($, e, next) => {
     const id = e.agentId
     if (id !== undefined && id !== '' && id === loopAgent && routedText.trim() !== '' && e.answer.trim() === routedText.trim()) {
@@ -2296,8 +2576,10 @@ ${REPLAN_NOTICE}`)
       facts = { ...facts, [id]: { ...f, lastCompleteAt: await $.clock.now(), ...(keep ? {} : { answer: e.answer }) } }
     }
     const said = e.answer.trim()
-    if (id !== undefined && id !== '' && said !== '' && said !== '.' && (await read($, stateAtom))?.partner?.agentId === id) {
-      partnerSaid = { at: await $.clock.now(), asked: asksQuestion(said) }
+    const rs = await read($, stateAtom)
+    if (id !== undefined && id !== '' && said !== '' && said !== '.' && rs?.partner?.agentId === id) {
+      // 3.28.1 T9b: an answer after the mod's own notice (the last message sent to Claude was `other`) does not keep `talk`.
+      partnerSaid = { at: await $.clock.now(), asked: asksQuestion(said), notice: rs.sentKind === 'other' }
     }
     return next(e)
   })

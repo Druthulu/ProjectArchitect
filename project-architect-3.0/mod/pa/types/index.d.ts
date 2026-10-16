@@ -28,10 +28,13 @@ export type Warm = {
   waitStart: number
   waitUsd: number
   waitPings: number
+  /** 3.28.1 T12: the current stretch's pings (policy.pingCount at its start); 0 until its first warming tick. */
+  waitCount: number
 }
 
 /** A loop expert the warming tick keeps warm (3.23 T5d2b): its totals, its ping in flight and its current wait
- * (`waitKind` `child` or `question`, since `waitStart`; reset when it is seen working). */
+ * (`waitKind` `child` or `question`, since `waitStart`; reset when it is seen working or ends a real turn).
+ * 3.28.1 T12: the wait's pings so far (`waitPings`) and its count (`waitCount`, 0 until set). */
 export type WarmAgent = {
   role: string
   lastPingAt: number
@@ -39,6 +42,8 @@ export type WarmAgent = {
   waitKind: string
   waitStart: number
   waitUsd: number
+  waitPings: number
+  waitCount: number
   pings: number
   pingUsd: number
   avoidedUsd: number
@@ -160,6 +165,11 @@ export type RouterState = {
   /** child agentId -> when its hand-back was taken (a coder's end can arrive as task-notification and as peer). */
   forwarded: Record<string, number>
   awaiting: Awaiting | null
+  /** 3.28.1 T9b: the kind of the last message delivered to the partner ('' none yet); an answer after an `other` (a mod
+   * notice, a dialog's answer) does not keep the `talk` hold. */
+  sentKind: OutMsg['kind'] | ''
+  /** 3.28.1 T12: when the last message was delivered to the partner (0 none yet): its turn has ended once lastTurnAt passes it. */
+  sentAt: number
   warm: Warm
   /** agentId -> a loop expert's warming (3.23 T5d2b); the partner's is `warm`. */
   warmAgents: Record<string, WarmAgent>
@@ -252,8 +262,10 @@ export type LoopState = {
   resumeAt: number
   /** The developer's last message (ms). */
   lastDevAt: number
-  /** Claude's (the partner's) last answer (ms); silence counts from the later of this and `lastDevAt`. */
+  /** Claude's (the partner's) last answer (ms). */
   lastAnswerAt: number
+  /** 3.28.1 T9b: Claude's last answer not after a mod notice (ms); silence counts from the later of this and `lastDevAt`. */
+  talkAnswerAt: number
   /** Claude's last reply asked the developer something: silence does not end `talk`. */
   lastAnswerAsked: boolean
   /** The phase close (3.23 T6b): `release(close)` ran; the next boundary starts the close at NONE-done (3.25 T2: no agent). */
@@ -276,6 +288,11 @@ export type LoopState = {
   /** 3.24 T10b: every session that owned the open phase, in order (the close's recalc reads them all); reset at the close. */
   phaseSids?: string[]
 }
+
+/** 3.28.1 T15: a background shell (Bash `run_in_background`) an agent started (`.run/mod/<sid>/shells.json`): Claude
+ * Code's task id, its command's script or first word, its start (ms), the agent's type, and its exit code once it ended
+ * badly (it stays listed, shown dead, until the agent reports). */
+export type Shell = { id: string; name: string; at: number; type: string; exit?: number }
 
 /** The watcher's facts of one agent (`.run/mod/<sid>/agents/<id>.json`, 3.22 T8f), extended in 3.23 T5c with its type,
  * spawn description, parent, latest approach note (≤ 2 lines), its last three steps (`Tool short-arg`, oldest first)

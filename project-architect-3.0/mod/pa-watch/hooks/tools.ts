@@ -16,7 +16,7 @@ const NO_REPLY = 'Returns at once; no reply follows.'
 export const TOOL_SPECS: readonly { name: ToolName; description: string; inputSchema: Record<string, unknown> }[] = [
   {
     name: 'plan',
-    description: `Presents the plan file at \`path\` to the developer in the plan-mode view. \`kind\` generation or phase: on approval the mod installs and commits it (a phase plan's \`rules\` and \`candidates\` lines are put to the developer one by one); adhoc (the default): any other plan. ${LATER}`,
+    description: `Presents the plan file at \`path\` to the developer in the plan-mode view. \`kind\` generation or phase: on approval the mod installs and commits it (a phase plan's \`rules\` and \`candidates\` lines are put to the developer one by one); a phase plan sent while REPLAN.md sits beside the approved plan is not shown: it is installed at the next task boundary; adhoc (the default): any other plan. ${LATER}`,
     inputSchema: {
       type: 'object',
       properties: {
@@ -42,10 +42,10 @@ export const TOOL_SPECS: readonly { name: ToolName; description: string; inputSc
   },
   {
     name: 'release',
-    description: `Ends the hold you name (talk, review, question with a note for the expert, close with your phase report as the note, which the mod keeps as the phase's recap, stopped: the developer's stopped task resumed with the note, or started over with fresh: true; generation: the next generation's start, when the developer asks for it in this session; session: the loop waiting since this session began, when the developer wants it to go on), so plan work may continue. ${QUIET}`,
+    description: `Ends the hold you name (talk, review, question with a note for the expert, close with your phase report as the note, which the mod keeps as the phase's recap, stopped: the developer's stopped task resumed with the note, or started over with fresh: true; generation: the next generation's start, when the developer asks for it in this session; session: the loop waiting since this session began, when the developer wants it to go on; update: the PA3 update the mod found, installed after the current task, when the developer says in any words that they want it), so plan work may continue. ${QUIET}`,
     inputSchema: {
       type: 'object',
-      properties: { hold: { type: 'string', enum: ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session'] }, note: { type: 'string' }, fresh: { type: 'boolean' } },
+      properties: { hold: { type: 'string', enum: ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update'] }, note: { type: 'string' }, fresh: { type: 'boolean' } },
       required: ['hold'],
     },
   },
@@ -114,7 +114,7 @@ export function validateInput(name: string, input: unknown): string | null {
       if (o['fresh'] !== undefined && typeof o['fresh'] !== 'boolean') {
         return 'fresh must be a boolean'
       }
-      return ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session'].includes(String(o['hold'])) ? field(o, 'note', false) : 'hold must be talk, review, question, close, stopped, generation or session'
+      return ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update'].includes(String(o['hold'])) ? field(o, 'note', false) : 'hold must be talk, review, question, close, stopped, generation, session or update'
     }
     case 'plan_edit':
       return field(o, 'command', true) ?? field(o, 'why', false)

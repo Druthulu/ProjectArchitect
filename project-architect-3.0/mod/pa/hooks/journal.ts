@@ -6,7 +6,7 @@ export const JOURNAL_DIR = '.claude-state/journal'
 
 export const WRITERS = ['r', 'w'] as const
 export const WHOS = ['dev', 'claude', 'partner', 'thinker', 'coder', 'critic', 'mod'] as const // plus T<n>; `partner`: entries before 3.22 T8f
-export const KINDS = ['msg', 'answer', 'thinking', 'start', 'end', 'prompt', 'hold', 'release', 'plan', 'decision', 'note', 'steer', 'interim', 'recover', 'repeat', 'context', 'close', 'feed', 'card'] as const // note: the watcher's approach notes, steer: mod/steer (3.23 T5c), interim: T<n>/interim (T5c.c3), recover: mod/recover (T5d1), repeat: T<n>/repeat (3.23 T6a2), context: mod/context (T6a2), close: mod/close (3.23 T6b), feed: mod/feed (3.23 T13d.c2: the feed could not start), card: mod/card (3.24 T13E: a card the loop drew, the review release's accepted card)
+export const KINDS = ['msg', 'answer', 'thinking', 'start', 'end', 'prompt', 'hold', 'release', 'plan', 'decision', 'note', 'steer', 'interim', 'recover', 'repeat', 'context', 'close', 'feed', 'card', 'shell'] as const // note: the watcher's approach notes, steer: mod/steer (3.23 T5c), interim: T<n>/interim (T5c.c3), recover: mod/recover (T5d1), repeat: T<n>/repeat (3.23 T6a2), context: mod/context (T6a2), close: mod/close (3.23 T6b), feed: mod/feed (3.23 T13d.c2: the feed could not start), card: mod/card (3.24 T13E: a card the loop drew, the review release's accepted card), shell: T<n>/shell (3.28.1 T15: a task's agent handed back to wait on its background shell)
 
 export type Writer = (typeof WRITERS)[number]
 export type Kind = (typeof KINDS)[number]

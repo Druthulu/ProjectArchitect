@@ -27,12 +27,15 @@ import os
 import time
 
 DEFAULT_TEXT = (
-    "HANDOFF — context threshold reached. Within the next 2 turns bring the current step "
-    "to a stable point, write `phase-ends/current/TASK_PROGRESS.md` (done so far · in flight · "
-    "hypotheses rejected with evidence · current hypothesis · next 5 steps · gotchas · state to "
-    "carry verbatim), commit via `tools/commit_task.sh`, and return `STATUS: handoff` with "
-    "LOG/CTX/COMMIT/RECOMMENDED. Do not start new sub-steps."
-)
+    "HANDOFF — context threshold reached. Finish the change in hand until it builds and its "
+    "tests pass, then stop: start nothing new. Write `phase-ends/current/TASK_PROGRESS.md` "
+    "(keep its sections: done so far, in flight, hypotheses rejected with evidence, current "
+    "hypothesis, next 5 steps, gotchas, state to carry verbatim). Commit only what is green, "
+    "via `tools/commit_task.sh`. Anything still mid-way stays uncommitted: save it as a patch "
+    "beside TASK_PROGRESS.md (`git diff > phase-ends/current/TASK_PROGRESS.patch`) and say in "
+    "the progress file where it stopped. Then hand back a plain report that starts with "
+    "`handoff`: what is committed, what is in the patch, the next step."
+)  # was: "Within the next 2 turns ... commit ... return `STATUS: handoff` with LOG/CTX/COMMIT/RECOMMENDED"
 
 DEFAULT_WINDOW = 200_000
 LONG_WINDOW = 1_000_000

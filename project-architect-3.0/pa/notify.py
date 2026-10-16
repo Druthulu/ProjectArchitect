@@ -13,7 +13,7 @@ Public:
 The hook must return in single-digit milliseconds, so nothing here waits on the
 notifier: the toast runs in a **detached** child
 (``CREATE_NO_WINDOW`` for the PowerShell toast on Windows -- a console, no window;
-``DETACHED_PROCESS|CREATE_NO_WINDOW`` for any other child; ``start_new_session=True``
+``CREATE_NO_WINDOW`` (a hidden console its children inherit) for any other child; ``start_new_session=True``
 elsewhere) and the Discord POST (3 s timeout) runs inside that same child when a
 webhook is configured.
 
@@ -179,8 +179,7 @@ def _spawn(cmd, env):
         if str(cmd[0]).lower().endswith("powershell.exe"):
             flags = _NO_WINDOW                         # a console without a window: toasts need the console
         else:
-            flags = getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
-            flags |= getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+            flags = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)   # a hidden console its children inherit
         kwargs["creationflags"] = flags
     else:
         kwargs["start_new_session"] = True

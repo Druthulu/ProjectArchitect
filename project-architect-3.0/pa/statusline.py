@@ -11,6 +11,7 @@ Public:
     scan_phase_plan(path)                   {phase, phase_name, done, total, next, titles}
     build_sample(payload, cfg)              the sample dict ``S`` of design D step 1
     windows_of(payload)                     {window: {pct, resets_at}}
+    session_work(conn, sid)                 a 3.2 session's work tokens (the model line's ``<work>/∞``)
 
 Design: ``docs/pa3-build/design/A-ledger-statusline-hooks.md`` §D (renderer + sampler),
 §B.2/§B.3/§B.4 (``running.json`` / ``summary.json`` / ``.run/status.json``),
@@ -481,7 +482,8 @@ def scan_phase_plan(path):
     Returns ``{"phase", "phase_name", "done", "total", "next", "titles", "tasks"}``.
     ``tasks`` is an ordered list of ``{"id", "status", "title"}`` for the task block.
     Header grammar: ``# Phase <id> — <name> (…)``; task grammar:
-    ``- T<id> | <status> | …`` with an optional ``| title: … |`` field.
+    ``- T<id> | <status> | …`` with an optional ``| title: … |`` field; the status is optional
+    (3.25): a second field that is ``key: value`` leaves it empty, drawn and counted as queued.
     Hand-rolled so the hot path never imports ``re``.
     """
     out = {"phase": None, "phase_name": None, "done": 0, "total": 0,
@@ -515,10 +517,13 @@ def scan_phase_plan(path):
             if task_id[:1] != "T" or not all(part.isdigit() for part in task_id[1:].split(".")):
                 continue
             status = fields[1].strip().lower() if len(fields) > 1 else ""
+            key = status.split(":", 1)[0].rstrip()
+            if ":" in status and key[:1].isalpha() and key.replace("-", "_").replace("_", "a").isalnum():
+                status = ""                     # a `key: value` field (plan_edit KEY_RE): no status (3.25)
             if status != "superseded":          # a reopened or moved task's parent is not work left
                 out["total"] += 1
             title = ""
-            for field in fields[2:]:
+            for field in fields[1:]:
                 stripped = field.strip()
                 if stripped[:6].lower() == "title:":
                     title = stripped[6:].strip()
@@ -529,7 +534,7 @@ def scan_phase_plan(path):
                 out["done"] += 1
             elif status == "next" and out["next"] is None:
                 out["next"] = task_id
-            elif status == "queued" and first_queued is None:
+            elif status in ("queued", "") and first_queued is None:
                 first_queued = task_id
     except (OSError, ValueError):
         pass
@@ -785,6 +790,79 @@ def _rate_pieces(pace, resets_at, pct, now, duration, level=2, sl=None, ctx=None
             for i, (text, color) in enumerate(parts)]
 
 
+def _mod_on(ctx):
+    """True for a 3.2 session: ``pa.json`` says ``mod: on`` and PA_MOD_OFF is not set (as ``health.mod_on``)."""
+    pa_json = ctx.get("pa_json") if isinstance(ctx, dict) else None
+    return (isinstance(pa_json, dict) and pa_json.get("mod") == "on"
+            and os.environ.get("PA_MOD_OFF", "") in ("", "0"))
+
+
+def _work_path(sid):
+    return _sampler_path(os.path.join("work", "%s.json" % sid))
+
+
+def session_work(conn, sid):
+    """3.28.7 T20: the tokens that entered the session's contexts (main session and every subagent), each once,
+    minus the duplicated agent seeds.
+
+    Per request: uncached input + cache writes (a write holds the previous request's output, so output is not
+    added again), plus each run's last output (never re-written).  Seeds: a type's smallest ``agent_runs.seed_ctx``
+    (else its runs' first-request ctx) counts once; each further run of the type subtracts it.  Runs with no
+    type share the ``""`` type; the main session (``run_id == sid``) has no seed.
+    """
+    runs = {}
+    for run_id, fresh, out, ctx in conn.execute(
+            "SELECT run_id, COALESCE(input, 0) + COALESCE(cache_write, 0), COALESCE(output, 0), COALESCE(ctx, 0) "
+            "FROM turns WHERE session_id = ? AND kind = 'api' ORDER BY run_id, ts, msg_id", (sid,)):
+        run = runs.get(run_id)
+        if run is None:
+            run = runs[run_id] = {"fresh": 0, "seed": int(ctx), "type": ""}
+        run["fresh"] += int(fresh)
+        run["last_out"] = int(out)
+    for run_id, agent_type, seed in conn.execute(
+            "SELECT run_id, agent_type, seed_ctx FROM agent_runs WHERE session_id = ?", (sid,)):
+        if run_id in runs:
+            runs[run_id]["type"] = agent_type or ""
+            if seed:
+                runs[run_id]["seed"] = int(seed)
+    seeds = {}
+    for run_id, run in runs.items():
+        if run_id != sid and run["seed"] > 0:
+            seeds.setdefault(run["type"], []).append(run["seed"])
+    total = sum(run["fresh"] + run["last_out"] for run in runs.values())
+    total -= sum((len(v) - 1) * min(v) for v in seeds.values())
+    return max(0, total)
+
+
+def _write_work(sid):
+    """The child's job (3.28.7 T20): :func:`session_work` from the ledger into ``state/sampler/work/<sid>.json``."""
+    from . import db
+    # a failure keeps the last figure and is written anyway, so it is not re-queued on every refresh
+    work = _dig(_read_json(_work_path(sid), None), "work")
+    try:
+        conn = db.connect(readonly=True)
+        try:
+            work = session_work(conn, sid)
+        finally:
+            db.close(conn)
+    except Exception as exc:
+        _log("statusline.work_failed", sid=sid, err=repr(exc))
+    try:
+        fsutil.atomic_write_json(_work_path(sid), {"sid": sid, "work": work, "ts": time.time()})
+    except OSError as exc:
+        _log("statusline.work_failed", sid=sid, err=repr(exc))
+
+
+def _work_due(payload, sid, now):
+    """True in a mod-on project when the session's work file is missing or BACKGROUND_TICK_S old."""
+    if not _mod_on({"pa_json": _read_json(os.path.join(project_dir_of(payload), ".claude", "pa.json"), None)}):
+        return False
+    try:
+        return not 0 <= now - os.path.getmtime(_work_path(sid)) < BACKGROUND_TICK_S
+    except OSError:
+        return True
+
+
 def _line1(payload, ctx, cfg, sl, now):
     colors = sl["colors"]
     show = sl["show"]
@@ -802,7 +880,11 @@ def _line1(payload, ctx, cfg, sl, now):
         used = (100.0 - remaining) if remaining is not None else None
     total_in = _num(_dig(payload, "context_window", "total_input_tokens"), None)
     size = _num(_dig(payload, "context_window", "context_window_size"), None)
-    if total_in is not None and size and show.get("ctx", True):
+    if _mod_on(ctx) and show.get("ctx", True):
+        # 3.28.7 T20: the mod's main session calls no model; show the session's work instead
+        work = _dig(_read_json(_work_path(ctx["sid"]), None), "work") if ctx.get("sid") else None
+        segments.append(_seg("%s/∞" % (fmt_tokens(work) if work is not None else "—"), MAGENTA, colors))
+    elif total_in is not None and size and show.get("ctx", True):
         ctx_text = "%s/%s" % (fmt_tokens(total_in), fmt_tokens(size))
         if used is None:
             segments.append(_seg(ctx_text, MAGENTA, colors))
@@ -1951,6 +2033,7 @@ def _task_block(payload, ctx, cfg, sl, now):
 
         # children of the running task
         if tid == current_task:
+            lines.extend(_shell_lines(ctx, now, max_w, colors))
             show = (cfg or {}).get("statusline", {}).get("show", {})
             # DISABLED: running-agent line (label, handoff mark, warm count) under the task — 3.24 T13s
             # Original intent: show the running subagent, e.g. `pa-expert opus55/medium` (design A line 2)
@@ -1967,6 +2050,46 @@ def _task_block(payload, ctx, cfg, sl, now):
                     ccolor = DIM if child.get("stale") else (GREEN if child["status"] == "running" else DIM)
                     lines.append(_paint(ctext, ccolor, colors) if colors and ccolor else ctext)
     return lines
+
+
+SHELL_SPINNER = ("◐", "◓", "◑", "◒")
+
+
+def _shell_lines(ctx, now, max_w, colors):
+    """3.28.1 T15: one line per background shell of an expert or a coder (the mod's
+    ``.run/mod/<sid>/shells.json``, pa-watch's record from the Bash call to its completion
+    notice): ``◐ shell <name> · running 9m 05s · coder waiting``; one that ended badly
+    ``✗ shell <name> · ended exit <n> · coder waiting`` until its agent reports. The
+    spinner's frame comes from the clock, one step per redraw second."""
+    sid, project = ctx.get("sid") or "", ctx.get("project") or ""
+    if not sid or not project:
+        return []
+    doc = _read_json(os.path.join(project, ".run", "mod", sid, "shells.json"), None)
+    if not isinstance(doc, dict):
+        return []
+    out = []
+    for shells in doc.values():
+        for s in shells if isinstance(shells, list) else []:
+            if not isinstance(s, dict):
+                continue
+            typ = _text(s.get("type"))
+            role = "expert" if (typ == "pa-expert" or typ.startswith("expert-")) else \
+                "coder" if (typ == "pa-coder" or typ.startswith("coder-")) else ""
+            if not role:
+                continue
+            name = _text(s.get("name")) or "shell"
+            if isinstance(s.get("exit"), (int, float)):
+                text = "  ✗ shell %s · ended exit %d · %s waiting" % (name, int(s["exit"]), role)
+                color = RED
+            else:
+                secs = max(0, int(now - _num(s.get("at"), 0) / 1000.0))
+                text = "  %s shell %s · running %dm %02ds · %s waiting" % (
+                    SHELL_SPINNER[int(now) % 4], name, secs // 60, secs % 60, role)
+                color = DIM
+            if max_w > 0 and len(text) > max_w:
+                text = text[:max_w - 1] + "…"
+            out.append(_paint(text, color, colors) if colors else text)
+    return out
 
 
 def _task_children(ctx, status):
@@ -2022,6 +2145,45 @@ def _task_children(ctx, status):
 
 # --------------------------------------------------------------------------- render
 
+def _version_key(text):
+    """``(3, 28, 2)`` from a version's leading dotted numbers, else None."""
+    import re
+    m = re.match(r"^\s*(\d+(?:\.\d+)*)", text or "")
+    return tuple(int(x) for x in m.group(1).split(".")) if m else None
+
+
+def _release_line(project, colors):
+    """3.28.1 T14: the mod's ``.run/mod/release.json`` (``{version, kind, state}``, the 8-hour check's release; the
+    mod empties it when it starts) against the installed VERSION: below it, the update installs at the next restart
+    (state ``later``) or after the current task; reached, it is installed and waits for the restart. '' with no
+    release. 3.28.5 T18: while the run goes (state ``running``, or the run marker ``.run/mod/update.json`` running and
+    under 20 min old, pa/health.py RUN_STALE_S) it is installing, whatever VERSION says."""
+    doc = _read_json(os.path.join(project, ".run", "mod", "release.json"), None)
+    want = _version_key(_text(doc.get("version"))) if isinstance(doc, dict) else None
+    if want is None:
+        return ""
+    version, kind = _text(doc.get("version")), _text(doc.get("kind")) or "hotfix"
+    run = _read_json(os.path.join(project, ".run", "mod", "update.json"), None)
+    at = run.get("at") if isinstance(run, dict) else None
+    if _text(doc.get("state")) == "running" or (
+            isinstance(run, dict) and run.get("state") == "running" and isinstance(at, (int, float))
+            and time.time() - at < 20 * 60):
+        return _paint("⬆ Project Architect %s %s installing · please wait" % (version, kind), GREEN, colors)
+    try:
+        with open(os.path.join(paths.install_dir(), "VERSION"), "r", encoding="utf-8") as fh:
+            first = fh.readline().lstrip("﻿").strip()
+    except OSError:
+        first = ""
+    have = _version_key(first.split(":", 1)[1] if first.startswith("version:") else first)
+    if have is not None and have >= want:  # 3.28.2 T16: "(not /clear)" in red, the rest green
+        return (_paint("⬆ Project Architect %s %s installed · /exit, then claude --continue " % (version, kind), GREEN, colors)
+                + _paint("(not /clear)", RED, colors))
+    text = ("⬆ Project Architect %s %s available · installs at your next restart" % (version, kind)
+            if _text(doc.get("state")) == "later"
+            else "⬆ Project Architect %s %s · installs after the current task" % (version, kind))
+    return _paint(text, GREEN, colors)
+
+
 def render(payload, cfg=None, user_show=None):
     """The statusline text: task block, model line, Pace, Session, Project, Account, alerts."""
     payload = payload if isinstance(payload, dict) else {}
@@ -2037,6 +2199,11 @@ def render(payload, cfg=None, user_show=None):
     if governed and sl["show"].get("task_block", True):
         task_lines = _task_block(payload, ctx, cfg, sl, now)
         lines.extend(task_lines)
+
+    # 3.28.1 T14: the 2-hour check's release, green, directly above the model line
+    release = _release_line(ctx["project"], sl["colors"])
+    if release:
+        lines.append(release)
 
     # model line (line 1)
     lines.append(_line1(payload, ctx, cfg, sl, now))
@@ -2257,8 +2424,10 @@ def sample(payload, cfg=None):
             job["prev"], job["cur"] = prev, cur
         if _repair_due(sid, ctx_summary, cfg, now):
             job["repair"] = True
+        if _work_due(payload, sid, now):    # 3.28.7 T20: per session, not the shared tick
+            job["work"] = True
         tick = _tick_due(now)               # any queued job renews the tick
-        if "change" in reasons or job.get("repair") or tick:
+        if "change" in reasons or job.get("repair") or job.get("work") or tick:
             fsutil.append_line(_sampler_path("queue.jsonl"),
                                json.dumps(job, ensure_ascii=False, default=str))
             request_background()
@@ -2383,6 +2552,7 @@ def _run_jobs(jobs, cfg):
         merged = sessions.setdefault(sid, {})
         merged["project"] = _text(job.get("project")) or merged.get("project")
         merged["repair"] = bool(merged.get("repair") or job.get("repair"))
+        merged["work"] = bool(merged.get("work") or job.get("work"))
         merged["poll"] = job.get("poll", True)          # the latest payload decides
     for sid, job in sessions.items():
         now = time.time()
@@ -2401,6 +2571,8 @@ def _run_jobs(jobs, cfg):
         if job["repair"]:
             _repair_session({"sid": sid, "summary": summary, "account": account,
                              "project": job.get("project") or os.getcwd()}, cfg, now)
+        if job["work"]:
+            _write_work(sid)
         try:
             if job.get("poll"):
                 from . import usage_api

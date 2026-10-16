@@ -930,7 +930,8 @@ class TestLaunch(ToolCase):
     def test_from_draft_writes_the_plan_only_before_approval(self):
         draft = os.path.join(self.root, "draft.md")
         write(draft, read(self.plan).replace("Approved: 2026-09-12", "Approved: —")
-              .replace("## Tasks", "## Triage\n- (none)\n\n## Tasks", 1))
+              .replace("## Tasks", "## Triage\n- (none)\n\n## Tasks", 1)
+              .replace("- T2 | done      ", "- T2 | next      ", 1))   # 3.28.1 T9a: drafted while T2 ran
         p = self.tool("plan_edit.py", "from-draft", draft)
         self.assertNotEqual(p.returncode, 0, p.out)          # approved plan, no REPLAN.md
         write(os.path.join(self.cur, "REPLAN.md"), "Trigger: the milestone moved\n")
@@ -938,6 +939,8 @@ class TestLaunch(ToolCase):
         self.assertEqual(p.returncode, 0, p.out)
         self.assertIn("archived phase-ends/current/PHASE_PLAN.v1.md", p.out)
         self.assertIn("Approved: —", read(self.plan))
+        self.assertIn("kept done: T2", p.out)
+        self.assertRegex(read(self.plan), r"(?m)^- T2 \| done ")
         os.remove(os.path.join(self.cur, "REPLAN.md"))
 
     def test_status_clear_drops_the_phase_when_the_plan_is_gone(self):

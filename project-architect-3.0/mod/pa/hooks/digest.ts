@@ -76,22 +76,27 @@ export function taskAgents(expertId: string, files: readonly [string, string][])
   return out
 }
 
-/** A journal entry the recovery digest keeps (T5d1): a `note` or `thinking` entry of the task's agents, not Claude's or a thinker's. */
+/** A journal entry the recovery digest keeps (T5d1): a `note` or `thinking` entry of the task's agents, not Claude's or a thinker's;
+ * 3.28.1 T12: and the expert's earlier reports (`T<n>-interim`). */
 export const isProgressEntry = (name: string): boolean =>
-  /-(note|thinking)\.md$/.test(name) && !/-(claude|thinker)-(note|thinking)\.md$/.test(name)
+  /-(note|thinking|interim)\.md$/.test(name) && !/-(claude|thinker)-(note|thinking)\.md$/.test(name)
 
 const ENTRY_CHARS = 1_500
 const ENTRIES = 30
+const THINKING = 10 // 3.28.1 T12: reasoning kept apart (TerrainDiffusion: 281 coder-thinking a day crowded out the notes)
 
 /**
  * TASK_PROGRESS.md written by the mod at recovery (3.23 T5d1) when the hook's kill digest is absent: `git status
- * --short`, `git log --oneline <startSha>..HEAD`, and the task's note and thinking entries (`[name, text]`, their
- * frontmatter `ts` at or after `since`), oldest first, the last 30, each at most 1,500 chars.
+ * --short`, `git log --oneline <startSha>..HEAD`, what it waits on (3.28.1 T12), and the task's note and report entries
+ * (`[name, text]`, their frontmatter `ts` at or after `since`), oldest first, the last 30, then its thinking, the last 10,
+ * each at most 1,500 chars.
  */
 export function recoveryDigest(o: {
   id: string; attempt: number; startSha: string; since: number; status: string; log: string; entries: readonly [string, string][]
+  waiting?: readonly string[]
 }): string {
   const kept: string[] = []
+  const thought: string[] = []
   for (const [name, text] of [...o.entries].sort((a, b) => a[0].localeCompare(b[0]))) {
     const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/.exec(text)
     const ts = Date.parse(/^ts: *(.+)$/m.exec(m?.[1] ?? '')?.[1] ?? '')
@@ -99,7 +104,8 @@ export function recoveryDigest(o: {
       continue
     }
     const body = (m?.[2] ?? '').trim()
-    kept.push(`### ${name}\n${body.length > ENTRY_CHARS ? `${body.slice(0, ENTRY_CHARS - 1)}…` : body}`)
+    const to = name.endsWith('-thinking.md') ? thought : kept
+    to.push(`### ${name}\n${body.length > ENTRY_CHARS ? `${body.slice(0, ENTRY_CHARS - 1)}…` : body}`)
   }
   const block = (s: string): string => `\`\`\`\n${s.trim() === '' ? '(none)' : s.replace(/^(\s*\n)+/, '').trimEnd()}\n\`\`\``
   return [
@@ -114,8 +120,14 @@ export function recoveryDigest(o: {
     `## git log --oneline ${o.startSha || '?'}..HEAD`,
     block(o.log),
     '',
-    `## Journal notes and reasoning since ${new Date(o.since).toISOString()}`,
+    '## Waiting on',
+    (o.waiting ?? []).length === 0 ? '(nothing recorded)' : (o.waiting ?? []).map(x => `- ${x}`).join('\n'),
+    '',
+    `## Journal notes and reports since ${new Date(o.since).toISOString()}`,
     kept.length === 0 ? '(none)' : kept.slice(-ENTRIES).join('\n\n'),
+    '',
+    `## Reasoning, the last ${String(THINKING)}`,
+    thought.length === 0 ? '(none)' : thought.slice(-THINKING).join('\n\n'),
     '',
   ].join('\n')
 }

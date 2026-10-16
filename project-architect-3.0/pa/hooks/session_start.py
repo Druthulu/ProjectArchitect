@@ -995,7 +995,8 @@ def _update_check(inp, cfg):
         remote_head = "unknown"
 
     doc = {"checked_at": now, "clone_head": clone_head, "remote_head": remote_head,
-           "behind": behind, "installed": installed, "subjects": subjects, "status": "ok"}
+           "behind": behind, "installed": installed, "subjects": subjects, "status": "ok",
+           "remote_version": remote_version}    # 3.28.1 T14: the statusline's "available" line reads it
     if tree:
         doc["tree"] = tree
         doc["remote_tree"] = remote_tree
@@ -1015,6 +1016,38 @@ def _update_check(inp, cfg):
                 % (installed or tree[:7] or "unknown", clone_head, why, steps))
     subj_str = "; ".join(subjects)
     return ("PA3: update available: %d commits (%s)%s. %s" % (behind, subj_str, why, steps))
+
+
+def check_main(argv):
+    """3.28.1 T14: ``pa_ledger.py update-check <project>``, the mod's 2-hour release check: the same check as a
+    session start (``_update_check``: the clone's fetch, the I48 version comparison). Prints ``{"mode",
+    "version", "kind", "title"}`` (3.28.6 T19: the facts only, never the hook's line and its steps) when a newer release is out (mode: the project's ``upgrade``; kind ``hotfix`` for a
+    third number, else ``feature update``; title: its CHANGES.md heading), else nothing; exit 0. The mod installs it
+    at its next clean stop (no task running)."""
+    import json as _json
+    import re as _re
+    import subprocess
+    from .. import config as _config, fsutil, health
+    root = os.path.abspath(argv[0]) if argv else os.getcwd()
+    line = _update_check({"source": "startup", "cwd": root}, _config.load())
+    if not line:
+        return 0
+    stamp = fsutil.read_json(os.path.join(paths.install_dir(), "update.json"), None)
+    version = str(stamp.get("remote_version") or "") if isinstance(stamp, dict) else ""
+    if not version:
+        return 0
+    title = ""
+    try:
+        r = subprocess.run(["git", "-C", paths.package_clone_dir(), "show", "@{u}:project-architect-3.0/CHANGES.md"],
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
+        m = _re.search(r"^## %s\s+\S+\s+(.+)$" % _re.escape(version), r.stdout or "", _re.M)
+        title = m.group(1).strip() if m else ""
+    except (OSError, subprocess.SubprocessError):
+        title = ""
+    kind = "hotfix" if len(version.split(".")) >= 3 else "feature update"
+    print(_json.dumps({"mode": health.upgrade_mode(root), "version": version, "kind": kind,
+                       "title": title}))
+    return 0
 
 
 def _auto_run(root, sid, line):

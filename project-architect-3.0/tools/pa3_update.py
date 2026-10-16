@@ -226,7 +226,8 @@ def _detach(root, run_dir, lock, repair):
         kwargs = {"cwd": root, "stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
                   "stderr": subprocess.DEVNULL, "close_fds": True}
         if os.name == "nt":
-            kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+            # a hidden console its children inherit; DETACHED_PROCESS left them none, so each opened a window
+            kwargs["creationflags"] = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
                                        | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
         else:
             kwargs["start_new_session"] = True

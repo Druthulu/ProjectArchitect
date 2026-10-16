@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  agentsHold, answerLine, decisionLine, dialogKey, dropAgentDialogs, fallbackLine, holdingAgent, learnedFile, planFilePath, planLogLines, presentHold, presentOf, slugArgv, slugFile,
+  agentsHold, answerLine, decisionLine, dialogKey, dropAgentDialogs, fallbackLine, holdingAgent, isReplan, learnedFile, planFilePath, planLogLines, presentHold, presentOf, slugArgv, slugFile,
 } from './planview'
 
 const FILE = 'C:\\Users\\you\\.claude\\plans\\wild-petting-raccoon.md'
@@ -129,5 +129,16 @@ describe('queue items and deferral', () => {
     expect(slugFile({ exitCode: 1, stdout: FILE })).toBe('')
     expect(slugFile(null)).toBe('')
     expect(planLogLines('A', '# A\r\n\n1. x\n\n')).toEqual(['▣ plan: A', '# A', '', '1. x'])
+  })
+
+  test('3.28.1 T6: a phase plan with REPLAN.md beside an approved PHASE_PLAN.md is a replan; nothing else is', async () => {
+    const phase = presentOf({ id: '1-1-plan', kind: 'plan', caller: 'P1', input: { path: 'p.md', kind: 'phase' }, at: 5 })
+    const gen = presentOf({ id: '1-1-plan', kind: 'plan', caller: 'P1', input: { path: 'g.md', kind: 'generation' }, at: 5 })
+    const approved = '# Phase 3.5\nApproved: 2026-10-14   Planner: claude-opus-5-5/medium   Plan-hash: ab\n'
+    expect(phase !== null && isReplan(phase, true, approved)).toBe(true)
+    expect(phase !== null && isReplan(phase, false, approved)).toBe(false)
+    expect(phase !== null && isReplan(phase, true, '# Phase 3.5\nApproved: —   Planner: —   Plan-hash: —\n')).toBe(false)
+    expect(phase !== null && isReplan(phase, true, '')).toBe(false)
+    expect(gen !== null && isReplan(gen, true, approved)).toBe(false)
   })
 })

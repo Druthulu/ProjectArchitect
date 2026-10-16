@@ -4,7 +4,8 @@
 // in a ```diff fence. register.tsx keeps a registry of the texts it answered and draws only those, in the role's color.
 import { type CoderReturn, type ExpertContract, parseCoderReturn, parseExpertContract } from './contract'
 import { handbackReport } from './route'
-import type { Band, BandRow, Work } from '../types'
+import type { Band, BandRow, Shell, Work } from '../types'
+import { RESTART_LINE, SPINNER } from './loop'
 
 export type CardRole = 'claude' | 'planning' | 'expert' | 'coder' | 'thinker' | 'curator' | 'auditor'
 
@@ -110,7 +111,18 @@ export function coderFinish(what: string, c: CoderReturn, report: string, files:
  * orange Claude card, `**🟧 Claude**` then the reply. Retires 3.24's "white dot = Claude's replies, drawn natively".
  * 3.24 T17g: `shown`, the model and effort of the request that made the reply (feed.ts shownOf), joins the title
  * (`**🟧 Claude · Opus 5.5 · medium**`), so a /model or /effort change shows in the record. */
-export const claudeCard = (reply: string, shown = ''): string => cardText('claude', shown, reply)
+export const claudeCard = (reply: string, shown = ''): string => cardText('claude', shown, restartGap(reply))
+
+/** 3.28.2 T17: one empty line before the mod's restart line (loop.ts RESTART_LINE) whenever the line before it isn't
+ * empty, whatever Claude's spacing; the stored text carries it, so Remote Control matches the drawing. */
+export function restartGap(reply: string): string {
+  const at = reply.indexOf(RESTART_LINE)
+  const before = at < 0 ? '' : reply.slice(0, at)
+  if (before.trim() === '' || /\n[ \t]*\n[ \t]*$/.test(before)) {
+    return reply
+  }
+  return `${before.replace(/[ \t]*\n?[ \t]*$/, '')}\n\n${reply.slice(at)}`
+}
 
 /** 3.24 T17g: the review release's accepted card, `✓ Expert · T<n> · accepted`, with the task's SUMMARY as a done card
  * carries it (the contract routed for the review; empty when it has none). Was an empty card. */
@@ -197,9 +209,9 @@ export type BandRoot = { id: string; task: string }
 const LIVE = new Set(['pending', 'running', 'waiting'])
 
 /** The live agents under the roots (the roots included), each root's tree in turn, children by first seen; their root's task. */
-export function bandIds(agents: readonly BandAgent[], roots: readonly BandRoot[]): { id: string; task: string }[] {
+export function bandIds(agents: readonly BandAgent[], roots: readonly BandRoot[], keep: ReadonlySet<string> = new Set()): { id: string; task: string }[] {
   const out: { id: string; task: string }[] = []
-  const live = agents.filter(a => LIVE.has(a.status))
+  const live = agents.filter(a => LIVE.has(a.status) || keep.has(a.id)) // 3.28.1 T15: `keep`, an agent whose shell runs
   for (const r of roots) {
     const ids = new Set([r.id])
     const tree = live.filter(a => a.id === r.id)
@@ -233,14 +245,16 @@ export function elapsedText(ms: number): string {
  * `deep-thinker`) by the name after `pa-`. */
 export const bandRole = (type: string): string => {
   const t = type === 'deep-thinker' ? 'thinker' : /^pa-(expert|coder|thinker|planner)$/.test(type) ? type.slice(3) : type
-  return t === 'memory-curator' ? 'curator' : (t.split('-')[0] ?? '') || 'agent'
+  const r = t === 'memory-curator' ? 'curator' : (t.split('-')[0] ?? '') || 'agent'
+  return r === 'planner' ? 'planning' : r   // 3.28.1: ROLE_HEX names the planners' purple `planning`
 }
 
 /** The band's rows: one per live agent under the roots, its role, name, task (`T<n>`, `T<n> · c<k>` for a coder), step and
- * elapsed time at `now`. */
-export function bandRows(agents: readonly BandAgent[], roots: readonly BandRoot[], now: number): BandRow[] {
+ * elapsed time at `now`; 3.28.1 T15: under each agent a row per background shell of its (`shells`, pa-watch's
+ * shells.json): `◐ shell` (the spinner's frame from the clock; `✗` once it ended badly), its task, its name, its time. */
+export function bandRows(agents: readonly BandAgent[], roots: readonly BandRoot[], now: number, shells: Record<string, Shell[]> = {}): BandRow[] {
   const byId = new Map(agents.map(a => [a.id, a]))
-  return bandIds(agents, roots).flatMap(({ id, task }) => {
+  return bandIds(agents, roots, new Set(Object.keys(shells))).flatMap(({ id, task }) => {
     const a = byId.get(id)
     if (a === undefined) {
       return []
@@ -248,10 +262,15 @@ export function bandRows(agents: readonly BandAgent[], roots: readonly BandRoot[
     const role = bandRole(a.type)
     const k = role === 'coder' ? coderIdOf(a.description) : ''
     const t = /\bT\d+[a-z]?\b/.exec(a.description)?.[0] ?? task
+    const rowTask = k === '' ? t : `${t} · ${k}`
     return [{
-      role, name: a.name || a.type, task: k === '' ? t : `${t} · ${k}`, step: (a.step ?? '').replace(/\s+/g, ' ').trim(),
+      role, name: a.name || a.type, task: rowTask, step: (a.step ?? '').replace(/\s+/g, ' ').trim(),
       elapsed: elapsedText(now - a.since),
-    }]
+    }, ...(shells[id] ?? []).map(s => ({
+      // the frame steps once a tick (the autopilot's 2 s), so each of the four shows
+      role: 'shell', name: `${s.exit !== undefined ? '✗' : SPINNER[Math.floor(now / 2000) % SPINNER.length] ?? ''} shell`, task: rowTask,
+      step: s.name, elapsed: elapsedText(now - s.at),
+    }))]
   })
 }
 

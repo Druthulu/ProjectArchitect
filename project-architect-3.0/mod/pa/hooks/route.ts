@@ -256,11 +256,14 @@ export function localAnswer(kind: TurnKind, reply: string | null): string {
 export const isBusy = (status: string | undefined): boolean => status === 'running' || status === 'pending' || status === 'waiting'
 
 /**
- * Resume the recorded partner or seed a fresh one: `policy.decideRoute` (TTL from its last turn or its spawn, ctx,
- * topic, model switch; never with a child out). A busy partner is resumed (it rotates at the next quiet point), and
- * `rotateAt` > 0 (`PA_MOD_ROTATE_AT`, trials) counts a ctx at or past it as over the limit.
+ * Resume the recorded partner or seed a fresh one: `policy.decideRoute` (cold from its last turn or its spawn, ctx,
+ * topic, model switch; no rotation with a child out). A busy partner is resumed (it rotates at the next quiet point), and
+ * `rotateAt` > 0 (`PA_MOD_ROTATE_AT`, trials) counts a ctx at or past it as over the limit. 3.28.1 T12: `pingsLeft`, its
+ * idle stretch still has warming pings (policy.isCold); `busy` is its warming status (partnerStatus), so one listed
+ * `waiting` on its own background work after its turn ended is not busy.
  */
-export function partnerRoute(p: Partner | null, now: number, opts: { childOut: boolean; busy: boolean; rotateAt: number }): 'resume' | 'fresh' {
+export function partnerRoute(p: Partner | null, now: number,
+  opts: { childOut: boolean; busy: boolean; rotateAt: number; pingsLeft?: boolean }): 'resume' | 'fresh' {
   if (p === null) {
     return 'fresh'
   }
@@ -269,7 +272,7 @@ export function partnerRoute(p: Partner | null, now: number, opts: { childOut: b
   }
   const ctx = opts.rotateAt > 0 && p.ctx >= opts.rotateAt ? Math.max(p.ctx, CTX_MAX) : p.ctx
   const facts = { lastTurnAt: Math.max(p.lastTurnAt, p.spawnedAt), ctx, topicFlag: p.topic, modelSwitchAt: p.modelSwitchAt }
-  return decideRoute(facts, now, { childOut: opts.childOut })
+  return decideRoute(facts, now, { childOut: opts.childOut, pingsLeft: opts.pingsLeft })
 }
 
 const ENDED = ['completed', 'failed', 'killed', 'done']
@@ -551,7 +554,7 @@ export function applyReply(s: RouterState, n: number, path: string, key: string,
       firstCtx: p.firstCtx === 0 && ctx !== null ? ctx : p.firstCtx,
     },
     awaiting: null,
-    warm: { ...s.warm, waitStart: now, waitUsd: 0, waitPings: 0 },
+    warm: { ...s.warm, waitStart: now, waitUsd: 0, waitPings: 0, waitCount: 0 },
   }
 }
 

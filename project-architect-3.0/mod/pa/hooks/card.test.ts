@@ -140,6 +140,19 @@ describe('the band (3.23 T13)', () => {
     expect(bandHex('retriever')).toBeUndefined()
   })
 
+  test('3.28.1 T15: a row per background shell under its agent, kept while its turn has ended; a dead one shows ✗', () => {
+    const agents = [
+      ag({ id: 'E1', description: 'T5 bake', since: 0 }),
+      ag({ id: 'C6', type: 'pa-coder', parentId: 'E1', status: 'completed', description: 'T5.c6 bake', since: 0 }),
+    ]
+    const shells = { C6: [{ id: 'b1', name: 'bake_rest.sh', at: 0, type: 'pa-coder' }, { id: 'b2', name: 'make', at: 0, type: 'pa-coder', exit: 2 }] }
+    expect(bandRows(agents, [{ id: 'E1', task: 'T5' }], 542_000, shells).slice(1)).toEqual([
+      { role: 'coder', name: 'pa-coder', task: 'T5 · c6', step: '', elapsed: '9m' },
+      { role: 'shell', name: '◒ shell', task: 'T5 · c6', step: 'bake_rest.sh', elapsed: '9m' },
+      { role: 'shell', name: '✗ shell', task: 'T5 · c6', step: 'make', elapsed: '9m' },
+    ])
+  })
+
   test('cells fit the columns: the dim cell gives way first, then the task, then the name', () => {
     const r = { role: 'coder', name: 'coder-opus55', task: 'T3 · c1', step: 'Edit route.ts', elapsed: '4m' }
     expect(bandCells(r, 80)).toEqual({ name: 'coder-opus55', task: ' T3 · c1', dim: '  Edit route.ts · 4m' })
@@ -166,7 +179,8 @@ describe('3.24 T13B: Claude\'s reply card, the new roles, the router\'s band par
     expect(parseCard(cardText('curator', '', 'x'))?.role).toBe('curator')
     expect(parseCard(cardText('auditor', '', 'x'))?.role).toBe('auditor')
     expect(bandRole('memory-curator')).toBe('curator')
-    expect(bandRole('pa-planner')).toBe('planner') // 3.24 T17b
+    expect(bandRole('pa-planner')).toBe('planning') // 3.24 T17b; 3.28.1: the role ROLE_HEX colours purple
+    expect(bandHex(bandRole('pa-planner'))).toBe('#af5fff')
     expect(['pa-expert', 'pa-coder', 'pa-thinker', 'deep-thinker'].map(bandRole)).toEqual(['expert', 'coder', 'thinker', 'thinker']) // 3.25 T6b
     expect(bandHex('curator')).toBe('#d75faf')
     expect(bandHex('auditor')).toBe('#5f87af')
@@ -200,6 +214,11 @@ describe('3.24 T13B: Claude\'s reply card, the new roles, the router\'s band par
 describe('3.24 T17g: Claude\'s model and effort, the accepted card\'s summary, a late report', () => {
   test('a Claude card titles the reply\'s model and effort when given', async () => {
     expect(claudeCard('Done.', 'Opus 5.5 · medium')).toBe('**🟧 Claude · Opus 5.5 · medium**\n\nDone.')
+    // 3.28.2 T17: one empty line before the restart line, whatever Claude's spacing
+    const R = '**To load it: /exit, then claude --continue (not /clear)**'
+    const want = `**🟧 Claude**\n\nIt is installed.\n\n${R}`
+    expect([claudeCard(`It is installed.\n${R}`), claudeCard(`It is installed. ${R}`), claudeCard(`It is installed.\n\n${R}`)]).toEqual([want, want, want])
+    expect(claudeCard(R)).toBe(`**🟧 Claude**\n\n${R}`)
     expect(parseCard(claudeCard('Done.', 'Opus 5.5 · max'))?.title).toBe('Claude · Opus 5.5 · max')
   })
 

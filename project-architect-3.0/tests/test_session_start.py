@@ -806,6 +806,28 @@ class UpdateCheckTest(unittest.TestCase):
             fh.write("{}\n")
         return root
 
+    def test_check_main_the_mods_2_hour_check(self):
+        """3.28.1 T14: update-check prints the release (mode, version, kind, title) or nothing."""
+        import contextlib
+        import io
+        import json as _json
+        from pa.hooks import session_start
+        root = self._governed()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            session_start.check_main([root])
+        self.assertEqual(out.getvalue(), "")               # nothing newer
+        with open(os.path.join(self.pusher, "project-architect-3.0", "CHANGES.md"), "w") as fh:
+            fh.write("# PA3 changes\n\n## 3.11.1 — The hotfix\n- x\n")
+        self._release("hotfix", version="3.11.1")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            session_start.check_main([root])
+        doc = _json.loads(out.getvalue())
+        self.assertEqual((doc["mode"], doc["version"], doc["kind"], doc["title"]),
+                         ("auto", "3.11.1", "hotfix", "The hotfix"))
+        self.assertNotIn("line", doc)                     # 3.28.6 T19: no hook line (its pa3_update.py steps)
+
     def _assert_steps(self, result, root):
         self.assertIsNotNone(result)
         if root:                                  # T20: pre-wrapper project: the installer once
@@ -952,6 +974,13 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertIsNone(_update_check(self._inp(), config.defaults()))
         self._write_version(tree=False, version="3.13")   # the clone below the root: silent
         self.assertIsNone(_update_check(self._inp(), config.defaults()))
+
+    def test_three_part_version_is_above_its_phase(self):
+        """I48 / 3.28.1: a hotfix version compares above its phase's release, and the reverse not."""
+        from pa.hooks.session_start import _version_above
+        self.assertTrue(_version_above("3.28.1", "3.28"))
+        self.assertFalse(_version_above("3.28", "3.28.1"))
+        self.assertFalse(_version_above("3.28.1", "3.28.1"))
 
     def test_legacy_version_without_tree_offers_releases_only(self):
         """I48: a VERSION without tree: follows the same rule (was: any new commit offered)."""

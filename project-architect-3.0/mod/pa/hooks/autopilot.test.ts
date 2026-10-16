@@ -4,7 +4,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { On } from 'claude-code'
 
-import { lastAssistantText, resolveBash, subagentTranscript } from './autopilot'
+import { GIT_WRITE_MS, gitWrite, lastAssistantText, resolveBash, subagentTranscript } from './autopilot'
 import { stamp } from './journal'
 import { CONTINUE_TEXT } from './loop'
 
@@ -524,6 +524,63 @@ describe('autopilot Git Bash', () => {
   })
 })
 
+describe('autopilot git writes (3.28.1 T10)', () => {
+  type R = { exitCode: number; stdout: string; stderr: string }
+  const script = (answers: R[], lock: string): { calls: number[]; clears: number; go: () => Promise<{ r: R; note: string }> } => {
+    const o = { calls: [] as number[], clears: 0, go: async () => ({ r: answers[0] as R, note: '' }) }
+    let i = 0
+    o.go = async () => gitWrite(['bash', 'tools/commit_task.sh'], async (_argv, ms) => {
+      o.calls.push(ms)
+      i += 1
+      return answers[i - 1] as R
+    }, async () => {
+      o.clears += 1
+      return lock
+    })
+    return o
+  }
+  const killed: R = { exitCode: -1, stdout: '', stderr: 'Error: timed out' }
+  const locked: R = { exitCode: 1, stdout: '', stderr: "fatal: Unable to create '.git/index.lock': File exists." }
+
+  test('a git write gets its own limit, longer than a process call\'s 60 s', async () => {
+    const s = script([ok()], 'none')
+    expect((await s.go()).r.exitCode).toBe(0)
+    expect(s.calls).toEqual([GIT_WRITE_MS])
+    expect(GIT_WRITE_MS).toBeGreaterThan(60_000)
+    expect(s.clears).toBe(0)
+  })
+
+  test('an ordinary refusal is neither cleared nor retried', async () => {
+    const s = script([{ exitCode: 1, stdout: 'refused: nothing staged', stderr: '' }], 'removed')
+    expect((await s.go()).note).toBe('')
+    expect([s.calls.length, s.clears]).toEqual([1, 0])
+  })
+
+  test('killed: the stale lock is removed and the commit retried once', async () => {
+    const s = script([killed, ok()], 'removed\n')
+    const out = await s.go()
+    expect([out.r.exitCode, out.note]).toEqual([0, ''])
+    expect([s.calls.length, s.clears]).toEqual([2, 1])
+  })
+
+  test('a lock refusal clears and retries; a second failure says so in one line', async () => {
+    const s = script([locked, killed], 'removed')
+    const out = await s.go()
+    expect(out.r.exitCode).toBe(-1)
+    expect(out.note).toBe('retried once after removing a stale index.lock')
+    expect(s.calls.length).toBe(2)
+  })
+
+  test('a running git process keeps the lock: no retry', async () => {
+    for (const lock of ['busy', '']) {
+      const s = script([killed, ok()], lock)
+      const out = await s.go()
+      expect(out.note).toBe('index.lock kept: a git process is running, not retried')
+      expect(s.calls.length).toBe(1)
+    }
+  })
+})
+
 describe('router skips loop agents', () => {
   test('a loop agent\'s hand-back is neither filed as coder/end nor forwarded', async ($, on) => {
     const clock = mock.clock(on, { now: 1_000 })
@@ -675,6 +732,7 @@ describe('stops and releases (T5b)', () => {
     expect(n[0]?.input.text).toContain('call release({hold: "review"}) when the developer approves')
     await clock.advance(4_000)
     expect(delivered(w).some(t => t.includes('A loop prompt arrived: ‹pa› T1 stopped for your review'))).toBe(true)
+    expect(JSON.parse(w.files.get(`${BASE}/S1/state.json`) ?? '{}').sentKind).toBe('other') // 3.28.1 T9b
     expect(toastCauses(w)).toEqual([]) // T13b: none at the notice; Claude's presentation raises it
     await $.turn.complete(complete('P1', 'T1 built it and waits for your review.'))
     await clock.advance(4_000)
@@ -850,7 +908,7 @@ describe('stops and releases (T5b)', () => {
 
   test('release question outside the TTL: respawned with the brief plus NOTE', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const w = world(on, { [LOOP]: held('question', NOW - 56 * 60_000) })
+    const w = world(on, { [LOOP]: held('question', NOW - 61 * 60_000) })
     releaseReq(w, NOW, { hold: 'question', note: 'use ints' })
     await $.session.start(START)
     await clock.advance(2_000)
@@ -860,7 +918,7 @@ describe('stops and releases (T5b)', () => {
     expect(sp[0]?.prompt).toContain('NOTE: use ints')
     expect(loopOf(w).task?.kind).toBe('relaunch')
     expect(loopOf(w).task?.attempt).toBe(2)
-    expect(w.files.get(entries(w, 'mod-hold').pop() ?? '')).toContain('respawned with the note')
+    expect(w.files.get(entries(w, 'mod-hold').pop() ?? '')).toContain('and the note')
   })
 
   test('release question held past the TTL, last ping inside it: resumed, not respawned (3.26 T2)', async ($, on) => {
@@ -886,7 +944,7 @@ describe('stops and releases (T5b)', () => {
     await clock.advance(2_000)
     expect(w.sends).not.toContain('NOTE: use ints')
     expect(experts(w).length).toBe(1)
-    expect(w.files.get(entries(w, 'mod-hold').pop() ?? '')).toContain('respawned with the note')
+    expect(w.files.get(entries(w, 'mod-hold').pop() ?? '')).toContain('and the note')
   })
 
   test('release close sets closeRequested; its done-only reply is journaled, not sent (3.24 T13A)', async ($, on) => {
@@ -1081,6 +1139,25 @@ describe('queued edits and the talk hold (T5b2)', () => {
     await $.turn.complete(complete('P1', 'Done: the change is queued.'))
     await clock.advance(2_000)
     expect(loop2(w).lastAnswerAsked).toBe(false)
+  })
+
+  test('3.28.1 T9b: an answer to a mod notice (sentKind other) neither keeps talk nor records a question', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: loopAt({ holds: ['talk'], lastDevAt: NOW - 15 * 60_000 + 10_000 }),
+      [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' }, sentKind: 'other' }) })
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }]
+    await $.session.start(ISTART)
+    await clock.advance(2_000)
+    await $.turn.complete(complete('P1', 'PA3 updated. Shall I tell you what changed?'))
+    await clock.advance(2_000)
+    expect(loop2(w).lastAnswerAsked ?? false).toBe(false)
+    expect(loop2(w).lastAnswerAt).toBeGreaterThan(NOW)          // the relay and the feed still see the answer
+    expect(loop2(w).talkAnswerAt ?? 0).toBe(0)
+    expect(loop2(w).holds).toEqual(['talk'])
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(loop2(w).holds).toEqual([])                          // 15 min after the developer's message, talk pops
   })
 })
 
@@ -1520,6 +1597,25 @@ describe('plan install (T6a1)', () => {
     expect(entries(w, 'T1-start').length).toBe(1)
   })
 
+  test('3.28.1 T6: a replan\'s install waits while a task runs; at the boundary it installs with the loop off', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = phaseWorld(on, { [REPLAN_MD]: '# replan\n', [LOOP]: running() })
+    w.list = [{ id: 'E1', status: 'running', type: 'pa-expert' }]
+    installReq(w, NOW, { kind: 'phase', path: '.run/plans/phase.md', title: 'P' })
+    await $.session.start(START)
+    await clock.advance(4_000)
+    const waiting = loopOf(w) as Loop & { install?: { step?: string } | null }
+    expect([waiting.state, waiting.task?.id, waiting.install?.step]).toEqual(['running', 'T1', 'start'])
+    expect(ran(w, 'tools/plan_edit.py')).toEqual([])
+    w.files.set(LOOP, JSON.stringify({ ...waiting, state: 'boundary', task: null })) // T1 done: the boundary
+    await clock.advance(2_000)
+    expect(ran(w, 'tools/plan_edit.py from-draft')).toEqual([['py', 'tools/plan_edit.py', 'from-draft', '.run/plans/phase.md']])
+    expect(w.files.has(REPLAN_MD)).toBe(false)
+    expect(toCaller(w)).toEqual(['Plan decision: approved\ninstalled: phase 1.1 plan (PHASE_PLAN.md approved)'])
+    const l = loopOf(w) as Loop & { install?: unknown }
+    expect([l.state, l.install]).toEqual(['off', null])
+  })
+
   test('a lint failure is changes asked: lint: …; nothing installed or committed', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = phaseWorld(on)
@@ -1652,7 +1748,7 @@ describe('the session hold (T13d.c11)', () => {
     })
   }
 
-  test('a task taken over at a resume: its recovery waits for the release, then continue:', async ($, on) => {
+  test('3.28.1 T9c: a task taken over at a resume: its recovery runs under the session hold, continue: at once', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: orphan(NOW - 50_000) })
     await $.session.start(START)
@@ -1660,10 +1756,8 @@ describe('the session hold (T13d.c11)', () => {
     for (let i = 0; i < 3; i += 1) {
       await clock.advance(2_000)
     }
-    expect([loop3(w).holds, loop3(w).task?.recovery?.phase, w.sends]).toEqual([['session'], 'start', []])
-    releaseReq(w, NOW + 6_000, { hold: 'session' })
-    await clock.advance(2_000)
-    expect(w.sends).toEqual([CONTINUE_TEXT])
+    expect([loop3(w).holds, loop3(w).task?.recovery?.phase, w.sends]).toEqual([['session'], 'sent', [CONTINUE_TEXT]])
+    expect(notices(w).map(n => n.input.text).filter(t => t.includes('cut off when the session ended'))).toHaveLength(1)
   })
 
   test('3.24 T12c: a message routed before the resume\'s first owning tick gets the session line, not the talk line', async ($, on) => {
@@ -2160,6 +2254,221 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     expect(notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 updated from')).length).toBe(1)
     expect(w.spawns.length).toBe(0)
   })
+
+  // 3.28.1 T14: the 8-hour release check (pa_ledger.py update-check), its picker, the clean stop, the statusline's marker.
+  const CHECK = '/.claude/pa3/pa_ledger.py update-check'
+  const STAMP = '/.claude/pa3/update.json'
+  const RELM = `${BASE}/release.json`
+  const RELEASE = 'PA3: update available: 2 commits (x) (version 3.28.1 -> 3.28.2). Say `update pa3` to run it.'
+  const checkAnswer = (w: W) => (argv: string[]): Ran => {
+    if (argv.slice(1, 3).join(' ') === CHECK) {
+      return ok(`${JSON.stringify({ line: RELEASE, mode: 'auto', version: '3.28.2', kind: 'hotfix', title: 'Fixes' })}\n`)
+    }
+    if (argv[1] === 'tools/pa3_update.py') {
+      w.files.set(MARKER, marker({ at: (NOW + 3_600_000) / 1000, from: { phase: '3.28.1', git: 'aaaa1111cc' }, to: { phase: '3.28.2', git: 'bbbb2222dd' } }))
+      w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+      return ok('pa3_update: done\n')
+    }
+    return defaultAnswer(argv)
+  }
+  const relOf = (w: W): unknown => (JSON.parse(w.files.get(LOOP) ?? '{}') as { release?: unknown }).release ?? null
+  const old = JSON.stringify({ checked_at: (NOW - 8 * 3_600_000) / 1000 })
+
+  test('3.28.1 T14: no check within 8 hours of the last; the start empties the release marker (the restart loaded it)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [RELM]: '{"version":"3.28.2","kind":"hotfix","state":"install"}', [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    w.answer = checkAnswer(w)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(ran(w, CHECK).length).toBe(0)
+    expect(w.files.get(RELM)).toBe('{}\n')
+  })
+
+  test('3.28.2 T16: the start after an install says it is loaded, once; a plain start says nothing', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.28.2 is installed and loaded. Ready to continue work.**'
+    const w = world(on, { [RELM]: '{"version":"3.28.2","kind":"hotfix","state":"install"}', '/.claude/pa3/VERSION': '3.28.2\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+    await $.session.start(START) // a plain start: the marker is empty
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+  })
+
+  test('3.28.1 T14: 8 hours on, a picker while the task runs; install: at the clean stop, then a toast and no new task', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [STAMP]: old })
+    w.answer = checkAnswer(w)
+    const asked = askWith(on, w, ['Install after the current task'])
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(experts(w).length).toBe(1)
+    expect(ran(w, CHECK).length).toBe(1)
+    expect(asked.map(a => a.q)).toEqual(['Project Architect 3.28.2, a hotfix (Fixes), is out. Install it? Tasks keep running ' +
+      'while you decide.\nNot now: when you\'re back at this machine, just tell Claude you\'re back and want the update — it ' +
+      'installs after the current task. Or restart (/exit, then claude --continue) and it installs on the way in.'])
+    expect(notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 3.28.2, a hotfix, is out')).length).toBe(1)
+    expect(w.files.get(RELM)).toBe('{"version":"3.28.2","kind":"hotfix","state":"install"}\n')
+    expect(ran(w, 'tools/pa3_update.py').length).toBe(0) // the task runs on
+    await $.turn.complete(complete('E1', 'STATUS: done\nCOMMIT: abc'))
+    await clock.advance(60_000)
+    await clock.advance(4_000)
+    expect(ran(w, 'tools/pa3_update.py')).toEqual([['py', 'tools/pa3_update.py', '--detach']])
+    expect(relOf(w)).toMatchObject({ version: '3.28.2', step: 'done' })
+    const done = notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 updated from 3.28.1'))
+    expect(done.length).toBe(1)
+    expect(done[0]?.input.text).toContain('"Project Architect 3.28.2, a hotfix (<the title of its CHANGES.md heading>), is installed."') // 3.28.2 T16
+    expect(done[0]?.input.text).toContain('\n\n**To load it: /exit, then claude --continue (not /clear)**\n\n')
+    expect([...w.files.keys()].filter(p => p.endsWith('-toast.json')).length + toastCauses(w).length).toBeGreaterThan(0)
+    await clock.advance(30_000)
+    expect(experts(w).length).toBe(1) // installed: no task starts on the old code
+  })
+
+  test('3.28.6 T19: the release check passes Claude and the journal the facts only, never the hook\'s pa3_update.py line', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [STAMP]: old })
+    const STEPS = 'PA3: update available: 2 commits (x) (version 3.28.4 -> 3.28.5). Upgrade: auto: before the first task run ' +
+      '`py tools/pa3_update.py` (one command, never chained); then announce from /c/project-architect-3.0/CHANGES.md.'
+    w.answer = (argv: string[]): Ran => argv.slice(1, 3).join(' ') === CHECK
+      ? ok(`${JSON.stringify({ line: STEPS, mode: 'auto', version: '3.28.5', kind: 'hotfix', title: 'Fixes' })}\n`)
+      : defaultAnswer(argv)
+    askWith(on, w, [])
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(ran(w, CHECK).length).toBe(1)
+    expect(notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 3.28.5, a hotfix, is out')).length).toBe(1)
+    expect(notices(w).filter(n => n.input.text.includes('pa3_update.py')).length).toBe(0)
+    const ctx = entries(w, 'mod-context').map(p => w.files.get(p) ?? '')
+    expect(ctx.length).toBe(1)
+    expect(ctx[0]).toContain('PA3 3.28.5, a hotfix (Fixes), is out')
+    expect(ctx[0]).not.toContain('pa3_update.py')
+  })
+
+  test('3.28.1 T14: not now: the work goes on, no install; release({hold: "update"}) installs it after all', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [STAMP]: old })
+    w.answer = checkAnswer(w)
+    const asked = askWith(on, w, ['Not now (I\'m away or busy)'])
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(relOf(w)).toMatchObject({ version: '3.28.2', step: 'later' })
+    expect(w.files.get(RELM)).toBe('{"version":"3.28.2","kind":"hotfix","state":"later"}\n')
+    await $.turn.complete(complete('E1', 'STATUS: done\nCOMMIT: abc'))
+    await clock.advance(60_000)
+    await clock.advance(4_000)
+    expect([ran(w, 'tools/pa3_update.py').length, experts(w).length]).toEqual([0, 2]) // the work goes on
+    w.files.set(STAMP, old) // a later check finds the same version: not asked again
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect([ran(w, CHECK).length, asked.length]).toEqual([2, 1])
+    releaseReq(w, clock.now(), { hold: 'update' })
+    await clock.advance(10_000)
+    expect([ran(w, 'tools/pa3_update.py').length, relOf(w)]).toEqual([0, expect.objectContaining({ step: 'install' })])
+    await $.turn.complete(complete(`E${String(w.spawns.length)}`,'STATUS: done\nCOMMIT: abc'))
+    await clock.advance(60_000)
+    await clock.advance(4_000)
+    expect(ran(w, 'tools/pa3_update.py').length).toBe(1)
+  })
+
+  // 3.28.2 T17: a paused task is a clean stop; release update with the install chosen is accepted; the hook's install.
+  const chosen = { version: '3.28.2', kind: 'hotfix', asked: 'a1', step: 'install' }
+  const fresh = JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 })
+  test('3.28.2 T17: a stopped task with no agent working is a clean stop; a working agent still waits', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running({ holds: ['stopped', 'talk'], release: chosen }), [STAMP]: fresh })
+    w.answer = checkAnswer(w)
+    w.list = [{ id: 'E1', status: 'running', type: 'pa-expert' }]
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(ran(w, 'tools/pa3_update.py').length).toBe(0) // its expert is at work
+    w.list = [{ id: 'E1', status: 'idle', type: 'pa-expert' }]
+    await clock.advance(10_000)
+    expect(ran(w, 'tools/pa3_update.py')).toEqual([['py', 'tools/pa3_update.py', '--detach']])
+  })
+
+  test('3.28.5 T18: the run starts: installing on the marker, Claude told once; it ends with exit 0: installed', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const INSTALLING = 'Installing Project Architect 3.28.2 now; please wait, I\'ll tell you when it\'s done.'
+    const w = world(on, { [LOOP]: running({ holds: ['stopped', 'talk'], release: chosen }), [STAMP]: fresh })
+    w.answer = (argv: string[]): Ran => {
+      if (argv[1] === 'tools/pa3_update.py') { // detached: the run goes on
+        w.files.set(MARKER, marker({ state: 'running', at: (NOW + 1_000) / 1000, from: { phase: '3.28.1', git: 'aaaa1111cc' }, to: { phase: '3.28.2', git: 'bbbb2222dd' } }))
+        return ok('pa3_update: started\n')
+      }
+      return defaultAnswer(argv)
+    }
+    w.list = [{ id: 'E1', status: 'idle', type: 'pa-expert' }]
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(ran(w, 'tools/pa3_update.py').length).toBe(1)
+    expect(w.files.get(RELM)).toBe('{"version":"3.28.2","kind":"hotfix","state":"running"}\n')
+    await clock.advance(30_000)
+    expect(notices(w).filter(n => n.input.text.includes(INSTALLING)).length).toBe(1)
+    w.files.set(MARKER, marker({ at: (NOW + 40_000) / 1000, from: { phase: '3.28.1', git: 'aaaa1111cc' }, to: { phase: '3.28.2', git: 'bbbb2222dd' } }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await clock.advance(10_000)
+    expect(w.files.get(RELM)).toBe('{"version":"3.28.2","kind":"hotfix","state":"installed"}\n')
+    expect(notices(w).filter(n => n.input.text.includes(INSTALLING)).length).toBe(1)
+  })
+
+  test('3.28.2 T17: release({hold: "update"}) with the install chosen is accepted; with no newer release, refused so', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running({ release: chosen }), [STAMP]: fresh })
+    await $.session.start(START)
+    releaseReq(w, clock.now(), { hold: 'update' })
+    await clock.advance(10_000)
+    expect(notices(w).map(n => n.input.text).filter(t => t.includes(': update') || t.includes('PA3 release'))).toEqual([
+      'released: update (the install of PA3 3.28.2 is already chosen; it runs at the clean stop, now if no expert or coder is working)'])
+    w.files.set(LOOP, JSON.stringify({ ...(JSON.parse(w.files.get(LOOP) ?? '{}') as object), release: null }))
+    releaseReq(w, clock.now(), { hold: 'update' })
+    await clock.advance(10_000)
+    expect(notices(w).map(n => n.input.text).filter(t => t.startsWith('refused:'))).toEqual(['refused: there is no newer PA3 release'])
+  })
+
+  test('3.28.2 T17: the session start\'s run installs the chosen release: the next start says loaded, once', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.28.2 is installed and loaded. Ready to continue work.**'
+    const w = world(on, { [LOOP]: loopAt({ release: chosen }), [RELM]: '{"version":"3.28.2","kind":"hotfix","state":"install"}',
+      [MARKER]: marker({ state: 'running' }), '/.claude/pa3/VERSION': '3.28.1\n', [STAMP]: fresh })
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect([notices(w).filter(n => n.input.text.includes(LOADED)).length, ran(w, 'tools/pa3_update.py').length]).toEqual([0, 0])
+    w.files.set('/.claude/pa3/VERSION', '3.28.2\n')
+    w.files.set(MARKER, marker({ at: (NOW + 11_000) / 1000 }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await clock.advance(10_000)
+    expect(relOf(w)).toMatchObject({ step: 'done' })
+    expect(w.files.get(RELM)).toBe('{"version":"3.28.2","kind":"hotfix","state":"install"}\n')
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+  })
+
+  test('3.28.2 T17: the hook\'s run starts, a restart loads the new mod, then the run ends: loaded, no restart line', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.28.2 is installed and loaded. Ready to continue work.**'
+    const w = world(on, { [LOOP]: loopAt({ release: chosen }), [RELM]: '{"version":"3.28.2","kind":"hotfix","state":"install"}',
+      [MARKER]: marker({ state: 'running' }), '/.claude/pa3/VERSION': '3.28.1\n', [STAMP]: fresh })
+    await $.session.start(START) // the old mod; the session-start hook's run is going
+    await clock.advance(10_000)
+    w.files.set('/.claude/pa3/VERSION', '3.28.2\n') // the run's install step is done; its project step goes on
+    await $.session.start(START) // the restart loads the new mod
+    await clock.advance(10_000)
+    expect([relOf(w), w.files.get(RELM)]).toEqual([null, '{}\n'])
+    w.files.set(MARKER, marker({ at: (NOW + 21_000) / 1000, from: { phase: '3.28.1', git: 'aaaa1111cc' }, to: { phase: '3.28.2', git: 'bbbb2222dd' } }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await clock.advance(10_000)
+    const done = notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 updated from 3.28.1'))
+    expect(done.length).toBe(1)
+    expect(done[0]?.input.text).toContain(LOADED)
+    expect(done[0]?.input.text).not.toContain('To load it')
+    expect(ran(w, 'tools/pa3_update.py').length).toBe(0)
+  })
 })
 
 // T6b: the phase close. The plan names phase 1.1 of generation 1; 3.25 T2: the mod closes it, no agent.
@@ -2567,8 +2876,9 @@ describe('a stopped loop agent (T11-fix2)', () => {
   test('killed with no contract: the stopped hold and one notice, no send, no spawn, no toast; no new task while held', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: running() })
-    setStatus(w, 'E1', 'killed')
     await $.session.start(START)
+    await clock.advance(2_000)
+    setStatus(w, 'E1', 'killed')
     await clock.advance(2_000)
     expect(loop2(w).holds).toEqual(['stopped'])
     expect(notices(w).map(n => n.input.text)).toEqual([STOP_NOTICE])
@@ -2593,22 +2903,34 @@ describe('a stopped loop agent (T11-fix2)', () => {
   test('absent from the list 15 s after its spawn: treated as killed, and the notice says so', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: running() })
-    w.list = []
     await $.session.start(START)
+    await clock.advance(2_000)
+    w.list = []
     await clock.advance(2_000)
     expect(loop2(w).holds).toEqual(['stopped'])
     expect(notices(w)[0]?.input.text).toContain('E1 is gone from the agent list, so I treat it as killed')
     expect([w.sends.length, w.spawns.length]).toEqual([0, 0])
   })
 
-  test('a takeover with the recorded agent gone (the bed after a Ctrl+C): the stopped hold, no continue:, no respawn', async ($, on) => {
+  test('3.28.1 T9c: a takeover with the recorded agent gone (a restart): continue: under its id, no stopped hold', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: orphan(NOW - 50_000) })
     w.list = []
     await $.session.start(START)
     await clock.advance(4_000)
-    expect([loop3(w).holds, loop3(w).task?.recovery ?? null, w.sends, experts(w).length]).toEqual([['stopped'], null, [], 0])
-    expect(notices(w)[0]?.input.text).toContain('E0 is gone from the agent list')
+    expect([loop3(w).holds, loop3(w).task?.recovery?.phase, w.sends, experts(w).length]).toEqual([[], 'sent', [CONTINUE_TEXT], 0])
+    expect(notices(w)[0]?.input.text).toContain('I resumed it under its id (E0)')
+  })
+
+  test('3.28.1 T9c: killed and never seen at work by this process (a restart, heartbeat fresh): recovered, no stopped hold', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    setStatus(w, 'E1', 'killed')
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect([loop2(w).holds, loop2(w).task?.recovery?.phase, w.sends]).toEqual([[], 'sent', [CONTINUE_TEXT]])
+    expect(notices(w).map(n => n.input.text).some(t => t.includes('stopped (Ctrl+C'))).toBe(false)
   })
 
   test('killed with a pending contract: routed', async ($, on) => {
@@ -2702,6 +3024,78 @@ describe('a stopped loop agent (T11-fix2)', () => {
     await $.prompt.submit({ text: 'and now?', origin: { kind: 'composer' }, wait: false })
     await clock.advance(2_000)
     expect(delivered(w).some(t => t.includes('- expert E1 (claude-opus-5-5): waiting'))).toBe(true)
+  })
+})
+
+// 3.28.1 T15: a `WAITING: shell <what>` hand-back is told to Claude; a live shell keeps its run waiting; a woken
+// expert's SendMessage report is its report.
+type LoopJ = Loop2 & { task: { forwardAt?: number; recovery?: unknown; contract?: string } | null }
+const loopJ = (w: W): LoopJ => JSON.parse(w.files.get(LOOP) ?? '{}') as LoopJ
+describe('background shells (3.28.1 T15)', () => {
+  test('a coder hands back `WAITING: shell …`: Claude gets one notice naming the task, the coder and what runs', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: running() })
+    w.list = [...w.list, { id: 'C1', status: 'running', parentId: 'E1', type: 'pa-coder' }]
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'C1', input: { message: 'WAITING: shell bake_rest.sh (the full bake)' } })
+    await clock.advance(2_000)
+    const n = notices(w).filter(x => x.input.text.includes('background shell'))
+    expect(n.map(x => x.input.text)).toEqual([
+      "‹pa› T1's coder (C1) is waiting on a background shell: bake_rest.sh (the full bake). It picks up by itself when the shell ends. " +
+      'Tell the developer in one plain line: what is running, for which task, and that it picks up by itself.'])
+  })
+
+  test('an agent outside the running task waiting on a shell: no notice', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: running() })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'Z9', input: { message: 'WAITING: shell x.sh' } })
+    await clock.advance(2_000)
+    expect(notices(w).filter(x => x.input.text.includes('background shell'))).toEqual([])
+  })
+
+  test('the expert dropped from the list while its shell runs (shells.json): waiting, not stopped', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    w.files.set(`${BASE}/S1/shells.json`, JSON.stringify({ E1: [{ id: 'b1', name: 'gate.sh', at: NOW, type: 'pa-expert' }] }))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    w.list = []
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect([loopJ(w).holds, loopJ(w).task?.recovery ?? null]).toEqual([[], null])
+  })
+
+  test('a woken expert reports with SendMessage: the note\'s contract is captured as its report', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.prompt.submit({ text: '<agent-message from="E1">\nSTATUS: done\nLOG: logs/T1.md\nCOMMIT: def5678\n</agent-message>', origin: { kind: 'peer' }, wait: false })
+    w.list = [{ id: 'E1', status: 'completed', type: 'pa-expert' }]
+    await clock.advance(60_000)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(ran(w, 'tools/plan_edit.py set-status')[0]).toEqual(['py', 'tools/plan_edit.py', 'set-status', 'T1', 'done', '--by', 'router'])
+  })
+
+  // 3.28.1 T12: nothing is sent to a cold agent; a fresh one, seeded, takes the message and the old one's place.
+  const x1 = (o: Record<string, unknown>): Record<string, unknown> => ({ ...(JSON.parse(running()) as { task: Record<string, unknown> }).task, agentId: 'X1', ...o })
+  test('3.28.1 T12: the router\'s forward with text for a cold expert: a fresh expert has the text, nothing sent', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running({ task: x1({ spawnedAt: NOW - 3 * 3_600_000, lastCompleteAt: NOW - 2 * 3_600_000 }) }) })
+    w.list = [{ id: 'X1', status: 'idle', type: 'pa-expert' }]
+    const id = `${String(NOW)}-1-forward`
+    w.files.set(`${INBOX}/${id}.json`, JSON.stringify({ id, kind: 'forward', caller: 'router', input: { agentId: 'X1', child: 'C9', text: 'Hand-back from your background agent C9:\ngreen' }, at: NOW }))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(w.sends).toEqual([])
+    expect(experts(w).length).toBe(1)
+    expect(experts(w)[0]?.prompt).toContain('Hand-back from your background agent C9:\ngreen')
   })
 })
 

@@ -2,8 +2,8 @@
 // queue's items from inbox requests, the deferral, the plan file's path, the main plan file an ExitPlanMode result
 // names, the decision line parsed from ExitPlanMode's raw result, and the fallback's and the ask's answer lines.
 // register.tsx's presentation tick makes the `$` calls (path 0, the fallback pane and `$.ui.ask`).
-// 3.23 T6a1: plan kinds (generation and phase plans are installed by the loop on approval), the dialog guard (the loop
-// off or held, no agent busy, no draft; the router's `dialog.json` flag, which the loop reads), the trial approve.
+// 3.23 T6a1: plan kinds (generation and phase plans are installed by the loop on approval), the dialog guard (no agent
+// busy, no draft; the router's `dialog.json` flag, which the loop reads), the trial approve.
 import type { Present } from '../types'
 
 /** The fallback's Markdown pane (drawn by register.tsx's `ui.render` hook on `Pane`). */
@@ -51,14 +51,11 @@ export function presentOf(req: { id: string; kind: string; caller: string; input
 }
 
 /**
- * Why a dialog must wait, or '' when it may show: the loop neither `off` nor held (3.23 T6a1: `boundary`, `running`,
- * or held only by `talk`), an agent `running|pending|waiting` (a permission-mode switch reaches running agents), a
- * draft in the prompt box (the dialog would take its focus). One dialog at a time is the tick's flag.
+ * Why a dialog must wait, or '' when it may show: an agent `running|pending|waiting` (a permission-mode switch reaches
+ * running agents), a draft in the prompt box (the dialog would take its focus). One dialog at a time is the tick's flag.
+ * 3.28.1 T7: whatever the loop is doing, a running task included (developer 2026-10-14).
  */
-export function presentHold(o: { busy: boolean; draft: string; loop?: { state: string; holds: readonly string[] } }): string {
-  if (o.loop !== undefined && o.loop.state !== 'off' && !o.loop.holds.some(h => h !== 'talk')) {
-    return `loop ${o.loop.state}`
-  }
+export function presentHold(o: { busy: boolean; draft: string }): string {
   if (o.busy) {
     return 'agent busy'
   }
@@ -128,6 +125,11 @@ export const trialLine = (p: Present): string => (p.kind === 'plan' ? APPROVED :
 
 /** A plan the loop installs on approval (generation or phase). */
 export const installs = (p: Present): boolean => p.kind === 'plan' && (p.planKind === 'generation' || p.planKind === 'phase')
+
+/** 3.28.1 T6: a redraft of an approved phase (REPLAN.md beside an approved PHASE_PLAN.md) goes to the loop to install at
+ * the next task boundary, with no plan view: the conversation that asked for it is the approval. */
+export const isReplan = (p: Present, replanMd: boolean, planText: string): boolean =>
+  p.kind === 'plan' && p.planKind === 'phase' && replanMd && /^Approved:\s*\d/m.test(planText)
 
 /** The partner's plan file: an absolute path as given, a relative one against the repo root. */
 export function planFilePath(root: string, path: string): string {

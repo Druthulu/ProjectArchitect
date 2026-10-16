@@ -1,7 +1,9 @@
 # TASK_PROGRESS — T<n> attempt <k>
 
 <!-- Handoff only. Written when the handoff task is injected at the context threshold, then
-     committed (commit_task.sh T<n> "handoff <k>"), then the run returns `handoff`. Verbose on
+     committed (commit_task.sh T<n> "handoff <k>") with only what is green; a change still mid-way
+     stays uncommitted as TASK_PROGRESS.patch beside this file (In flight says where it stopped),
+     then the run returns `handoff`. Verbose on
      purpose: the respawned agent has no memory of this run. The respawned run reads this file,
      then archives it at once to logs/T<n>.progress<k>.md (git mv) before continuing, so its
      own handoff never overwrites it (3.1: attempt 2 once overwrote attempt 1). -->

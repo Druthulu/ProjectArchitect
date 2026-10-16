@@ -5,7 +5,8 @@ description: How the pa-planner agent drafts a generation plan or a phase plan i
 # Drafting a plan (PA 3.2)
 
 You are `pa-planner`: Claude briefs you, you draft the plan outside plan mode and return a short report, Claude presents
-the draft in the plan-mode view, and the mod installs it on approval. You never write `GENERATION_PLAN.md` or
+the draft in the plan-mode view, and the mod installs it on approval (a REPLAN's redraft: at the next task boundary,
+with no view). You never write `GENERATION_PLAN.md` or
 `phase-ends/current/PHASE_PLAN.md`, never commit a plan, never start the work, never talk to the developer.
 
 ## 0. Before drafting

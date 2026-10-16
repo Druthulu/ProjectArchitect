@@ -32,6 +32,9 @@ def main(argv=None):
     if args[:1] == ["ladder-row"]:      # 3.24 T17: the spawn-time resolver, without ledger_cli's imports
         from pa.ladder_row import main as row_main
         return row_main(args[1:])
+    if args[:1] == ["update-check"]:    # 3.28.1 T14: the mod's 2-hour release check (the session-start one)
+        from pa.hooks.session_start import check_main
+        return check_main(args[1:])
     from pa.ledger_cli import main as cli_main
 
     return cli_main(argv)

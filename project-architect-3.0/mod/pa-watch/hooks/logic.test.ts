@@ -102,7 +102,7 @@ describe('tools', () => {
     expect(validateInput('topic', {})).toBe(null)
     expect(validateInput('topic', { summary: 1 })).toBe('summary must be a string')
     expect(validateInput('release', { hold: 'question', note: 'go' })).toBe(null)
-    expect(validateInput('release', { hold: 'nap' })).toBe('hold must be talk, review, question, close, stopped, generation or session')
+    expect(validateInput('release', { hold: 'nap' })).toBe('hold must be talk, review, question, close, stopped, generation, session or update')
     expect(validateInput('release', { reason: 'done' })).toBe('hold is required')
     expect(validateInput('plan_edit', { command: 'add T9', why: 'agreed' })).toBe(null)
     expect(validateInput('plan_edit', { command: ' ' })).toBe('command is empty')

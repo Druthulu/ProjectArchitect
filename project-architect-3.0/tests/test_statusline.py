@@ -2248,6 +2248,23 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertIn("recipe rung", joined)
         self.assertNotIn("runs in another session", joined)
 
+    def test_running_task_shows_its_background_shells(self):
+        """3.28.1 T15: the mod's shells.json: a line per expert or coder shell under the
+        running task, a spinner frame and the elapsed time; a dead one ✗ with its exit."""
+        self.make_project(plan=self.PLAN_SIX, status={
+            "task": "T3", "phase": "36", "started": "2026-09-12T20:58:00Z"})
+        at = (time.time() - 545) * 1000
+        write_json(os.path.join(self.project, ".run", "mod", self.sid, "shells.json"), {
+            "C1": [{"id": "b1", "name": "bake_rest.sh", "at": at, "type": "pa-coder"},
+                   {"id": "b2", "name": "make", "at": at, "type": "pa-coder", "exit": 2}],
+            "R1": [{"id": "b3", "name": "x.sh", "at": at, "type": "retriever-code"}]})
+        lines = self.lines()
+        shells = [ln for ln in lines if " shell " in ln]
+        self.assertEqual(len(shells), 2, lines)
+        self.assertIn(shells[0][2], statusline.SHELL_SPINNER)
+        self.assertRegex(shells[0], r"shell bake_rest\.sh · running 9m 0[4-6]s · coder waiting$")
+        self.assertEqual(shells[1], "  ✗ shell make · ended exit 2 · coder waiting")
+
     def test_other_session_shows_the_loop_task(self):
         """3.24 T9: the mod's status.json mirror shows phase and task in any session (was
         T28.c4's "runs in another session" beside line)."""
@@ -2319,6 +2336,29 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertEqual(result["tasks"][0]["id"], "T1")
         self.assertEqual(result["tasks"][0]["status"], "done")
         self.assertEqual(result["tasks"][2]["title"], "recipe rung")
+
+    def test_status_less_task_lines(self):
+        """3.28 T4f: since 3.25 a task's status is optional; a `key: value` second field is no status
+        (TerrainDiffusion's plan drew `T3 ·` with no title)."""
+        plan = ("# Phase 2 — towns\n\n## Tasks\n"
+                "- T1 | done | title: ridge pass | done-when: ok\n"
+                "- T2 | next | title: road graph | done-when: ok\n"
+                "- T3 | title: watershed before town placement, no island towns (I6) | coder: opus55 "
+                "| deps: T2 | done-when: ok\n"
+                "- T4 | title: biome seams | deps: T3\n")
+        self.make_project(plan=plan, status={})
+        scan = statusline.scan_phase_plan(os.path.join(self.project, "phase-ends", "current", "PHASE_PLAN.md"))
+        self.assertEqual([(t["id"], t["status"], t["title"]) for t in scan["tasks"]],
+                         [("T1", "done", "ridge pass"), ("T2", "next", "road graph"),
+                          ("T3", "", "watershed before town placement, no island towns (I6)"),
+                          ("T4", "", "biome seams")])
+        self.assertEqual((scan["done"], scan["total"], scan["next"]), (1, 4, "T2"))
+        task_lines = [l.strip() for l in self.lines() if l.strip()[:1] == "T"]
+        self.assertEqual([l.split()[:2] for l in task_lines],
+                         [["T2", statusline.GLYPH_NEXT], ["T3", statusline.GLYPH_QUEUED],
+                          ["T4", statusline.GLYPH_QUEUED]])
+        self.assertIn("watershed", task_lines[1])
+        self.assertIn("biome seams", task_lines[2])
 
     def test_task_block_active_first_then_open_in_plan_order(self):
         """T10.c1: active task first, then not-done tasks in plan order (T3 is
@@ -3082,3 +3122,124 @@ class FewerNumbersTest(LedgerCase):
         account = self._line("month ~1.5w", self._cfg(), {"month": True})
         self.assertIsNotNone(account)
         self.assertNotIn("of 5h", account)
+
+
+class ReleaseLineTest(LedgerCase):
+    """3.28.1 T14: the 8-hour check's release, green, directly above the model line, in two stages."""
+
+    def setUp(self):
+        super().setUp()
+        from unittest import mock
+        self.pa3 = os.path.join(self.tmp, "pa3")
+        os.makedirs(self.pa3)
+        patcher = mock.patch.object(paths, "install_dir", return_value=self.pa3)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.installed("3.28.1")
+
+    def installed(self, version):
+        with open(os.path.join(self.pa3, "VERSION"), "w", encoding="utf-8") as fh:
+            fh.write("version: %s\ngit: abc\n" % version)
+
+    def release(self, doc):
+        write_json(os.path.join(self.project, ".run", "mod", "release.json"), doc)
+
+    def test_waits_for_the_task_then_installed_above_the_model_line(self):
+        self.release({"version": "3.28.2", "kind": "hotfix"})
+        out = self.lines()
+        model = statusline._line1(self.payload, None, self.cfg, statusline.sl_config(self.cfg), time.time())
+        i = out.index("⬆ Project Architect 3.28.2 hotfix · installs after the current task")
+        self.assertEqual(out[i + 1].split(" ")[0], model.split(" ")[0])
+        self.installed("3.28.2")
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix installed · /exit, then claude --continue (not /clear)", self.lines())
+
+    def test_installing_while_the_run_goes_then_installed(self):
+        """3.28.5 T18: the run going (release record or run marker) reads installing, even past VERSION; then installed."""
+        self.release({"version": "3.28.2", "kind": "hotfix", "state": "install"})
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix · installs after the current task", self.lines())
+        self.release({"version": "3.28.2", "kind": "hotfix", "state": "running"})
+        self.installed("3.28.2")                # the run already copied VERSION
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix installing · please wait", self.lines())
+        self.release({"version": "3.28.2", "kind": "hotfix", "state": "install"})
+        marker = os.path.join(self.project, ".run", "mod", "update.json")
+        write_json(marker, {"state": "running", "at": time.time() - 60})
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix installing · please wait", self.lines())
+        write_json(marker, {"state": "running", "at": time.time() - 3600})   # stale: not running
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix installed · /exit, then claude --continue (not /clear)", self.lines())
+        write_json(marker, {"state": "done", "rc": 0, "at": time.time()})
+        self.release({"version": "3.28.2", "kind": "hotfix", "state": "installed"})
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix installed · /exit, then claude --continue (not /clear)", self.lines())
+
+    def test_installed_not_clear_in_red(self):
+        """3.28.2 T16: the installed line is green but its "(not /clear)", red."""
+        self.release({"version": "3.28.2", "kind": "hotfix"})
+        self.installed("3.28.2")
+        colored = statusline.render(self.payload, config.defaults())
+        self.assertIn(statusline.GREEN + "⬆ Project Architect 3.28.2 hotfix installed · /exit, then claude --continue "
+                      + statusline.RESET + statusline.RED + "(not /clear)" + statusline.RESET, colored)
+
+    def test_not_now_available_until_the_next_restart(self):
+        self.release({"version": "3.28.2", "kind": "hotfix", "state": "later"})
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix available · installs at your next restart", self.lines())
+
+    def test_green_and_feature_update(self):
+        self.release({"version": "3.29", "kind": "feature update"})
+        colored = statusline.render(self.payload, config.defaults())
+        self.assertIn(statusline.GREEN + "⬆ Project Architect 3.29 feature update · installs after the current task", colored)
+
+    def test_hidden_without_a_release_or_after_the_restart(self):
+        self.assertFalse(any(l.startswith("⬆") for l in self.lines()))
+        self.release({})                       # the mod's start empties it
+        self.assertFalse(any(l.startswith("⬆") for l in self.lines()))
+
+
+class SessionWorkTest(LedgerCase):
+    """3.28.7 T20: a mod-on session's context segment is ``<work>/∞``; every other session keeps ``<ctx>/<window>``."""
+
+    def make_ledger(self):
+        from pa import db
+        conn = db.connect()
+        db.init_schema(conn)
+        sid = self.sid
+        turns = [  # run, ts, input, cache_write, output, ctx
+            (sid, "1", 10, 1000, 50, 1010), (sid, "2", 0, 200, 70, 1260),
+            ("c1", "1", 5, 16000, 100, 16005), ("c1", "2", 0, 3000, 400, 19105),
+            ("c2", "1", 5, 17000, 100, 17005), ("c3", "1", 5, 18000, 300, 18005),
+            ("e1", "1", 0, 21000, 900, 21000)]
+        for i, (run, ts, inp, cw, out, ctx) in enumerate(turns):
+            db.upsert(conn, "turns", {"msg_id": "m%d" % i, "run_id": run, "session_id": sid, "ts": ts,
+                                      "input": inp, "cache_write": cw, "output": out, "ctx": ctx, "kind": "api"})
+        for run, kind, seed in (("c1", "pa-coder", 16005), ("c2", "pa-coder", 17005), ("c3", "pa-coder", None),
+                                ("e1", "pa-expert", 21000)):
+            db.upsert(conn, "agent_runs", {"run_id": run, "session_id": sid, "agent_type": kind, "seed_ctx": seed})
+        return conn
+
+    def model_line(self):
+        return next(l for l in self.lines() if "Fable 5.1" in l)
+
+    def test_duplicate_seeds_subtracted_once_per_type(self):
+        from pa import db
+        conn = self.make_ledger()
+        try:
+            work = statusline.session_work(conn, self.sid)
+        finally:
+            db.close(conn)
+        fresh = 1010 + 200 + 16005 + 3000 + 17005 + 18005 + 21000
+        last = 70 + 400 + 100 + 300 + 900        # each run's last output only
+        self.assertEqual(work, fresh + last - 2 * 16005)   # three coders: two duplicate seeds; one expert: none
+
+    def test_mod_on_shows_work_over_infinity(self):
+        self.make_ledger().close()
+        self.make_project(pa_json={"project": "demo", "phase_ends_dir": "phase-ends", "mod": "on"})
+        statusline._JSON_CACHE.clear()
+        statusline.sample(self.payload, self.cfg)          # queues the work job; the child runs in-process
+        first = self.model_line()
+        self.assertIn("46k/∞", first)                    # 77,995 entered - 32,010 duplicate coder seeds
+        self.assertNotIn("472k/1M", first)
+        self.assertNotIn(statusline.BAR_FULL, first)
+
+    def test_mod_off_and_no_pa_json_keep_the_context_segment(self):
+        self.assertIn("472k/1M", self.model_line())
+        self.make_project(pa_json={"project": "demo", "phase_ends_dir": "phase-ends", "mod": "off"})
+        self.assertIn("472k/1M", self.model_line())
+        self.assertNotIn("/∞", self.model_line())

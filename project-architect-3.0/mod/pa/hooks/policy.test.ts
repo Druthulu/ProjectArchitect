@@ -1,6 +1,8 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { decideRoute, expertStatus, freshStartUsd, partnerStatus, pingDecision, pingUsd, ratesFrom, type Rates } from './policy'
+import {
+  cacheTtlOf, decideRoute, expertStatus, isCold, partnerStatus, PING_AFTER_5M_MS, pingCount, pingDecision, pingUsd, ratesFrom, type Rates, tierRates,
+} from './policy'
 
 // Sample `pa_ledger.py prices --json` output ($/MTok).
 const PRICES = JSON.stringify({
@@ -30,9 +32,11 @@ describe('decideRoute', () => {
     expect(decideRoute(undefined, now, { childOut: true })).toBe('fresh')
   })
 
-  test('the TTL margin boundary: < 3,300,000 ms', async () => {
+  test('3.28.1 T12: cold is fresh: pings spent, at the ping time (55 min); pings left, at the cache life (60 min)', async () => {
     expect(decideRoute({ ...p, lastTurnAt: now - 3_299_999 }, now)).toBe('resume')
     expect(decideRoute({ ...p, lastTurnAt: now - 3_300_000 }, now)).toBe('fresh')
+    expect(decideRoute({ ...p, lastTurnAt: now - 3_300_000 }, now, { pingsLeft: true })).toBe('resume')
+    expect(decideRoute({ ...p, lastTurnAt: now - 3_600_000 }, now, { pingsLeft: true })).toBe('fresh')
   })
 
   test('ctx < 300,000', async () => {
@@ -46,10 +50,11 @@ describe('decideRoute', () => {
     expect(decideRoute({ ...p, modelSwitchAt: p.lastTurnAt + 1 }, now)).toBe('fresh')
   })
 
-  test('with a child out it always resumes', async () => {
-    const stale = { lastTurnAt: 0, ctx: 900_000, topicFlag: true, modelSwitchAt: now }
-    expect(decideRoute(stale, now)).toBe('fresh')
-    expect(decideRoute(stale, now, { childOut: true })).toBe('resume')
+  test('with a child out it resumes unless cold (3.28.1 T12: cold beats a child out)', async () => {
+    const big = { lastTurnAt: now - 60_000, ctx: 900_000, topicFlag: true, modelSwitchAt: now }
+    expect(decideRoute(big, now)).toBe('fresh')
+    expect(decideRoute(big, now, { childOut: true })).toBe('resume')
+    expect(decideRoute({ ...big, lastTurnAt: 0 }, now, { childOut: true, pingsLeft: true })).toBe('fresh')
   })
 })
 
@@ -80,9 +85,6 @@ describe('warming costs', () => {
     expect(close(pingUsd(100_000, r), (100_000 * 0.2 + 150 * 8 + 30 * 20) / M)).toBe(true)
     expect(close(pingUsd(0, r), (150 * 8 + 30 * 20) / M)).toBe(true)
   })
-  test('freshStartUsd = (seed + prefix)·write_1h', async () => {
-    expect(close(freshStartUsd(40_000, 20_000, r), (60_000 * 8) / M)).toBe(true)
-  })
 })
 
 describe('pingDecision', () => {
@@ -90,36 +92,52 @@ describe('pingDecision', () => {
   const t0 = 1_000_000_000
   const due = t0 + 55 * 60_000
   const a = { status: 'idle', lastRequestAt: t0, ctx: 100_000 }
-  const dev = { seedTokens: 40_000, prefixTokens: 20_000 } // fresh = $0.48; one ping = $0.0218
 
   test('only idle or completed agents', async () => {
-    expect(pingDecision({ ...a, status: 'running' }, due, r, dev)).toEqual({ ping: false, at: due, why: 'status running' })
-    expect(pingDecision({ ...a, status: 'completed' }, due, r, dev).ping).toBe(true)
-    expect(pingDecision(a, due, r, dev).ping).toBe(true)
+    expect(pingDecision({ ...a, status: 'running' }, due)).toEqual({ ping: false, at: due, why: 'status running' })
+    expect(pingDecision({ ...a, status: 'completed' }, due).ping).toBe(true)
+    expect(pingDecision(a, due).ping).toBe(true)
   })
 
-  test('due at lastRequestAt + 55 min', async () => {
-    expect(pingDecision(a, due - 1, r, dev)).toEqual({ ping: false, at: due, why: 'not due' })
-    expect(pingDecision(a, due, r, dev)).toEqual({ ping: true, at: due, why: 'rent' })
+  test('due at lastRequestAt + 55 min; at the cache life it is cold, never pinged', async () => {
+    expect(pingDecision(a, due - 1)).toEqual({ ping: false, at: due, why: 'not due' })
+    expect(pingDecision(a, due)).toEqual({ ping: true, at: due, why: 'size' })
+    expect(pingDecision(a, t0 + 3_600_000)).toEqual({ ping: false, at: due, why: 'cold' })
   })
 
-  test('child out: ping while now - waitStart < 24 h, whatever the cost', async () => {
-    const opts = { childOut: true, waitStart: t0, spentUsd: 1000 }
-    expect(pingDecision(a, t0 + 24 * 3_600_000 - 1, r, opts)).toEqual({ ping: true, at: due, why: 'child out' })
-    expect(pingDecision(a, t0 + 24 * 3_600_000, r, opts)).toEqual({ ping: false, at: due, why: 'child out 24h' })
+  test('3.28.1 T12: pingCount by size: 1h 300k/ctx (1..5), 5m 600k/ctx (1..12)', async () => {
+    expect([50_000, 100_000, 150_000, 200_000, 250_000, 900_000].map(c => pingCount(c, '1h'))).toEqual([5, 3, 2, 2, 1, 1])
+    expect([50_000, 100_000, 250_000, 900_000, 10_000].map(c => pingCount(c, '5m'))).toEqual([12, 6, 2, 1, 12])
   })
 
-  test('waiting on the developer: ping while spent + ping <= fresh start', async () => {
-    const fresh = freshStartUsd(40_000, 20_000, r)
-    const one = pingUsd(a.ctx, r)
-    expect(pingDecision(a, due, r, { ...dev, spentUsd: fresh - one })).toEqual({ ping: true, at: due, why: 'rent' })
-    expect(pingDecision(a, due, r, { ...dev, spentUsd: fresh - one + 1e-6 })).toEqual({ ping: false, at: due, why: 'buy' })
+  test('3.28.1 T12: no ping after the stretch\'s count; the count is the stretch\'s, not the size now', async () => {
+    expect(pingDecision(a, due, { pings: 2, count: 3 }).ping).toBe(true)
+    expect(pingDecision(a, due, { pings: 3, count: 3 })).toEqual({ ping: false, at: due, why: 'count' })
+    expect(pingDecision(a, due, { pings: 3 })).toEqual({ ping: false, at: due, why: 'count' })
+    expect(pingDecision({ ...a, ctx: 250_000 }, due, { pings: 1, count: 5 }).ping).toBe(true)
   })
 
-  test('skip300k: only while waiting on the developer; a child out stays warm at any size', async () => {
-    expect(pingDecision({ ...a, ctx: 299_999 }, due, r, { childOut: true, waitStart: t0 }).ping).toBe(true)
-    expect(pingDecision({ ...a, ctx: 300_000 }, due, r, { childOut: true, waitStart: t0 })).toEqual({ ping: true, at: due, why: 'child out' })
-    expect(pingDecision({ ...a, ctx: 300_000 }, due, r, dev)).toEqual({ ping: false, at: due, why: 'skip300k' })
+  test('3.28.1 T12: a 5-minute agent is due at 4.5 min and cold at 5', async () => {
+    const at5 = t0 + PING_AFTER_5M_MS
+    expect(pingDecision(a, at5 - 1, { ttl: '5m' })).toEqual({ ping: false, at: at5, why: 'not due' })
+    expect(pingDecision(a, at5, { ttl: '5m' })).toEqual({ ping: true, at: at5, why: 'size' })
+    expect(pingDecision(a, t0 + 300_000, { ttl: '5m' })).toEqual({ ping: false, at: at5, why: 'cold' })
+  })
+
+  test('3.28.1 T12: isCold: the cache life, or the ping time once the pings are spent', async () => {
+    expect(isCold(t0, t0 + 3_599_999, '1h', true)).toBe(false)
+    expect(isCold(t0, t0 + 3_600_000, '1h', true)).toBe(true)
+    expect(isCold(t0, due - 1, '1h', false)).toBe(false)
+    expect(isCold(t0, due, '1h', false)).toBe(true)
+    expect(isCold(t0, t0 + 299_999, '5m', true)).toBe(false)
+    expect(isCold(t0, t0 + 300_000, '5m', true)).toBe(true)
+    expect(isCold(t0, t0 + PING_AFTER_5M_MS, '5m', false)).toBe(true)
+  })
+
+  test('3.28.1 T12: a partner listed waiting after its own turn ended is idle (TerrainDiffusion a3dff244)', async () => {
+    expect(partnerStatus('waiting', t0, true)).toBe('idle')
+    expect(partnerStatus('waiting', t0, false)).toBe('waiting')
+    expect(partnerStatus('running', t0, true)).toBe('running')
   })
 
   test('the loop expert dropped from $.agent.list() while it waits counts as completed (T13b.c4)', async () => {
@@ -129,6 +147,27 @@ describe('pingDecision', () => {
     expect(expertStatus(undefined, '', t0, false)).toBeUndefined()
     expect(expertStatus(undefined, 'question', 0, false)).toBeUndefined()
     expect(expertStatus(undefined, 'question', t0, true)).toBeUndefined()
+  })
+
+  test('3.28.1 T8: a child out and its own turn ended: idle, whatever the list says', async () => {
+    expect(expertStatus('waiting', 'child', t0, false, true)).toBe('idle')
+    expect(expertStatus('running', 'child', t0, false, true)).toBe('idle')
+    expect(expertStatus('running', 'child', t0, false, false)).toBe('running')
+    expect(expertStatus('waiting', 'question', t0, false, true)).toBe('waiting')
+    expect(expertStatus('waiting', 'child', t0, true, true)).toBe('waiting')
+  })
+
+  test('3.28.1 T15: an expert waiting on a background shell, its turn ended, is idle', async () => {
+    expect(expertStatus('waiting', 'shell', t0, false, true)).toBe('idle')
+  })
+
+  test('3.28.1 T11: cacheTtlOf reads the agent file; tierRates writes a 5m agent at write_5m', async () => {
+    expect(cacheTtlOf('---\nexperimental:\n  cacheTtl: 5m  # note\n---\n')).toBe('5m')
+    expect(cacheTtlOf('---\nexperimental:\n  cacheTtl: 1h\n---\n')).toBe('1h')
+    expect(cacheTtlOf('---\nname: x\n---\n')).toBe('1h')
+    expect(cacheTtlOf(null)).toBe('1h')
+    expect(close(tierRates(r, '5m').write_1h, 5 / M)).toBe(true)
+    expect(tierRates(r, '1h')).toEqual(r)
   })
 
   test('the partner dropped from $.agent.list() after a turn end counts as completed', async () => {

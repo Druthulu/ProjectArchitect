@@ -66,6 +66,22 @@ describe('recovery digest (T5d1)', () => {
       expect(text).not.toContain(gone)
     }
   })
+  test('3.28.1 T12: the expert\'s reports and what it waits on; thinking kept apart, the last 10, never crowding out the notes', async () => {
+    const think = Array.from({ length: 40 }, (_, i): [string, string] =>
+      [`2026-10-07/11${String(i).padStart(2, '0')}00-0${String(i).padStart(2, '0')}w-coder-thinking.md`, entry('2026-10-07T11:00:00Z', `think ${String(i)}.`)])
+    const text = recoveryDigest({
+      id: 'T1', attempt: 2, startSha: 'abc', since: Date.parse('2026-10-07T10:00:00Z'), status: '', log: '',
+      entries: [['2026-10-07/100101-001w-T1-note.md', entry('2026-10-07T10:01:01Z', 'Brief one coder.')],
+        ['2026-10-07/100201-501r-T1-interim.md', entry('2026-10-07T10:02:01Z', 'question\n\nShore rule done; three targets open.')], ...think],
+      waiting: ['job J1 (C1)'],
+    })
+    expect(text).toContain('## Waiting on\n- job J1 (C1)\n')
+    expect(text).toContain('Brief one coder.')
+    expect(text).toContain('Shore rule done; three targets open.')
+    expect(text).toContain('think 39.')
+    expect(text).toContain('think 30.')
+    expect(text).not.toContain('think 29.')
+  })
   test('nothing to say: (none)', async () => {
     const text = recoveryDigest({ id: 'T1', attempt: 2, startSha: '', since: 0, status: '', log: '', entries: [] })
     expect(text).toContain('## git status --short\n```\n(none)\n```')

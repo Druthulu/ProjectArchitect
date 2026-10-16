@@ -31,7 +31,9 @@ export function defaultState(sid: string, gen: number): RouterState {
     outbox: [],
     forwarded: {},
     awaiting: null,
-    warm: { pings: 0, pingUsd: 0, avoidedUsd: 0, lastPingAt: 0, waitStart: 0, waitUsd: 0, waitPings: 0 },
+    sentKind: '',
+    sentAt: 0,
+    warm: { pings: 0, pingUsd: 0, avoidedUsd: 0, lastPingAt: 0, waitStart: 0, waitUsd: 0, waitPings: 0, waitCount: 0 },
     warmAgents: {},
     hold: null,
     planEdits: [],
@@ -180,6 +182,7 @@ export function parseState(text: string, sid: string, now: number): RouterState 
         warmAgents[id] = {
           role: str(a['role'], ''), lastPingAt: num(a['lastPingAt'], 0), pingInFlight: a['pingInFlight'] === true,
           waitKind: str(a['waitKind'], ''), waitStart: num(a['waitStart'], 0), waitUsd: num(a['waitUsd'], 0),
+          waitPings: num(a['waitPings'], 0), waitCount: num(a['waitCount'], 0),
           pings: num(a['pings'], 0), pingUsd: num(a['pingUsd'], 0), avoidedUsd: num(a['avoidedUsd'], 0),
         }
       }
@@ -205,6 +208,8 @@ export function parseState(text: string, sid: string, now: number): RouterState 
     }),
     forwarded,
     awaiting,
+    sentKind: doc['sentKind'] === 'dev' || doc['sentKind'] === 'other' || doc['sentKind'] === 'forward' ? doc['sentKind'] : '',
+    sentAt: num(doc['sentAt'], 0),
     warm: {
       pings: num(w['pings'], 0),
       pingUsd: num(w['pingUsd'], 0),
@@ -213,6 +218,7 @@ export function parseState(text: string, sid: string, now: number): RouterState 
       waitStart: num(w['waitStart'], 0),
       waitUsd: num(w['waitUsd'], 0),
       waitPings: num(w['waitPings'], 0),
+      waitCount: num(w['waitCount'], 0),
     },
     warmAgents,
     hold: isObj(h) ? { reason: str(h['reason'], ''), at: num(h['at'], 0) } : null,

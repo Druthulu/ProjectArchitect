@@ -41,12 +41,12 @@ import {
   addRecords, beatOf, deathOf, emptyFeed, emptyLife, FEED_BEAT_MS, FEED_DESC, FEED_STALE_MS, FEED_TIMEOUT_MS, feedBlock, feedCommand, feedErrorLine, feedEvents,
   announces, editHead, feedLook, type FeedRecord, feedText, fromLog, missingNs, NUDGE, nudgeName, replyRecord, restartGate, seenBeat, senderOf, shownOf, speakerOf, staleOf, unseenFeed,
 } from './feed'
-import { FIRST_RUN_WAITS, firstRunLine, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, sessionTitle, statusWord, talkLine } from './loop'
+import { FIRST_RUN_WAITS, firstRunLine, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, queuedTo, RESTART_LINE, sessionTitle, SHELLS_FILE, shellsOf, shellsOut, statusWord, talkLine } from './loop'
 import {
-  answerLine, APPROVED, askBody, decisionLine, dialogCopy, DIALOG_FILE, dialogJson, FALLBACK_OPTIONS, FALLBACK_QUESTION, fallbackLine, installs,
+  answerLine, APPROVED, askBody, decisionLine, dialogCopy, DIALOG_FILE, dialogJson, FALLBACK_OPTIONS, FALLBACK_QUESTION, fallbackLine, installs, isReplan,
   dialogKey, dropAgentDialogs, holdingAgent, learnedFile, PLAN_PANE, planBody, planFilePath, planLogLines, presentHold, slugArgv, slugFile, trialLine,
 } from './planview'
-import { expertStatus, partnerStatus, pingDecision, pingUsd, type Rates, ratesFrom } from './policy'
+import { cacheTtlOf, expertStatus, isCold, partnerStatus, pingCount, pingDecision, pingUsd, type Rates, ratesFrom, tierRates } from './policy'
 import {
   addAttach, addReply, applyReply, childOut, classify, clearTurn, dueMarkers, emptyTurns, enqueue, entryUsage, fileEntry,
   framedOther, handbackChild, hideAssistant, hideSpinner, hideUser, isBusy, isLive, isSeedName, journalOut, localAnswer, markerReply,
@@ -88,11 +88,10 @@ export const COMPACT_SKIP = 'PA 3.2: the journal replaces compaction'
 const DRAIN_MS = 1_000
 /** 3.24 T13B: the router's band part's tick (its dots cycle at this rate while `‹pa› working` shows). */
 const WORK_MS = 500
-const WARM_MS = 60_000
+const WARM_MS = 30_000 // was 60_000; 3.28.1 T12: a 5-minute agent's ping window (4.5-5 min) is 30 s wide
 const SEED_DAYS = 14
 /** Card texts kept in the registry at most (3.23 T13); an older card's row draws as its plain markdown. */
 const MAX_CARDS = 100
-const ZERO_RATES: Rates = { input: 0, write_5m: 0, write_1h: 0, read: 0, output: 0 }
 
 // Module variables are lost on a hot reload or a lost hooks worker (design.md); everything here is re-derivable.
 let debugBase = '' // `<root>/.run/mod` under PA_MOD_DEBUG=1, else '' (no debug log)
@@ -108,7 +107,6 @@ let warming = false
 let jseq = 0 // per-load sequence of the router's journal entries
 let fseq = 0 // the loop `forward` requests' sequence in the inbox (3.23 T5d2a)
 let nseq = 0 // the feed's nudge files' sequence (3.23 T13d)
-let noRatesLogged = false
 let expertSkip = '' // 3.23 T13b.c4: warmExpert's last skip reason, logged once per change
 let noToastLogged = false
 let presenting = false // the presentation tick's one dialog at a time
@@ -181,9 +179,20 @@ function drawCard(el: Pick<Elements['terminal'], 'Box' | 'Text' | 'Markdown' | '
   const { Box, Text, Markdown, Code } = el
   const hex = ROLE_HEX[card.role]
   const border = borderOf(style, card.done)
+  // 3.28.2 T16: Claude's installed-update card draws the mod's restart line (loop.ts RESTART_LINE) bold green with
+  // "(not /clear)" red; the stored text stays markdown, so Remote Control shows it as is.
+  const at = card.role === 'claude' ? card.body.indexOf(RESTART_LINE) : -1
+  const body = at < 0
+    ? (card.body === '' ? null : <Markdown text={card.body} />)
+    : [
+        card.body.slice(0, at).trim() === '' ? null : <Markdown text={card.body.slice(0, at).trimEnd()} />,
+        card.body.slice(0, at).trim() === '' ? null : <Text> </Text>, // 3.28.2 T17: the empty line before it, always
+        <Text><Text bold color="#00af00">To load it: /exit, then claude --continue</Text> <Text color="#d70000">(not /clear)</Text></Text>,
+        card.body.slice(at + RESTART_LINE.length).trim() === '' ? null : <Markdown text={card.body.slice(at + RESTART_LINE.length).trimStart()} />,
+      ]
   const rest = (
     <Box flexDirection="column" paddingLeft={border === null ? 2 : 0}>
-      {card.body === '' ? null : <Markdown text={card.body} />}
+      {body}
       {card.diff === '' ? null : <Code source={card.diff} format="diff" />}
     </Box>
   )
@@ -499,6 +508,16 @@ export const register: Register = (on, options) => {
               for (const fx of handle(req)) {
                 if (fx.do === 'log' && debugBase !== '') {
                   await $.fs.write(...ev(fx.kind, fx.data)).catch(quiet)
+                } else if (fx.do === 'present' && isReplan(fx.item, await $.fs.exists(`${root}/phase-ends/current/REPLAN.md`),
+                  (await $.fs.read(`${root}/phase-ends/current/PHASE_PLAN.md`).catch(() => null)) ?? '')) {
+                  // 3.28.1 T6: a replan's draft goes straight to the loop, which installs it at the next task boundary.
+                  const item = fx.item
+                  fseq += 1
+                  const r = requestFile(at, fseq, 'install', item.caller, {
+                    kind: 'phase', path: item.path, title: item.title, rules: item.rules ?? [], candidates: item.candidates ?? [],
+                  })
+                  await $.fs.write(`${inbox}/${r.name}`, r.body)
+                  await log('present.replan', { id, caller: item.caller })
                 } else if (fx.do === 'present') {
                   // A dialog queued for the presentation tick (once per request id).
                   const item = fx.item
@@ -580,6 +599,40 @@ export const register: Register = (on, options) => {
         })()
       })
 
+      // 3.28.1 T12: the partner's own turn has ended (a turn end after the last message delivered to it); its idle
+      // stretch still has warming pings; it is cold (policy.isCold), idle and not working on a message.
+      const partnerIdle = (x: RouterState): boolean =>
+        x.partner !== null && x.partner.lastTurnAt > 0 && x.partner.lastTurnAt >= x.sentAt && !x.partner.pingInFlight
+      const partnerPingsLeft = (x: RouterState): boolean =>
+        x.warm.waitPings < (x.warm.waitCount > 0 ? x.warm.waitCount : pingCount(x.partner?.ctx ?? 0, '1h'))
+      const partnerCold = (x: RouterState, list: readonly { id: string; status: string }[], now: number): boolean => {
+        const p = x.partner
+        if (p === null || !partnerIdle(x)) {
+          return false
+        }
+        const status = partnerStatus(list.find(a => a.id === p.agentId)?.status, p.lastTurnAt, true)
+        return (status === 'idle' || status === 'completed') &&
+          isCold(Math.max(p.lastTurnAt, p.spawnedAt, x.warm.lastPingAt), now, '1h', partnerPingsLeft(x), pingAfterMs)
+      }
+      // The loop's expert `id`, cold (autopilot's coldOf): nothing is sent to it; the loop's `forward` request with the
+      // text has the autopilot start a fresh expert with PROGRESS and the text.
+      const loopExpertCold = async (x: RouterState, id: string, now: number): Promise<boolean> => {
+        const t = parseLoop(await $.fs.read(`${root}/${LOOP_FILE}`).catch(() => null)).task
+        if (t === null || t.agentId !== id || id === '' || t.lastCompleteAt <= 0) {
+          return false
+        }
+        const w = x.warmAgents[id]
+        const ttl = cacheTtlOf(await $.fs.read(`${root}/.claude/agents/${t.agent}.md`).catch(() => null))
+        const pingsLeft = w === undefined || w.waitCount === 0 || w.waitPings < w.waitCount
+        return isCold(Math.max(t.lastCompleteAt, t.spawnedAt, w?.lastPingAt ?? 0), now, ttl, pingsLeft)
+      }
+      const toColdExpert = async (id: string, child: string, text: string): Promise<void> => {
+        fseq += 1
+        const now = await $.clock.now()
+        const r = requestFile(now, fseq, 'forward', 'router', { agentId: id, child, text })
+        await $.fs.write(`${base}/${sidNow}/inbox/${r.name}`, r.body).catch(quiet)
+        await log('route.cold', { agentId: id, child })
+      }
       // The route tick: the journal's queued entries, the partner's resume check, the outbox, then the reply markers
       // and the waiting toasts, each transition saved. Steps run here: `$.prompt.submit` threw "no session is bound"
       // from a timer made inside an agent's dispatch.
@@ -727,26 +780,48 @@ export const register: Register = (on, options) => {
                   await log('forward.skip', { child: msg.child, parent, status })
                   continue
                 }
+                // 3.28.1 T12: never to a cold Claude; a fresh one, seeded from the journal, takes the hand-back.
+                if (parent === cur.partner?.agentId && partnerCold(cur, list, await $.clock.now())) {
+                  await spawnPartner(msg.text, 'cold')
+                  st = await step(x => ({ ...x, sentKind: 'forward', sentAt: x.partner?.spawnedAt ?? 0 }))
+                  continue
+                }
+                if (await loopExpertCold(cur, parent, await $.clock.now())) {
+                  await toColdExpert(parent, msg.child, msg.text)
+                  continue
+                }
                 const sent = await $.session.send({ to: { agentId: parent }, text: msg.text })
                 await log('forward.sent', { child: msg.child, parent, status: status ?? 'unlisted', sent })
+                if (sent.isDelivered && parent === cur.partner?.agentId) {
+                  const at = await $.clock.now()
+                  st = await step(x => ({ ...x, sentKind: 'forward', sentAt: at }))
+                }
                 continue
               }
               const p = cur.partner
               // A loop notice's reply goes to its caller when that is a listed agent other than the partner.
               const direct = msg.kind === 'other' && msg.child !== '' ? otherTarget(msg.child, p?.agentId ?? '', await $.agent.list()) : ''
+              if (direct !== '' && (await loopExpertCold(cur, direct, await $.clock.now()))) {
+                await toColdExpert(direct, '', msg.text)
+                continue
+              }
               if (direct !== '') {
                 const sent = await $.session.send({ to: { agentId: direct }, text: msg.text })
                 await log('route.direct', { agentId: direct, sent })
                 continue
               }
               let route: 'resume' | 'fresh' = 'fresh'
+              let cold = false
               if (p !== null) {
                 const list = await $.agent.list()
                 const out = childOut(p.agentId, cur.children, list)
-                const busy = isBusy(list.find(a => a.id === p.agentId)?.status)
-                route = partnerRoute(p, await $.clock.now(), { childOut: out, busy, rotateAt })
+                // 3.28.1 T12: busy by its warming status (a turn ended, listed `waiting` on its own work, is not busy).
+                const busy = isBusy(partnerStatus(list.find(a => a.id === p.agentId)?.status, p.lastTurnAt, partnerIdle(cur)))
+                const now = await $.clock.now()
+                route = partnerRoute(p, now, { childOut: out, busy, rotateAt, pingsLeft: partnerPingsLeft(cur) })
+                cold = route === 'fresh' && partnerCold(cur, list, now)
                 if (route === 'fresh') {
-                  await log('route.rotate', { agentId: p.agentId, ctx: p.ctx, topic: p.topic, lastTurnAt: p.lastTurnAt, rotateAt })
+                  await log('route.rotate', { agentId: p.agentId, ctx: p.ctx, topic: p.topic, lastTurnAt: p.lastTurnAt, rotateAt, busy, cold })
                 }
               }
               if (p !== null && route === 'resume') {
@@ -754,12 +829,12 @@ export const register: Register = (on, options) => {
                 await log('route.send', { agentId: p.agentId, kind: msg.kind, sent })
                 if (sent.isDelivered) {
                   const at = await $.clock.now()
-                  st = await step(x => ({ ...x, awaiting: { agentId: p.agentId, text: msg.text, at } }))
+                  st = await step(x => ({ ...x, awaiting: { agentId: p.agentId, text: msg.text, at }, sentKind: msg.kind, sentAt: at }))
                   continue
                 }
               }
-              await spawnPartner(msg.text, p === null ? 'none' : route === 'fresh' ? 'rotate' : 'undelivered')
-              st = await read($, stateAtom)
+              await spawnPartner(msg.text, p === null ? 'none' : cold ? 'cold' : route === 'fresh' ? 'rotate' : 'undelivered')
+              st = await step(x => ({ ...x, sentKind: msg.kind, sentAt: x.partner?.spawnedAt ?? 0 }))
             }
             // Markers only for entries on disk: those queued before this flush (a later answer waits a tick). An answer
             // whose hand-back did not come within HANDBACK_WAIT_MS gets its marker (T8d's fallback).
@@ -1034,8 +1109,6 @@ export const register: Register = (on, options) => {
         return line
       }
       const dialogPath = `${base}/${sidNow}/${DIALOG_FILE}`
-      const loopNow = async (): Promise<{ state: string; holds: string[] }> =>
-        parseLoop(await $.fs.read(`${root}/${LOOP_FILE}`).catch(() => null))
 
       // The presentation tick (T8c, planview.ts): the head of `present`, one dialog at a time, never while an agent is
       // running, pending or waiting (a mode switch reaches it) nor over a draft. 3.23 T13d.c7: that agent rule is the
@@ -1058,7 +1131,7 @@ export const register: Register = (on, options) => {
           presenting = true
           try {
             const holder = holdingAgent(head, await $.agent.list(), await read($, dialogsAtom)) // an ask waits only for real conflicts
-            const hold = presentHold({ busy: holder !== null, draft: (await $.prompt.read()).text, loop: await loopNow() })
+            const hold = presentHold({ busy: holder !== null, draft: (await $.prompt.read()).text })
             if (hold !== '') {
               const seen = `${hold}|${holder?.id ?? ''}|${holder?.status ?? ''}`
               if (seen !== lastHold) {
@@ -1068,14 +1141,7 @@ export const register: Register = (on, options) => {
               return
             }
             lastHold = ''
-            // The flag first, then the loop read again: a tick of the loop that moved on meanwhile wins, and waits.
             await $.fs.write(dialogPath, dialogJson(true, head.id, await $.clock.now()))
-            const again = presentHold({ busy: false, draft: '', loop: await loopNow() })
-            if (again !== '') {
-              await $.fs.write(dialogPath, dialogJson(false, head.id, await $.clock.now()))
-              await log('present.defer', { id: head.id, why: again })
-              return
-            }
             // Taken before acting: a crash mid-dialog never shows it twice.
             await save(x => ({ ...x, present: x.present.filter(p => p.id !== head.id) }))
             // 3.24 T7b-2c: while the project's first run is pending (pa.json), no plan is presented; Claude is told why.
@@ -1140,9 +1206,10 @@ export const register: Register = (on, options) => {
         await update($, ratesAtom, c => ({ ...c, [model]: value }))
         return pc
       }
-      // 3.23 T5d2b: the loop's expert (loop.json, read only: the loop is its one writer), warmed as the partner is: up to
-      // 24 h while a child is out (`childBusy`), by rent-or-buy while held on a question (it waits on the developer);
-      // never while it works (pending, running, waiting). Coders and the critic are never warmed. Its state is
+      // 3.23 T5d2b: the loop's expert (loop.json, read only: the loop is its one writer), warmed as the partner is while
+      // it waits (a child out, `childBusy`; a background shell; a question to the developer), the stretch's pings by its
+      // size (3.28.1 T12, pingCount); never while it works (pending, running, waiting). The critic and coders are never
+      // warmed. Its state is
       // `warmAgents[agentId]`; the expert's own turn.complete lifts its pingInFlight. The loop's capture ignores its `.`.
       const saveWarm = async (id: string, f: (a: WarmAgent) => WarmAgent, blank: WarmAgent): Promise<void> => {
         const saved = await update($, stateAtom, x => (x === null ? x : { ...x, warmAgents: { ...x.warmAgents, [id]: f(x.warmAgents[id] ?? blank) } }))
@@ -1166,15 +1233,24 @@ export const register: Register = (on, options) => {
         }
         const id = t.agentId
         const blank: WarmAgent = {
-          role: t.agent, lastPingAt: 0, pingInFlight: false, waitKind: '', waitStart: 0, waitUsd: 0, pings: 0, pingUsd: 0, avoidedUsd: 0,
+          role: t.agent, lastPingAt: 0, pingInFlight: false, waitKind: '', waitStart: 0, waitUsd: 0, waitPings: 0, waitCount: 0, pings: 0, pingUsd: 0,
+          avoidedUsd: 0,
         }
         const w0 = st.warmAgents[id] ?? blank
         if (w0.pingInFlight) {
           return skip('in flight')
         }
-        const kind = t.childBusy === true ? 'child' : loop.holds.includes('question') ? 'question' : ''
+        // 3.28.1 T15: `shell`, waiting on a background shell of its own or its children's (pa-watch's shells.json).
+        const kids = (await $.agent.list()).filter(a => a.parentId === id).map(a => a.id)
+        const shellOut = shellsOut(shellsOf(await $.fs.read(`${base}/${sidNow}/${SHELLS_FILE}`).catch(() => null)), [id, ...kids]).length > 0
+        const kind = t.childBusy === true ? 'child' : shellOut ? 'shell' : loop.holds.includes('question') ? 'question' : ''
         // T13b.c4: an expert dropped from the list while it waits is still pinged (expertStatus; run 8746b004 dropped it).
-        const status = expertStatus((await $.agent.list()).find(a => a.id === id)?.status, kind, t.lastCompleteAt, loop.holds.includes('stopped'))
+        // 3.28.1 T8: its own turn ended (a turn.complete, nothing queued to it since) with a child out: waiting, whatever
+        // the list says (TerrainDiffusion a3dff244: listed `waiting` on its background coder, never pinged).
+        const now = await $.clock.now()
+        const turnEnded = t.lastCompleteAt > 0 && queuedTo(t, now) === 0
+        const listed = (await $.agent.list()).find(a => a.id === id)?.status
+        const status = expertStatus(listed, kind, t.lastCompleteAt, loop.holds.includes('stopped'), turnEnded)
         if (status === undefined) {
           return skip('not listed')
         }
@@ -1183,35 +1259,39 @@ export const register: Register = (on, options) => {
         const waitKind = idle ? kind : ''
         if (waitKind !== w0.waitKind) {
           const waitStart = waitKind === '' ? 0 : Math.max(t.lastCompleteAt, t.spawnedAt, w0.lastPingAt)
-          await saveWarm(id, a => ({ ...a, waitKind, waitStart, waitUsd: 0 }), blank)
+          await saveWarm(id, a => ({ ...a, waitKind, waitStart, waitUsd: 0, waitPings: 0, waitCount: 0 }), blank)
         }
         if (waitKind === '') {
           return skip(`no wait (${status})`, { childBusy: t.childBusy === true })
         }
-        const w = (await read($, stateAtom))?.warmAgents[id] ?? blank
         const step = stepFactsOf(await $.fs.read(`${base}/${sidNow}/agents/${id}.json`).catch(() => null))
-        const out = waitKind === 'child'
-        const pc = await priceOf(step.model)
-        const rates = pc === null ? null : ratesFrom(pc.table, pc.lookup, step.ctx)
-        if (rates === null && !out) {
-          return skip('no rates', { model: step.model, ctx: step.ctx })
+        const ttl = cacheTtlOf(await $.fs.read(`${root}/.claude/agents/${t.agent}.md`).catch(() => null))
+        // 3.28.1 T12: the stretch's ping count, from its context at its start (its first tick).
+        if (((await read($, stateAtom))?.warmAgents[id]?.waitCount ?? 0) === 0) {
+          await saveWarm(id, a => ({ ...a, waitCount: pingCount(step.ctx, ttl) }), blank)
         }
-        const now = await $.clock.now()
+        const w = (await read($, stateAtom))?.warmAgents[id] ?? blank
+        const pc = await priceOf(step.model)
+        const rates0 = pc === null ? null : ratesFrom(pc.table, pc.lookup, step.ctx)
+        const rates = rates0 === null ? null : tierRates(rates0, ttl)
         const lastRequestAt = Math.max(t.lastCompleteAt, t.spawnedAt, w.lastPingAt)
-        const d = pingDecision({ status, lastRequestAt, ctx: step.ctx }, now, rates ?? ZERO_RATES, {
-          childOut: out, waitStart: w.waitStart > 0 ? w.waitStart : undefined, spentUsd: w.waitUsd,
-          seedTokens: SEED_BUDGET_TOKENS, prefixTokens: 0, pingAfterMs,
-        })
+        const d = pingDecision({ status, lastRequestAt, ctx: step.ctx }, now, { ttl, pings: w.waitPings, count: w.waitCount, pingAfterMs })
         if (!d.ping) {
           return skip(d.why, { status, waitKind, lastRequestAt, at: d.at, now })
         }
         expertSkip = ''
-        const usd = rates === null ? 0 : pingUsd(step.ctx, rates)
-        const rewrite = rates === null ? 0 : step.ctx * (rates.write_1h - rates.read)
-        const n = w.pings + 1
+        await sendPing(id, { role: t.agent, task: t.id, ttl, model: step.model, ctx: step.ctx, rates, lastRequestAt, now, why: d.why, n: w.pings + 1 }, blank)
+      }
+      // One warming ping to the loop's expert: the `warm_ping` event, the hold, the `.`.
+      const sendPing = async (id: string, p: {
+        role: string; task: string; ttl: string; model: string; ctx: number; rates: Rates | null; lastRequestAt: number; now: number; why: string; n: number
+      }, blank: WarmAgent): Promise<void> => {
+        const { rates, now, n } = p
+        const usd = rates === null ? 0 : pingUsd(p.ctx, rates)
+        const rewrite = rates === null ? 0 : p.ctx * (rates.write_1h - rates.read)
         const detail = {
-          run_id: id, session_id: sidNow, role: t.agent, task: t.id, ttl: '1h', idle_s: Math.round((now - lastRequestAt) / 1000), n,
-          via: 'mod', cap: null, cap_inputs: { ctx: step.ctx, model: step.model, rewrite_usd: rewrite, ping_usd: usd },
+          run_id: id, session_id: sidNow, role: p.role, task: p.task, ttl: p.ttl, idle_s: Math.round((now - p.lastRequestAt) / 1000), n,
+          via: 'mod', cap: null, cap_inputs: { ctx: p.ctx, model: p.model, rewrite_usd: rewrite, ping_usd: usd },
         }
         if (python !== '' && ledger !== '') {
           const argv = [python, ledger, 'event', 'warm_ping', '--session', sidNow, '--run', id, '--detail', JSON.stringify(detail)]
@@ -1223,12 +1303,12 @@ export const register: Register = (on, options) => {
         await saveWarm(id, a => ({ ...a, pingInFlight: true }), blank)
         const sent = await $.session.send({ to: { agentId: id }, text: '.' })
         await saveWarm(id, a => (sent.isDelivered
-          ? { ...a, pings: n, pingUsd: a.pingUsd + usd, avoidedUsd: a.avoidedUsd + rewrite, lastPingAt: now, waitUsd: a.waitUsd + usd }
+          ? { ...a, pings: n, pingUsd: a.pingUsd + usd, avoidedUsd: a.avoidedUsd + rewrite, lastPingAt: now, waitUsd: a.waitUsd + usd, waitPings: a.waitPings + 1 }
           : { ...a, pingInFlight: false }), blank)
-        await log('warm.ping', { agentId: id, role: t.agent, task: t.id, why: d.why, ctx: step.ctx, usd, rewrite, n, delivered: sent.isDelivered })
+        await log('warm.ping', { agentId: id, role: p.role, task: p.task, why: p.why, ctx: p.ctx, usd, rewrite, n, delivered: sent.isDelivered })
       }
-      // The warming tick (design.md "Warming (rent-or-buy)", policy.pingDecision): the idle partner (the router's only
-      // spawn) gets a `.` before its 1h cache lapses, while a child is out or while pings cost less than a fresh start.
+      // The warming tick (design.md "Warming", policy.pingDecision): the idle partner (the router's only spawn) gets a
+      // `.` before its 1h cache lapses, the idle stretch's pings set by its size (3.28.1 T12, policy.pingCount).
       // The `warm_ping` event is spooled first, so the audit's 60-second match holds; its `.` answer lifts the hold.
       // 3.23 T5d2b: the loop's expert first (warmExpert).
       const warmTimer = $.clock.every(WARM_MS, () => {
@@ -1249,34 +1329,28 @@ export const register: Register = (on, options) => {
               return
             }
             const list = await $.agent.list()
-            // A partner dropped from the list after a turn end is still pinged (partnerStatus, as the expert's in T13b.c4).
-            const status = partnerStatus(list.find(a => a.id === p.agentId)?.status, p.lastTurnAt)
+            // A partner dropped from the list after a turn end is still pinged (partnerStatus, as the expert's in T13b.c4);
+            // 3.28.1 T12: so is one listed `waiting` on its own background work after its turn ended.
+            const status = partnerStatus(list.find(a => a.id === p.agentId)?.status, p.lastTurnAt, partnerIdle(st))
             if (status === undefined) {
               return
             }
             const now = await $.clock.now()
-            const out = childOut(p.agentId, st.children, list)
-            const pc = await priceOf(p.model)
-            const rates = pc === null ? null : ratesFrom(pc.table, pc.lookup, p.ctx)
-            if (rates === null && !out) {
-              if (!noRatesLogged) {
-                noRatesLogged = true
-                await log('warm.norates', { model: p.model })
+            // 3.28.1 T12: the stretch's ping count, from its context at its start (its first tick; applyReply resets it).
+            const count = st.warm.waitCount > 0 ? st.warm.waitCount : pingCount(p.ctx, '1h')
+            if (st.warm.waitCount === 0 && (status === 'idle' || status === 'completed')) {
+              const counted = await update($, stateAtom, x => (x === null || x.warm.waitCount > 0 ? x : { ...x, warm: { ...x.warm, waitCount: count } }))
+              if (counted !== null) {
+                await $.fs.write(statePath(base, sidNow), serializeState(counted))
               }
-              return
             }
             const lastRequestAt = Math.max(p.lastTurnAt, p.spawnedAt, st.warm.lastPingAt)
-            const d = pingDecision({ status, lastRequestAt, ctx: p.ctx }, now, rates ?? ZERO_RATES, {
-              childOut: out,
-              waitStart: st.warm.waitStart > 0 ? st.warm.waitStart : undefined,
-              spentUsd: st.warm.waitUsd,
-              seedTokens: p.firstCtx > 0 ? 0 : SEED_BUDGET_TOKENS,
-              prefixTokens: p.firstCtx,
-              pingAfterMs,
-            })
+            const d = pingDecision({ status, lastRequestAt, ctx: p.ctx }, now, { ttl: '1h', pings: st.warm.waitPings, count, pingAfterMs })
             if (!d.ping) {
               return
             }
+            const pc = await priceOf(p.model)
+            const rates = pc === null ? null : ratesFrom(pc.table, pc.lookup, p.ctx)
             const usd = rates === null ? 0 : pingUsd(p.ctx, rates)
             const rewrite = rates === null ? 0 : p.ctx * (rates.write_1h - rates.read)
             const n = st.warm.waitPings + 1
@@ -1881,6 +1955,15 @@ export const register: Register = (on, options) => {
       })
       if (lifted !== null) {
         await $.fs.write(statePath(`${await $.session.root()}/.run/mod`, lifted.sid), serializeState(lifted))
+      }
+    } else if (warmId !== undefined && st !== null && st.warmAgents[warmId] !== undefined) {
+      // 3.28.1 T12: any other turn end of a warmed agent is a real turn: its idle stretch, and its ping count, start over.
+      const reset = await update($, stateAtom, x => {
+        const a = x?.warmAgents[warmId]
+        return x === null || a === undefined ? x : { ...x, warmAgents: { ...x.warmAgents, [warmId]: { ...a, waitKind: '', waitPings: 0, waitCount: 0 } } }
+      })
+      if (reset !== null) {
+        await $.fs.write(statePath(`${await $.session.root()}/.run/mod`, reset.sid), serializeState(reset))
       }
     }
     if (e.agentId === undefined || st === null || st.partner?.agentId !== e.agentId) {

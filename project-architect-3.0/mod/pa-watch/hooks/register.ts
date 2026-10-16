@@ -70,6 +70,47 @@ function ev(kind: string, data: Record<string, unknown>): [string, string] {
 
 const quiet = (): undefined => undefined
 
+/** 3.28.1 T15: background shells (Bash `run_in_background`) per agent, `.run/mod/<sid>/shells.json` (pa loop.ts
+ * SHELLS_FILE, shellsOf): `{ <agentId>: [{ id, name, at, type, exit? }] }`, from the call to its completion notice. */
+type ShellRec = { id: string; name: string; at: number; type: string; exit?: number }
+let shellsChain: Promise<unknown> = Promise.resolve() // one read-modify-write at a time
+/** A shell's name: the last script-like token's basename (`bake_rest.sh`), else the last command's first word. */
+const shellName = (command: string): string => {
+  const words = command.split(/\s+/).map(w => w.replace(/^["']|["';]$/g, '')).filter(w => w !== '')
+  const script = [...words].reverse().find(w => /\.(sh|py|ps1|js|ts|cmd|bat)$/i.test(w))
+  const last = command.split(/&&|\|\||;/).pop()?.trim().split(/\s+/)[0] ?? ''
+  return (script ?? last).split(/[\/]/).pop() ?? ''
+}
+/** The completion notice's task id and outcome: removed (`exit` undefined) on a clean end, else its exit code (-1 unknown). */
+const shellEnd = (text: string): { id: string; exit?: number } | null => {
+  const id = /<task-id>([^<]+)<\/task-id>/.exec(text)?.[1]?.trim() ?? ''
+  if (!text.includes('<task-notification>') || id === '') {
+    return null
+  }
+  const status = /<status>([^<]*)<\/status>/.exec(text)?.[1]?.trim() ?? ''
+  const code = /exit code:?\s*(-?\d+)/i.exec(text)?.[1]
+  const exit = code === undefined ? undefined : Number(code)
+  return status === 'completed' && (exit === undefined || exit === 0) ? { id } : { id, exit: exit ?? -1 }
+}
+const shellsEdit = async ($: Pick<EngineInterface, 'fs' | 'session'>, f: (s: Record<string, ShellRec[]>) => Record<string, ShellRec[]> | null): Promise<void> => {
+  const run = shellsChain.then(async () => {
+    const path = `${await $.session.root()}/.run/mod/${await $.session.id()}/shells.json`
+    let cur: Record<string, ShellRec[]> = {}
+    try {
+      const v = JSON.parse((await $.fs.read(path).catch(() => null)) ?? '{}') as unknown
+      cur = typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, ShellRec[]>) : {}
+    } catch {
+      cur = {}
+    }
+    const next = f(cur)
+    if (next !== null) {
+      await $.fs.write(path, JSON.stringify(Object.fromEntries(Object.entries(next).filter(([, l]) => l.length > 0))))
+    }
+  })
+  shellsChain = run.catch(quiet)
+  await run.catch(quiet)
+}
+
 /** Each agent seen: who it is, how deep, its last context (the facts file's `ctx`). */
 type Who = { who: string; depth: number; ctx: number; noted?: string; planning?: boolean } // noted: the turn whose approach note was taken; planning: after a pa-planning Skill call, until `plan` (3.23 T8)
 const agents = new Map<string, Who>()
@@ -371,6 +412,26 @@ export const register: Register = on => {
       if (debugDir !== '') {
         await $.fs.write(...ev('tool', { agentId: e.agentId, tool: f.tool, args: f.args })).catch(quiet)
       }
+      if (e.tool === 'Bash' && args['run_in_background'] === true) {
+        // 3.28.1 T15: a background shell is recorded under its agent until its completion notice (session.append).
+        const r = await next(e)
+        const res = r.result as { backgroundTaskId?: unknown } | undefined
+        const id = typeof res?.backgroundTaskId === 'string' ? res.backgroundTaskId : (/ID: (\w+)/.exec(r.text ?? '')?.[1] ?? '')
+        if (id !== '') {
+          const agent = e.agentId
+          const type = f.type !== '' ? f.type : ((await $.agent.list().catch(() => [])).find(a => a.id === agent)?.type ?? '')
+          const rec: ShellRec = { id, name: shellName(String(args['command'] ?? '')), at: Date.now(), type }
+          await shellsEdit($, s => ({ ...s, [agent]: [...(s[agent] ?? []).filter(x => x.id !== id), rec] }))
+        }
+        return r
+      }
+      if (e.tool === 'SendMessage' || e.tool === HANDBACK) {
+        // 3.28.1 T15: the agent's report: its dead shells are cleared; a contract (`STATUS:`) clears all of them.
+        const msg = String(args['message'] ?? '')
+        const agent = e.agentId
+        await shellsEdit($, s => (s[agent] === undefined ? null
+          : { ...s, [agent]: /^\s*STATUS:/.test(msg) ? [] : (s[agent] ?? []).filter(x => x.exit === undefined) }))
+      }
       if (EDIT_TOOLS.includes(e.tool)) {
         // 3.24 T8b: a successful file edit by Claude, an expert or a coder is one `edit` feed record; the band's line names it.
         const r = await next(e)
@@ -395,6 +456,30 @@ export const register: Register = on => {
       }
     }
     return next(e)
+  })
+
+  // 3.28.1 T15: a background shell's completion notice (a row in its agent's conversation): a clean end removes its
+  // record; a failed one keeps it with its exit code (shown dead) until the agent reports.
+  on('session.append', async ($, e, next) => {
+    const r = await next(e)
+    try {
+      const content = (e.message as { content?: unknown }).content
+      const text = typeof content === 'string' ? content
+        : (Array.isArray(content) ? content : []).map(b => (typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'text' ? String((b as { text?: unknown }).text ?? '') : '')).join('\n')
+      const end = text.includes('<task-notification>') ? shellEnd(text) : null
+      if (end !== null && (await read($, activeAtom).catch(() => false))) {
+        await shellsEdit($, s => {
+          if (!Object.values(s).some(l => l.some(x => x.id === end.id))) {
+            return null
+          }
+          return Object.fromEntries(Object.entries(s).map(([a, l]) => [a, end.exit === undefined
+            ? l.filter(x => x.id !== end.id) : l.map(x => (x.id === end.id ? { ...x, exit: end.exit } : x))]))
+        })
+      }
+    } catch {
+      // best effort: the row is kept whatever the record does
+    }
+    return r
   })
 
   // The six tools: a good call becomes one request file in the router's inbox, which its one-second tick drains.

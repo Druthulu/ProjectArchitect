@@ -2,6 +2,54 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.28.7 — The model line shows the session's work
+
+- In a 3.2 session the model line's context figure (always `0/1M` there, since the main session never calls a model) becomes the session's work, such as `4.3M/∞`: every token that went into the contexts of Claude and all its agents, each counted once, with an agent type's shared starting prompt counted only once. Other sessions keep the usual `<context>/<window>`.
+
+## 3.28.6 — Claude no longer gets the old update command
+
+- When the mod finds a new release mid-session, Claude hears only the version and its title, never the old "run pa3_update" instruction, so it cannot start a second install beside the mod's.
+
+## 3.28.5 — The statusline says when an update is installing
+
+- While a chosen update installs, the statusline reads "installing · please wait" (not "installed") and Claude says once that it is installing; "installed" shows only after the install finishes.
+
+## 3.28.4 — No stray windows on Windows
+
+- PA3's background steps (an update, the ledger's recalculation, a notification) no longer open an empty console window on Windows.
+
+## 3.28.3 — Updates while paused
+
+- A chosen update installs while a task is paused, with no expert or coder working, instead of waiting for the task to end.
+- Asking Claude for an update you already chose is accepted, not refused.
+- An update installed at a session start, or already loaded by a restart, gives the "installed and loaded" line instead of asking for another restart.
+- The restart line always has a blank line above it.
+
+## 3.28.2 — The restart after an update stands out
+
+- When an update is installed, Claude puts the restart on its own bold line ("To load it: /exit, then claude --continue (not /clear)"), coloured green with "(not /clear)" in red in its card, and the statusline shows "(not /clear)" in red.
+- After that restart, Claude first says "Project Architect <version> is installed and loaded. Ready to continue work.", so the old restart line above doesn't look like a loop.
+
+## 3.28.1 — Fixes from the first projects on 3.2
+
+- The statusline shows the titles of queued tasks again when their plan line names no status.
+- The seed warning shows only when an expert starts above 40k tokens; it no longer fires when a seed merely grew.
+- The planner's name shows in the planners' purple in the activity band, as its cards do.
+- A plan change you ask for during a phase goes in at the next task boundary, and Claude tells you in chat what changed. The plan view opens only for a phase's first plan and the generation plan.
+- Claude's questions appear the moment Claude asks them, even while a task runs; answering one leaves the running task alone.
+- Installing a new phase plan keeps every finished task finished.
+- Only your messages hold the queue while you talk, and the hold ends 15 minutes after you last spoke; the mod's own messages to Claude (a plan installed, an update finished) don't extend it.
+- When Claude Code restarts, updates or the terminal closes while a task runs, the task's expert picks up by itself at the next start, and Claude tells you in one line. Only your own stop (Ctrl+C) waits for your go.
+- The mod's own commits get five minutes instead of one, so a large repo's commit isn't cut off. If one is cut off anyway, the mod clears the leftover git lock (only when no other git command is running), tries once more, and tells Claude in one line if that fails too.
+- A long command (a bake, a backtest, a batch run) runs as a Claude Code background shell: the coder or expert hands back "WAITING: shell …" and stops instead of sitting in a polling tool call, and picks up by itself when the shell ends, reporting with SendMessage.
+- While such a shell runs you can see it: a line under its task on the statusline ("◐ shell bake_rest.sh · running 9m 05s · coder waiting", ✗ if it failed), a row under its agent in the band, and one line from Claude saying what is running and that it picks up by itself.
+- Every waiting agent is kept warm by its size: a ping just before its cache lapses (55 minutes for Claude, experts and planners; 4.5 for coders), more pings for a small context and fewer for a large one (up to 5 and 12). Any real message starts the count over. Claude stays warm even while a background command of its own is still running.
+- Nothing is sent to an agent whose cache has gone cold: a fresh agent of the same kind takes the message, Claude seeded from the journal, an expert from its progress and earlier reports, a coder from its brief and notes.
+- An agent at its context limit finishes the change in hand until it builds and its tests pass, commits only working code, saves any unfinished edit as a patch beside its progress notes for the next agent, and hands back a plain "handoff".
+- A running session checks for a new release every 8 hours, as well as at each start and resume. When it finds one, Claude asks once per version, on your phone too: "Install after the current task" or "Not now (I'm away or busy)". Work keeps going while you decide, and no answer counts as "Not now"; later you can just tell Claude you're back and want it.
+- An update you choose to install goes in once the current task finishes, with no new task started; a toast and a push notification say it's done, and Claude asks you to type /exit, then claude --continue (not /clear) to load it. A green line above the model line shows the state: "available · installs at your next restart" or "installed · /exit, then claude --continue", with "hotfix" or "feature update" by the version number.
+- Claude makes the small plan changes you ask for itself. A real replan goes to a fresh planner, given the plan, the replan notes and the earlier planner's notes.
+
 ## 3.28 — The release
 
 - This is the release a project on 3.15 updates to. The update brings every change in the sections from 3.24 to 3.28; the 3.24 section describes the move to PA 3.2.

@@ -70,8 +70,9 @@ describe('holds', () => {
     expect(silenceReleases(s, 15 * 60_000 - 1)).toBe(false)
     expect(silenceReleases(s, 15 * 60_000)).toBe(true)
     expect(silenceReleases({ ...s, lastAnswerAsked: true }, 99 * 60_000)).toBe(false)
-    expect(silenceReleases({ ...s, lastAnswerAt: 60_000 }, 15 * 60_000)).toBe(false)
-    expect(silenceReleases({ ...s, lastAnswerAt: 60_000 }, 16 * 60_000)).toBe(true)
+    expect(silenceReleases({ ...s, talkAnswerAt: 60_000 }, 15 * 60_000)).toBe(false)
+    expect(silenceReleases({ ...s, talkAnswerAt: 60_000 }, 16 * 60_000)).toBe(true)
+    expect(silenceReleases({ ...s, lastAnswerAt: 60_000 }, 15 * 60_000)).toBe(true) // 3.28.1 T9b: an answer after a notice
     expect(silenceReleases(with_({ holds: ['talk', 'review'] }), 99 * 60_000)).toBe(false)
   })
 
@@ -343,6 +344,8 @@ describe('the update run (3.24 T6)', () => {
     expect(up).toContain('PA3 updated from 3.23 (aaaaaaaa) to 3.24 (bbbbbbbb)')
     expect(up).toContain('/h/.claude/pa3/CHANGES.md for the entries after 3.23 up to 3.24')
     expect(up).not.toContain('restart')
+    expect(up).toContain('"Project Architect 3.24, a feature update (<the title of its CHANGES.md heading>), is installed.", a blank line, ' +
+      'then on its own line:\n\n**To load it: /exit, then claude --continue (not /clear)**\n\n') // 3.28.2 T16
     const same = updateDoneNotice(markerOf(mk({ to: { phase: '3.23', git: 'aaaaaaaaaa11' } }))!, no, '/p', '')
     expect(same).toContain('the project stays at 3.23 (aaaaaaaa)')
     const rep = updateDoneNotice(markerOf(mk({ mode: 'repair' }))!, no, '/p', '')
@@ -355,6 +358,11 @@ describe('the update run (3.24 T6)', () => {
     const both = updateDoneNotice(markerOf(mk({}))!, { conflicts: true, restart: true }, '/p', '')
     expect(both).toContain('restart: needed')
     expect(both).toContain(UPGRADE_MD)
+    // 3.28.2 T17: a restart already loaded the new mod: the loaded line, no restart line; restart: needed still asks
+    const loaded = updateDoneNotice(markerOf(mk({}))!, { conflicts: false, restart: true, loaded: true }, '/p', '')
+    expect(loaded).toContain('\n\n**Project Architect 3.24 is installed and loaded. Ready to continue work.**\n\n')
+    expect(loaded).not.toContain('To load it')
+    expect(loaded).toContain('restart: needed')
   })
   test('modFilesKey: the sorted mod/ entries; another file or unreadable does not count', async () => {
     const a = modFilesKey('{"files":{"mod/pa/b.ts":"2","tools/x.py":"9","mod/pa/a.ts":"1"}}')

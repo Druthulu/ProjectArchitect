@@ -1518,7 +1518,7 @@ def _recalc_detach(args):
     kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL,
               "stderr": subprocess.DEVNULL, "close_fds": True}
     if os.name == "nt":
-        kwargs["creationflags"] = (getattr(subprocess, "DETACHED_PROCESS", 0x00000008)
+        kwargs["creationflags"] = (getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)   # a hidden console its children inherit
                                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x00000200))
     else:
         kwargs["start_new_session"] = True
@@ -5684,6 +5684,8 @@ def build_parser():
 
     sub.add_parser("ladder-row", help="one agent's model and effort for the live tier (3.24 T17;"
                    " pa.ladder_row parses its own arguments)")
+    sub.add_parser("update-check", help="<project>: the session-start release check, for the mod's"
+                   " 2-hour check (3.28.1 T14; pa_ledger.py dispatches it)")
 
     bn = sub.add_parser("bench", help="bench results: report / import / export")
     bsub = bn.add_subparsers(dest="bench_cmd", required=True)

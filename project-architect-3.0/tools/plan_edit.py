@@ -1044,13 +1044,27 @@ def cmd_from_draft(a, root, path, text, explicit):
     """Write PHASE_PLAN.md from a planner draft: the only write path before approval.
 
     Refuses while an approved plan exists unless REPLAN.md is present (then the old
-    plan is archived as PHASE_PLAN.v<k>.md first). Lints the result.
+    plan is archived as PHASE_PLAN.v<k>.md first). A task done in the replaced plan stays
+    done whatever the draft says. Lints the result.
     """
     src = os.path.abspath(a.draft)
     if not os.path.isfile(src):
         die("no draft at %s" % rel(root, src))
     draft = read_text(src)
     cur = os.path.dirname(path)
+    if os.path.isfile(path):                # 3.28.1 T9a: a task done in the installed plan stays done
+        done = set(t.id for t in parse(read_text(path))[1] if t.status == "done")
+        lines, tasks, _ = parse(draft)
+        kept = []
+        for t in tasks:
+            if t.id in done and t.status != "done":
+                new = set_status_in_line(lines[t.index], "done")
+                if new is not None:
+                    lines[t.index] = new
+                    kept.append(t.id)
+        if kept:
+            draft = "\n".join(lines)
+            sys.stdout.write("kept done: %s\n" % " ".join(kept))
     if os.path.isfile(path) and is_approved(read_text(path)):
         if not os.path.isfile(os.path.join(cur, "REPLAN.md")):
             die("an approved plan exists and no REPLAN.md is present; "
