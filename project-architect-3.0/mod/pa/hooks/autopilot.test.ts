@@ -3099,6 +3099,58 @@ describe('background shells (3.28.1 T15)', () => {
   })
 })
 
+// 3.28.8: TerrainDiffusion T12 stalled with tasks left: its expert, waiting on its coder, dropped from the list, was
+// taken for killed (`stopped`), and its done report at 10:50 sat under the hold.
+describe('no stall on a false stop (3.28.8)', () => {
+  const handback = (from: string, report: string): string =>
+    `Another Claude session sent a message:\n<agent-message from="${from}">\n[Subagent hand-back] The report follows:\n` +
+    `${report.split('\n').map(l => `  ${l}`).join('\n')}\n</agent-message>`
+
+  test('the expert dropped from the list while its coder works: waiting, not stopped', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    w.list = [{ id: 'C1', status: 'running', parentId: 'E1', type: 'pa-coder' }]
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect([loopJ(w).holds, loopJ(w).task?.recovery ?? null]).toEqual([[], null])
+    expect(notices(w).filter(x => x.input.text.includes('stopped (Ctrl+C'))).toEqual([])
+  })
+
+  test('a stop taken from absence is lifted by the expert\'s own report after it; the report is routed', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    w.list = []
+    await clock.advance(2_000)
+    expect(loopJ(w).holds).toEqual(['stopped'])
+    await $.prompt.submit({ text: handback('E1', 'done. Roads reach every town.\nSummary: logs/T1.md (commit def5678).'), origin: { kind: 'peer' }, wait: false })
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(loopJ(w).holds).toEqual([])
+    expect(ran(w, 'tools/plan_edit.py set-status')[0]).toEqual(['py', 'tools/plan_edit.py', 'set-status', 'T1', 'done', '--by', 'router'])
+    expect(notices(w).filter(x => x.input.text.includes('it was never stopped')).length).toBe(1)
+  })
+
+  test('a stop seen as killed keeps its hold, report or not', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    setStatus(w, 'E1', 'killed')
+    await clock.advance(2_000)
+    expect(loopJ(w).holds).toEqual(['stopped'])
+    await $.prompt.submit({ text: handback('E1', 'done. x'), origin: { kind: 'peer' }, wait: false })
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(loopJ(w).holds).toEqual(['stopped'])
+    expect(ran(w, 'tools/plan_edit.py set-status')).toEqual([])
+  })
+})
+
 describe('the band (3.23 T13)', () => {
   test("the tick writes it: the loop line with task n of m, the expert and its coder's last step; AbovePrompt draws it on terminal and desktop, idle and a survey draw the engine", async ($, on) => {
     const clock = mock.clock(on, { now: 1_000 })

@@ -113,7 +113,9 @@ function commitOf(f: Record<string, string>, text: string): string {
 const EXPERT_KEYS = ['log', 'ctx', 'commit', 'milestone', 'recommended', 'question', 'summary'] as const
 
 /** An expert's return: the legacy block (`STATUS · LOG · CTX · COMMIT · MILESTONE · RECOMMENDED · QUESTION`, optional
- * `SUMMARY`) or a plain report (3.25 T3: `summary` the free text, and for a question `question` too); null with neither. */
+ * `SUMMARY`) or a plain report (3.25 T3: `summary` the free text, and for a question `question` too); null with neither.
+ * 3.28.8: a plain report's free text wins over a `Summary: <path>` line inside it (TerrainDiffusion T12's card showed
+ * only that pointer line). */
 export function parseExpertContract(text: string): ExpertContract | null {
   const f = looseFields(text, EXPERT_KEYS)
   if (f === null) {
@@ -124,7 +126,7 @@ export function parseExpertContract(text: string): ExpertContract | null {
   return {
     status: g('status'), log: g('log'), ctx: g('ctx'), commit: commitOf(f, text), milestone: g('milestone'),
     recommended: g('recommended'), question: g('question') || (g('status') === 'question' ? free : ''),
-    summary: g('summary') || free,
+    summary: free || g('summary'),
   }
 }
 
@@ -138,7 +140,7 @@ const CODER_KEYS = ['changed', 'verified', 'log', 'ctx', 'commit', 'deviations',
  * the field, a hash after "commit" in the text. */
 export function parseCoderReturn(text: string): CoderReturn | null {
   const f = looseFields(text, CODER_KEYS)
-  return f === null ? null : { status: f['status'] ?? '', summary: f['summary'] || (f['text'] ?? ''), commit: commitOf(f, text) }
+  return f === null ? null : { status: f['status'] ?? '', summary: (f['text'] ?? '') || (f['summary'] ?? ''), commit: commitOf(f, text) }
 }
 
 const AUDITOR_KEYS = ['verdicts', 'fixed', 'candidates', 'file', 'recommended'] as const

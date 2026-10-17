@@ -446,6 +446,48 @@ describe('router route', () => {
     expect(s.result.answer).toBe('(Claude sees text only; your attachment stays here.)')
   })
 
+  // 3.28.8: Claude Code's hidden `[Image: source: <path>]` row after the prompt carries the files to Claude.
+  const imageRow = (text: string): never => ({
+    message: { type: 'user', role: 'user', isMeta: true, content: [{ type: 'text', text }] },
+    door: 'prompt', origin: { kind: 'engine' }, uuid: 'img1',
+  }) as never
+
+  test('3.28.8: a pasted image\'s source line goes to Claude with the message; no text-only notice', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'see [Image #1]', origin: { kind: 'composer' }, wait: false, attachments: [{ type: 'image', filename: 'a.jpg' }] })
+    await clock.advance(1_000)
+    expect(n.sends).toEqual([])
+    await $.session.append(imageRow('[Image: source: C:\\pics\\a.jpg]'))
+    await $.turn.start({ text: 'see [Image #1]', turnId: 'T1' })
+    const s = await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))
+    expect(s.result.answer).not.toContain('Claude sees text only')
+    await clock.advance(1_000)
+    expect(n.sends.map(x => x.text).at(-1)?.endsWith('see [Image #1]\n\n[Image: source: C:\\pics\\a.jpg]')).toBe(true)
+  })
+
+  test('3.28.8: no source line (a clipboard image): the message goes after the wait, the notice stays', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'look', origin: { kind: 'composer' }, wait: false, attachments: [{ type: 'image' }] })
+    await $.session.append(imageRow('[Image: original 4000x3000, displayed at 2000x1500.]'))
+    await clock.advance(1_000)
+    expect(n.sends).toEqual([])
+    await clock.advance(3_000)
+    expect(n.sends.map(x => x.text).at(-1)?.endsWith('look')).toBe(true)
+    await $.turn.start({ text: 'look', turnId: 'T1' })
+    const s = await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))
+    expect(s.result.answer).toBe('(Claude sees text only; your attachment stays here.)')
+  })
+
   test('the ping hold queues messages and flushes them in order at the partner turn end', async ($, on) => {
     const clock = mock.clock(on, { now: 1_000 })
     const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1', pingInFlight: true } })
@@ -631,6 +673,23 @@ describe('router journal, rotation, warming, toast', () => {
     await clock.advance(60_000)
     expect(n.sends).toEqual([{ to: 'P1', text: '.' }])
   })
+
+  // 3.28.8: Claude's pings by size; past 175k none, so a fresh Claude takes the next message.
+  for (const [ctx, pinged] of [[200_000, false], [120_000, true]] as const) {
+    test(`3.28.8: Claude at ${String(ctx / 1000)}k is ${pinged ? '' : 'not '}pinged at 55 min`, async ($, on) => {
+      const clock = mock.clock(on, { now: OCT })
+      world(on, {
+        [`${ROOT}/.claude/pa.json`]: PY,
+        [`${BASE}/S1/state.json`]: prior({ agentId: 'P1', model: 'claude-opus-5-5', ctx, lastTurnAt: OCT - 56 * 60_000 }),
+      }, { USERPROFILE: 'H' })
+      const n = net(on)
+      n.list = [{ id: 'P1', status: 'idle' }]
+      n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+      await $.session.start(ISTART)
+      await clock.advance(60_000)
+      expect(n.sends.length).toBe(pinged ? 1 : 0)
+    })
+  }
 
   test('no rates: the ping still goes (warming is by size, not cost)', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
@@ -1490,28 +1549,28 @@ describe('router warms the loop expert (3.23 T5d2b)', () => {
     expect(stateOf(w).warm.pings).toBe(0) // the partner's totals untouched
   })
 
-  test('3.28.1 T12: held on a question at 200k: the stretch gets 2 pings, then none', { timeoutMs: 30_000 }, async ($, on) => { // 3.28.1 T8: 14 ticks ran 3.0-4.4 s under load (was the 5 s default)
+  test('3.28.8: held on a question past 250k: the stretch gets 7 pings, then none', { timeoutMs: 60_000 }, async ($, on) => { // 3.28.1 T8: 14 ticks ran 3.0-4.4 s under load (was the 5 s default)
     const clock = mock.clock(on, { now: OCT })
-    const ctx = 200_000
+    const ctx = 300_000
     const w = expertWorld(on, loopFile({ lastCompleteAt: OCT - 3 * 60_000 }, ['question']), ctx, { PA_MOD_PING_AFTER_MS: '120000' })
     const n = net(on)
     n.list = [{ id: 'E1', status: 'idle' }]
     n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
     await $.session.start(ISTART)
-    for (let i = 0; i < 14; i += 1) {
+    for (let i = 0; i < 22; i += 1) {
       const before = n.sends.length
       await clock.advance(60_000)
       if (n.sends.length > before) {
         await $.turn.complete({ turnId: `X${String(i)}`, agentId: 'E1', answer: '.', durationMs: 1, isAborted: false, reason: 'answer', usage: USAGE })
       }
     }
-    expect(n.sends.length).toBe(2)
+    expect(n.sends.length).toBe(7)
     expect(warmA(w, 'E1')?.waitKind).toBe('question')
   })
 
-  test('3.28.1 T12: at 250k one ping a stretch; a real turn starts a new stretch with its own count', { timeoutMs: 30_000 }, async ($, on) => {
+  test('3.28.8: past 250k 7 pings a stretch; a real turn starts a new stretch with its own count', { timeoutMs: 60_000 }, async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
-    const w = expertWorld(on, loopFile({ lastCompleteAt: OCT - 3 * 60_000 }, ['question']), 250_000, { PA_MOD_PING_AFTER_MS: '120000' })
+    const w = expertWorld(on, loopFile({ lastCompleteAt: OCT - 3 * 60_000 }, ['question']), 300_000, { PA_MOD_PING_AFTER_MS: '120000' })
     const n = net(on)
     n.list = [{ id: 'E1', status: 'idle' }]
     n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
@@ -1525,13 +1584,13 @@ describe('router warms the loop expert (3.23 T5d2b)', () => {
         }
       }
     }
-    await ticks(5, 'X')
-    expect(n.sends.length).toBe(1)
+    await ticks(20, 'X')
+    expect(n.sends.length).toBe(7)
     await $.turn.complete({ turnId: 'R1', agentId: 'E1', answer: 'a real answer', durationMs: 1, isAborted: false, reason: 'answer', usage: USAGE })
-    expect([warmA(w, 'E1')?.waitKind, warmA(w, 'E1')?.pings]).toEqual(['', 1])
-    w.files.set(`${BASE}/loop.json`, loopFile({ lastCompleteAt: OCT + 5 * 60_000 }, ['question']))
+    expect([warmA(w, 'E1')?.waitKind, warmA(w, 'E1')?.pings]).toEqual(['', 7])
+    w.files.set(`${BASE}/loop.json`, loopFile({ lastCompleteAt: OCT + 20 * 60_000 }, ['question']))
     await ticks(5, 'Y')
-    expect(n.sends.length).toBe(2)
+    expect(n.sends.length).toBe(9)
   })
 
   for (const listed of ['waiting', 'running']) {
@@ -1618,6 +1677,64 @@ describe('router warms the loop expert (3.23 T5d2b)', () => {
     await clock.advance(60_000)
     expect(n.sends).toEqual([{ to: 'E1', text: '.' }])
     expect(warmA(w, 'E1')?.waitKind).toBe('shell')
+  })
+})
+
+// 3.28.8: a coder waiting on a background shell of its own is warmed at its 5-minute tier, up to 2.5 h a stretch.
+describe('router warms the loop expert\'s coders (3.28.8)', () => {
+  const coderWorld = (on: On, opts: { shell: boolean; type: string }): World => world(on, {
+    [`${ROOT}/.claude/pa.json`]: PY,
+    [`${ROOT}/.claude/agents/pa-coder.md`]: '---\nname: pa-coder\nexperimental:\n  cacheTtl: 5m\n---\nbody\n',
+    [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: null }),
+    [`${BASE}/loop.json`]: loopFile({ childBusy: true, lastCompleteAt: OCT - 60_000 }),
+    [`${BASE}/S1/agents/E1.json`]: JSON.stringify({ model: 'claude-opus-5-5', effort: 'medium', ctx: 80_000, at: OCT - 60_000 }),
+    [`${BASE}/S1/agents/C1.json`]: JSON.stringify({ model: 'claude-opus-5-5', effort: 'medium', ctx: 50_000, at: OCT - 4 * 60_000, type: opts.type }),
+    ...(opts.shell ? { [`${BASE}/S1/shells.json`]: JSON.stringify({ C1: [{ id: 'b1', name: 'bake.sh', at: OCT - 4 * 60_000, type: opts.type }] }) } : {}),
+  }, { USERPROFILE: 'H' })
+  const toC1 = (n: Net): number => n.sends.filter(s => s.to === 'C1').length
+
+  test('waiting on its own shell: a `.` 4 min after its last request; its . turn lifts the hold; the next 4 min later', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const w = coderWorld(on, { shell: true, type: 'pa-coder' })
+    const n = net(on)
+    n.list = [{ id: 'E1', status: 'waiting' }, { id: 'C1', status: 'waiting', parentId: 'E1' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(60_000)
+    expect(toC1(n)).toBe(1)
+    const a = warmA(w, 'C1')
+    expect([a?.pingInFlight, a?.waitKind, a?.role]).toEqual([true, 'shell', 'pa-coder'])
+    await clock.advance(60_000)
+    expect(toC1(n)).toBe(1) // in flight
+    await $.turn.complete({ turnId: 'K1', agentId: 'C1', answer: '.', durationMs: 1, isAborted: false, reason: 'answer', usage: USAGE })
+    expect(warmA(w, 'C1')?.pingInFlight).toBe(false)
+    await clock.advance(2 * 60_000)
+    expect(toC1(n)).toBe(1) // OCT+4 min: due 4 min after the ping
+    await clock.advance(2 * 60_000)
+    expect(toC1(n)).toBe(2)
+  })
+
+  for (const [label, shell, type] of [['no live shell', false, 'pa-coder'], ['a 1-hour child', true, 'retriever-code']] as const) {
+    test(`${label}: never pinged`, async ($, on) => {
+      const clock = mock.clock(on, { now: OCT })
+      coderWorld(on, { shell, type })
+      const n = net(on)
+      n.list = [{ id: 'E1', status: 'waiting' }, { id: 'C1', status: 'waiting', parentId: 'E1' }]
+      n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+      await $.session.start(ISTART)
+      await clock.advance(2 * 60_000)
+      expect(toC1(n)).toBe(0)
+    })
+  }
+
+  test('a coder at work (running) is not pinged', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    coderWorld(on, { shell: true, type: 'pa-coder' })
+    const n = net(on)
+    n.list = [{ id: 'E1', status: 'waiting' }, { id: 'C1', status: 'running', parentId: 'E1' }]
+    await $.session.start(ISTART)
+    await clock.advance(2 * 60_000)
+    expect(toC1(n)).toBe(0)
   })
 })
 

@@ -148,7 +148,7 @@ class BenchRun(unittest.TestCase):
         self.assertEqual((t["turns"], t["turns_source"], t["cache_write"]), (2, "transcript", 40))
         self.assertEqual((coder["model"], coder["effort"], coder["w5h_before"]), ("claude-opus-5-5", "medium", 10.0))
         self.assertEqual(doc["claude_code"], "2.1.282")
-        self.assertEqual(doc["harness_version"], "3.28.7")        # I11: the package VERSION
+        self.assertEqual(doc["harness_version"], "3.28.8")        # I11: the package VERSION
         self.assertIn("coder pa-coder claude-opus-5-5/medium pass 4/4", text)   # 3.25 T6a: was coder-opus55
         readme = (SCRATCH / "README.md").read_text(encoding="utf-8")
         self.assertIn("| canary | max20 | coder | pa-coder |", readme)   # 3.10.6 T6: preset column

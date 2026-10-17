@@ -105,19 +105,21 @@ describe('pingDecision', () => {
     expect(pingDecision(a, t0 + 3_600_000)).toEqual({ ping: false, at: due, why: 'cold' })
   })
 
-  test('3.28.1 T12: pingCount by size: 1h 300k/ctx (1..5), 5m 600k/ctx (1..12)', async () => {
-    expect([50_000, 100_000, 150_000, 200_000, 250_000, 900_000].map(c => pingCount(c, '1h'))).toEqual([5, 3, 2, 2, 1, 1])
-    expect([50_000, 100_000, 250_000, 900_000, 10_000].map(c => pingCount(c, '5m'))).toEqual([12, 6, 2, 1, 12])
+  test('3.28.8: pingCount by role: coders 33 (2.5 h), experts 12 (12 h) or 7 past 250k, Claude by size', async () => {
+    expect([0, 20_000, 200_000].map(c => pingCount(c, 'coder'))).toEqual([33, 33, 33])
+    expect([0, 50_000, 250_000, 250_001, 900_000].map(c => pingCount(c, 'expert'))).toEqual([12, 12, 12, 7, 7])
+    expect([0, 99_999, 100_000, 124_999, 125_000, 174_999, 175_000, 300_000].map(c => pingCount(c, 'claude')))
+      .toEqual([12, 12, 6, 6, 1, 1, 0, 0])
   })
 
   test('3.28.1 T12: no ping after the stretch\'s count; the count is the stretch\'s, not the size now', async () => {
     expect(pingDecision(a, due, { pings: 2, count: 3 }).ping).toBe(true)
     expect(pingDecision(a, due, { pings: 3, count: 3 })).toEqual({ ping: false, at: due, why: 'count' })
-    expect(pingDecision(a, due, { pings: 3 })).toEqual({ ping: false, at: due, why: 'count' })
+    expect(pingDecision(a, due, { pings: 12 })).toEqual({ ping: false, at: due, why: 'count' }) // 3.28.8: an expert's 12
     expect(pingDecision({ ...a, ctx: 250_000 }, due, { pings: 1, count: 5 }).ping).toBe(true)
   })
 
-  test('3.28.1 T12: a 5-minute agent is due at 4.5 min and cold at 5', async () => {
+  test('3.28.8: a 5-minute agent is due at 4 min and cold at 5', async () => {
     const at5 = t0 + PING_AFTER_5M_MS
     expect(pingDecision(a, at5 - 1, { ttl: '5m' })).toEqual({ ping: false, at: at5, why: 'not due' })
     expect(pingDecision(a, at5, { ttl: '5m' })).toEqual({ ping: true, at: at5, why: 'size' })

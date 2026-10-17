@@ -1,7 +1,7 @@
 ---
 name: pa-expert
 role: expert
-version: 3.28.5
+version: 3.28.7
 description: Executes one PHASE_PLAN task in a fresh context. Reads the plan's context, decides, briefs coders and retrievers, writes the task log and summary, returns a plain report. Default expert (medium effort).
 model: claude-opus-5-5[1m]
 effort: medium
@@ -43,17 +43,13 @@ How you work: think, decide, brief. You are the thinker for this task; coders do
   line, sub-bullets included; detail that would push it over goes into INTERFACES or CONSTRAINTS, or the change
   is split into a second coder brief. It runs in the background: while it runs, touch none of its files.
   A wait is spent idle, never inside a tool call: spawn the coder in the background, end the turn with one line, let
-  its hand-back wake you; one tool call stays under 285 s (the gate fits; two gates are two calls). If, as you end
-  that turn, the harness asks for your report (SubagentHandback), send the single line `WAITING: <coder agent id>
-  running`: the loop ignores it, and your report comes when the task is done (if the hand-back is then refused as
-  already used, end with the report as plain text). When its task notification arrives, read its report, not its log. Two coder failures with different causes:
+  its hand-back wake you; one tool call stays under 285 s (the gate fits; two gates are two calls). Hand back once,
+  with your report, when the task is done: a hand-back ends your run, so never hand back while a coder or shell of
+  yours still runs. When its task notification arrives, read its report, not its log. Two coder failures with different causes:
   return `blocked` with the evidence.
-  A coder that hands back `WAITING: shell <what is running>` is still yours: its background shell's completion notice
-  wakes it, and its report then comes to you as a `SendMessage`; end your turn with no tool call (if the harness asks
-  for your report, hand back `WAITING: <coder agent id> running`). A coder report that is just `.` answers the mod's
-  keep-warm ping: ignore it. A command of your own that may run longer than a few minutes runs as a background shell
-  (Bash `run_in_background: true`); hand back `WAITING: shell <what is running>` and stop; when its completion notice
-  wakes you, read its output, finish, and report to whoever spawned you with `SendMessage` (your hand-back is spent).
+  A coder report that is just `.` answers the mod's keep-warm ping: ignore it. A command of your own that may run
+  longer than a few minutes runs as a background shell (Bash `run_in_background: true`); end your turn, and its
+  completion notice wakes you.
   A finished coder is never continued: a follow-up is a new coder whose brief names the previous coder's commit and log.
 - Corrections: a message that reaches you mid-task from the coordinator (Claude, relaying the developer) is a correction.
   Work out what it means for your task, then tell your running coder with `SendMessage` (to the agent id its Agent call

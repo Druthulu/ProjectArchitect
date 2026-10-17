@@ -1656,7 +1656,9 @@ ${REPLAN_NOTICE}`)
             }
             const list = await $.agent.list()
             const me = list.find(a => a.id === g.agentId)
-            const live = liveness(me?.status, now - g.spawnedAt)
+            // 3.28.8: missing from the list with a child at work (an auditor's coder) is waiting, not stopped.
+            const busy = list.filter(a => a.parentId === g.agentId && BUSY.has(a.status)).length
+            const live = me === undefined && busy > 0 ? 'idle' : liveness(me?.status, now - g.spawnedAt)
             // T11-fix2: a stopped curator or auditor with no answer is the developer's stop: its step ends without one.
             if (live === 'stopped' && (f?.answer ?? '') === '') {
               const role = g.step === 'curator' ? 'memory curator' : 'auditor'
@@ -1664,7 +1666,6 @@ ${REPLAN_NOTICE}`)
               delete facts[g.agentId]
               return `(the ${role} was stopped: ${me?.status ?? 'absent'}; not restarted)`
             }
-            const busy = list.filter(a => a.parentId === g.agentId && BUSY.has(a.status)).length
             if ((busy > 0) !== g.childBusy) {
               await put({ ...g, childBusy: busy > 0, ...(busy > 0 ? {} : { childIdleAt: now }) }, busy > 0 ? 'gen.child.busy' : 'gen.child.idle')
             }
@@ -1991,6 +1992,17 @@ ${REPLAN_NOTICE}`)
           await recover(s.task, s.task.recovery!)
           return
         }
+        // 3.28.8: a stop taken from absence alone (the expert missing from the list, never seen killed) is lifted by that
+        // expert's own report after it, which is then captured and routed as any other (TerrainDiffusion T12: its done
+        // report sat under the hold and the loop stalled). A stop seen as `killed` or `failed` keeps its hold.
+        const heldTask = s.task
+        if (s.state === 'running' && heldTask !== null && heldTask.stopped?.status === 'absent' && s.holds.includes('stopped') &&
+          (facts[heldTask.agentId]?.handbackAt ?? 0) >= heldTask.stopped.at) {
+          await save({ ...popHold(s, 'stopped'), task: { ...heldTask, stopped: null } }, 'stopped.lifted')
+          await journal('mod', 'hold', { task: heldTask.id, agentId: heldTask.agentId },
+            `${heldTask.id}: ${heldTask.agentId} reported after it went missing, so it was not killed; the stopped hold is lifted.`)
+          await notice(`‹pa› ${heldTask.id}'s expert reported after the stop notice: it was never stopped. The stopped hold is lifted and its report goes on as usual.`)
+        }
         // Any hold but `talk` stops the loop; `talk` only stops a new task (the running one is captured and routed).
         if (s.holds.some(h => h !== 'talk')) {
           return
@@ -2269,7 +2281,10 @@ ${REPLAN_NOTICE}`)
           const shellsLive = shellsOut(shellsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${SHELLS_FILE}`).catch(() => null)),
             [t.agentId, ...list.filter(a => a.parentId === t.agentId).map(a => a.id)]).length
           const sentTo = (t.forwardAt ?? 0) > t.lastCompleteAt && now - (t.forwardAt ?? 0) < FORWARD_TTL_MS
-          const live = me === undefined && (shellsLive > 0 || sentTo) ? 'idle' : liveness(me?.status, now - t.spawnedAt)
+          // 3.28.8: so does a child still at work (TerrainDiffusion T12: its expert, dropped from the list while its
+          // coder ran the census, was taken for killed and the loop held).
+          const busy = list.filter(a => a.parentId === t.agentId && BUSY.has(a.status)).length
+          const live = me === undefined && (shellsLive > 0 || sentTo || busy > 0) ? 'idle' : liveness(me?.status, now - t.spawnedAt)
           if (me !== undefined && live !== 'stopped') {
             seenLive.add(t.agentId)
           }
@@ -2291,7 +2306,6 @@ ${REPLAN_NOTICE}`)
               task: { ...cur, contract: cur.pendingContract ?? '', lastRouted: cur.pendingContract ?? '' } }, 'captured:stopped')
             return
           }
-          const busy = list.filter(a => a.parentId === t.agentId && BUSY.has(a.status)).length
           // T5d2a.c2: busy → idle is recorded (childIdleAt), so runEnded waits for the hand-back's forward request.
           if ((busy > 0) !== (cur.childBusy ?? false)) {
             cur = { ...cur, childBusy: busy > 0, ...(busy > 0 ? {} : { childIdleAt: now }) }

@@ -522,6 +522,32 @@ export function enqueue(s: RouterState, kind: OutMsg['kind'], text: string, chil
   return { ...s, outbox: [...s.outbox, { kind, text, child, at }] }
 }
 
+// 3.28.8: Claude Code names a pasted image's file in a hidden row after the developer's prompt: `[Image: source: <path>]`
+// (it may go on with the image's size note) or `[Image source: <path>]`. The lines go to Claude with the message.
+const IMAGE_SOURCE_RE = /^\[Image:? source: .+\]$/
+/** A developer message with attachments waits this long for those lines, then goes without them. */
+export const IMAGE_WAIT_MS = 3_000
+
+/** The image source lines among a row's text blocks. */
+export function imageSourceLines(blocks: readonly { type: string; [field: string]: unknown }[]): string[] {
+  return blocks.flatMap(b => (b.type === 'text' && typeof b['text'] === 'string' ? b['text'].split('\n') : []))
+    .map(l => l.trim()).filter(l => IMAGE_SOURCE_RE.test(l))
+}
+
+/** The newest queued developer message with `lines` after its text; the state as it was when none is queued. */
+export function withImageSources(s: RouterState, lines: readonly string[]): RouterState {
+  const i = s.outbox.map(m => m.kind).lastIndexOf('dev')
+  const m = s.outbox[i]
+  if (m === undefined || lines.length === 0) {
+    return s
+  }
+  return { ...s, outbox: s.outbox.map((x, j) => (j === i ? { ...m, text: `${m.text}\n\n${lines.join('\n')}` } : x)) }
+}
+
+/** Whether the developer's latest message with attachments still waits for Claude Code's source lines. */
+export const imagesPending = (w: { at: number; lines: readonly string[] } | null, now: number): boolean =>
+  w !== null && w.lines.length === 0 && now - w.at < IMAGE_WAIT_MS
+
 /** A hand-back taken: the child marked forwarded and its forward queued. */
 export function takeHandback(s: RouterState, child: string, text: string, at: number): RouterState {
   return enqueue({ ...s, forwarded: { ...s.forwarded, [child]: at } }, 'forward', forwardText(child, text), child, at)

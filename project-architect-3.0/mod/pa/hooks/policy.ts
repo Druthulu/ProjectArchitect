@@ -4,7 +4,10 @@
 export const TTL_MS = 3_600_000 // the 1h cache TTL
 export const CTX_MAX = 300_000 // rotate at ~300k context
 export const PING_AFTER_MS = 55 * 60_000
-export const PING_AFTER_5M_MS = 270_000 // 3.28.1 T11: a 5-minute agent (a coder) is pinged at 4.5 min
+// 3.28.8: a 5-minute agent (a coder) is pinged 4 min after its last request (was 4.5): the 30-s warm tick and its
+// answer put the pings ~4.5 min apart, each under the 5-min cache with room for the request's own seconds (a simulated
+// run at 4.5 min had them 5.0 min apart, 4.83 min after the last answer; 26 real coder pings at 4.2-4.6 min all hit).
+export const PING_AFTER_5M_MS = 240_000
 export const PING_WRITE_TOKENS = 150
 export const PING_OUTPUT_TOKENS = 30
 
@@ -12,20 +15,29 @@ export const PING_OUTPUT_TOKENS = 30
 export type Ttl = '5m' | '1h'
 
 /**
- * 3.28.1 T12 (developer 2026-10-15): size-based warming. An idle stretch (from a real turn's end: the developer's
- * message, a message between agents, a hand-back, a background shell's end) gets round(over / ctx) pings, at least 1, at most `max`,
- * worked out from its context when the stretch starts: 1-hour agents 300k / ctx up to 5, 5-minute agents 600k / ctx up to 12.
+ * 3.28.8 (developer 2026-10-16): the pings an idle stretch gets (from a real turn's end: the developer's message, a
+ * message between agents, a hand-back, a background shell's end), from PA3's own history: a ping pays while the wait is
+ * likelier to end soon than the ping costs against going cold (a coder's cold rewrite; an expert's or Claude's fresh
+ * seeded start). Coders: 2.5 h flat, 33 ~4.5 min apart (shell waits ended within 2.5 h, but one overnight job). Experts:
+ * 12 h flat, 12 at 55 min (long waits kept ending; a night's question), 7 past 250k. Claude: by size, as a fresh Claude is
+ * cheap and starts lean: 12 under 100k, 6 under 125k, 1 under 175k, none from there (a fresh Claude takes the next
+ * message). Was 3.28.1 T12's size budget for all: 300k / ctx (1-5) at 1 h, 600k / ctx (1-12) at 5 min.
  */
-export const PING_BUDGET = { '1h': { over: 300_000, max: 5 }, '5m': { over: 600_000, max: 12 } } as const
+export type WarmRole = 'coder' | 'expert' | 'claude'
 const LIFE_MS = { '1h': TTL_MS, '5m': 300_000 } as const
 
-/** The pings an idle stretch gets at `ctx` (an unknown context, 0, gets the most). */
-export function pingCount(ctx: number, ttl: Ttl): number {
-  const b = PING_BUDGET[ttl]
-  return ctx > 0 ? Math.min(b.max, Math.max(1, Math.round(b.over / ctx))) : b.max
+/** The pings an idle stretch of `role` gets at `ctx` (an unknown context, 0, counts as small). */
+export function pingCount(ctx: number, role: WarmRole): number {
+  if (role === 'coder') {
+    return 33
+  }
+  if (role === 'expert') {
+    return ctx > 250_000 ? 7 : 12
+  }
+  return ctx < 100_000 ? 12 : ctx < 125_000 ? 6 : ctx < 175_000 ? 1 : 0
 }
 
-/** When a ping falls due after the last request: 55 min (`override`: the trial knob), 4.5 min for a 5-minute agent. */
+/** When a ping falls due after the last request: 55 min (`override`: the trial knob), 4 min for a 5-minute agent. */
 export function pingAfterOf(ttl: Ttl, override?: number): number {
   return ttl === '5m' ? PING_AFTER_5M_MS : override ?? PING_AFTER_MS
 }
@@ -171,13 +183,13 @@ export function partnerStatus(listed: string | undefined, lastTurnAt: number, tu
 
 /**
  * Whether to ping now, when the ping is due (`at`), and the rule that decided (`why`): an idle agent is pinged just
- * before its cache lapses while its stretch has pings left (3.28.1 T12, size-based; pingCount); never a cold one.
+ * before its cache lapses while its stretch has pings left (pingCount, by role); never a cold one.
  */
 export function pingDecision(agent: AgentFacts, now: number, opts: PingOptions = {}): { ping: boolean; at: number; why: string } {
   const ttl = opts.ttl ?? '1h'
   const at = agent.lastRequestAt + pingAfterOf(ttl, opts.pingAfterMs)
   if (agent.status !== 'idle' && agent.status !== 'completed') return { ping: false, at, why: `status ${agent.status}` }
-  if ((opts.pings ?? 0) >= (opts.count ?? pingCount(agent.ctx, ttl))) return { ping: false, at, why: 'count' }
+  if ((opts.pings ?? 0) >= (opts.count ?? pingCount(agent.ctx, ttl === '5m' ? 'coder' : 'expert'))) return { ping: false, at, why: 'count' }
   if (now < at) return { ping: false, at, why: 'not due' }
   if (now - agent.lastRequestAt >= LIFE_MS[ttl]) return { ping: false, at, why: 'cold' }
   return { ping: true, at, why: 'size' }

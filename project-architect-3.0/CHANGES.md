@@ -2,6 +2,14 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.28.8 — No stalls while an expert waits; pictures reach Claude; warming by role
+
+- A task no longer stalls after its expert waits on a coder. Experts and coders now hand back once, when the task is done, so they stay on Claude Code's agent list while they wait. An expert missing from the list while its coder works counts as waiting, not stopped, and if a stop was only inferred from a missing expert, that expert's own report lifts it and the next task starts.
+- Pictures you drag into the terminal or paste as a file path now reach Claude: the mod passes along Claude Code's note naming each picture's file, and Claude opens it. A screenshot pasted straight from the clipboard has no file, so it still gets the "Claude sees text only" notice.
+- A closed expert or coder card shows the report's text, not only its closing "Summary: <path>" line.
+- Caches are kept warm by role, from PA3's own history. A coder waiting on its own background shell gets a ping about every 4.5 minutes for up to 2.5 hours (coders were never warmed before). An expert is kept warm for up to 12 hours (7 past a 250k context). Claude is kept warm for up to 12 hours under a 100k context, 6.5 under 125k and 2 under 175k; from 175k, a fresh Claude takes your next message.
+- A keep-warm ping is answered by ending the turn with a dot; an agent hands back a dot only if Claude Code asks for its report.
+
 ## 3.28.7 — The model line shows the session's work
 
 - In a 3.2 session the model line's context figure (always `0/1M` there, since the main session never calls a model) becomes the session's work, such as `4.3M/∞`: every token that went into the contexts of Claude and all its agents, each counted once, with an agent type's shared starting prompt counted only once. Other sessions keep the usual `<context>/<window>`.

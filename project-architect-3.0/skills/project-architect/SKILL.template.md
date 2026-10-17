@@ -119,9 +119,9 @@ takes the context it takes. Plain-English recaps at phase end define every term 
 
 ## 9. Long compute and harness gotchas
 A command that may run longer than a few minutes (a bake, a backtest, a batch) runs as a background shell (Bash
-`run_in_background: true`). Then hand back `WAITING: shell <what is running>` and stop; the shell's completion notice
-wakes you: read its output, finish, and report to whoever spawned you with `SendMessage` (your hand-back is already
-used). Shorter commands run in the foreground with a raised timeout (`BASH_MAX_TIMEOUT_MS` is set). Never
+`run_in_background: true`). Then end your turn without handing back (a hand-back ends your run); the shell's
+completion notice wakes you: read its output, finish, and hand back your report. Shorter commands run in the
+foreground with a raised timeout (`BASH_MAX_TIMEOUT_MS` is set). Never
 hand-write a sleep-poll loop. Long gates run
 in the foreground with a timeout (the low-memory guard kills background jobs mid-report). `pkill -f` with a literal from
 your own command line kills your own shell: kill by pid. Windows: the Python is the one named in `HOW_WE_WORK.md`
@@ -129,7 +129,8 @@ your own command line kills your own shell: kill by pid. Windows: the Python is 
 specs from Python. Sequential commands that share state run in one call, not two parallel calls. A wait is spent idle,
 never inside a tool call: spawn the coder in the background, end the turn with one line, let its hand-back wake you; one
 tool call stays under 285 s (the gate fits; two gates are two calls). A message that is exactly `.` is a keep-warm
-ping (the mod's): answer it by calling SubagentHandback once with the message `.`, and nothing else.
+ping (the mod's): answer it by ending your turn with the single line `.`, and nothing else; hand back `.` only if
+the harness then asks for your report.
 
 ## 10. House style
 Files the models read: terse, exact, code notation. Text the developer reads (recaps, questions, review presentations):

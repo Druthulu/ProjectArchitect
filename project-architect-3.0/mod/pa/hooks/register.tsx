@@ -53,7 +53,8 @@ import {
   markerText, newestPartner, newPartner, otherTarget, PARTNER_TYPE, stepFactsOf, nextMarker, outboxHeld, parentOf, partnerReport, partnerRoute, partnerTurnEnded, priceCacheOf,
   registerTurn, replyKey, RESUME_CHECK_MS, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
-  isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON,
+  isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending,
+  withImageSources,
 } from './route'
 import { buildSeed, type Child as SeedChild, localStamp, SEED_BUDGET_TOKENS } from './seed'
 import {
@@ -88,7 +89,7 @@ export const COMPACT_SKIP = 'PA 3.2: the journal replaces compaction'
 const DRAIN_MS = 1_000
 /** 3.24 T13B: the router's band part's tick (its dots cycle at this rate while `‹pa› working` shows). */
 const WORK_MS = 500
-const WARM_MS = 30_000 // was 60_000; 3.28.1 T12: a 5-minute agent's ping window (4.5-5 min) is 30 s wide
+const WARM_MS = 30_000 // was 60_000; 3.28.1 T12: a 5-minute agent's ping window (3.28.8: 4-4.5 min) is 30 s wide
 const SEED_DAYS = 14
 /** Card texts kept in the registry at most (3.23 T13); an older card's row draws as its plain markdown. */
 const MAX_CARDS = 100
@@ -109,6 +110,8 @@ let fseq = 0 // the loop `forward` requests' sequence in the inbox (3.23 T5d2a)
 let nseq = 0 // the feed's nudge files' sequence (3.23 T13d)
 let expertSkip = '' // 3.23 T13b.c4: warmExpert's last skip reason, logged once per change
 let noToastLogged = false
+/** 3.28.8: the developer's latest message with attachments (when, how many) and Claude Code's source lines for them. */
+let imageWait: { at: number; count: number; lines: string[] } | null = null
 let presenting = false // the presentation tick's one dialog at a time
 let lastHold = '' // the last deferral logged, so a long wait logs once
 let turnWaitLogged = '' // 3.24 T17j: the your-turn toast's last loop wait logged (turnId + why), once per change
@@ -604,7 +607,7 @@ export const register: Register = (on, options) => {
       const partnerIdle = (x: RouterState): boolean =>
         x.partner !== null && x.partner.lastTurnAt > 0 && x.partner.lastTurnAt >= x.sentAt && !x.partner.pingInFlight
       const partnerPingsLeft = (x: RouterState): boolean =>
-        x.warm.waitPings < (x.warm.waitCount > 0 ? x.warm.waitCount : pingCount(x.partner?.ctx ?? 0, '1h'))
+        x.warm.waitPings < (x.warm.waitCount > 0 ? x.warm.waitCount : pingCount(x.partner?.ctx ?? 0, 'claude'))
       const partnerCold = (x: RouterState, list: readonly { id: string; status: string }[], now: number): boolean => {
         const p = x.partner
         if (p === null || !partnerIdle(x)) {
@@ -767,6 +770,10 @@ export const register: Register = (on, options) => {
               }
               const cur: RouterState = st
               const msg = cur.outbox[0]
+              // 3.28.8: a developer message with attachments waits for Claude Code's source lines (IMAGE_WAIT_MS at most).
+              if (msg?.kind === 'dev' && imagesPending(imageWait, await $.clock.now())) {
+                break
+              }
               // Taken before acting: a crash mid-send never sends twice.
               st = await step(x => ({ ...x, outbox: x.outbox.slice(1) }))
               if (msg === undefined) {
@@ -1207,9 +1214,9 @@ export const register: Register = (on, options) => {
         return pc
       }
       // 3.23 T5d2b: the loop's expert (loop.json, read only: the loop is its one writer), warmed as the partner is while
-      // it waits (a child out, `childBusy`; a background shell; a question to the developer), the stretch's pings by its
-      // size (3.28.1 T12, pingCount); never while it works (pending, running, waiting). The critic and coders are never
-      // warmed. Its state is
+      // it waits (a child out, `childBusy`; a background shell; a question to the developer), the stretch's pings by role
+      // (3.28.8, pingCount); never while it works (pending, running, waiting). 3.28.8: its coders waiting on a background
+      // shell of their own are warmed too (warmCoders); the critic never is. Its state is
       // `warmAgents[agentId]`; the expert's own turn.complete lifts its pingInFlight. The loop's capture ignores its `.`.
       const saveWarm = async (id: string, f: (a: WarmAgent) => WarmAgent, blank: WarmAgent): Promise<void> => {
         const saved = await update($, stateAtom, x => (x === null ? x : { ...x, warmAgents: { ...x.warmAgents, [id]: f(x.warmAgents[id] ?? blank) } }))
@@ -1268,7 +1275,7 @@ export const register: Register = (on, options) => {
         const ttl = cacheTtlOf(await $.fs.read(`${root}/.claude/agents/${t.agent}.md`).catch(() => null))
         // 3.28.1 T12: the stretch's ping count, from its context at its start (its first tick).
         if (((await read($, stateAtom))?.warmAgents[id]?.waitCount ?? 0) === 0) {
-          await saveWarm(id, a => ({ ...a, waitCount: pingCount(step.ctx, ttl) }), blank)
+          await saveWarm(id, a => ({ ...a, waitCount: pingCount(step.ctx, 'expert') }), blank)
         }
         const w = (await read($, stateAtom))?.warmAgents[id] ?? blank
         const pc = await priceOf(step.model)
@@ -1307,6 +1314,62 @@ export const register: Register = (on, options) => {
           : { ...a, pingInFlight: false }), blank)
         await log('warm.ping', { agentId: id, role: p.role, task: p.task, why: p.why, ctx: p.ctx, usd, rewrite, n, delivered: sent.isDelivered })
       }
+      // 3.28.8: the loop expert's coders, each waiting on a background shell of its own (pa-watch's shells.json) with its
+      // turn ended (listed `waiting`, `idle` or `completed`), get a `.` 4 min after their last request (~4.5 min apart), up to 2.5 h a
+      // stretch (policy.pingCount); 5-minute agents only. Its `.` turn lifts its pingInFlight; a real turn end starts its
+      // stretch over (turn.complete).
+      const warmCoders = async (): Promise<void> => {
+        const loop = parseLoop(await $.fs.read(`${root}/${LOOP_FILE}`).catch(() => null))
+        const t = loop.task
+        if (t === null || t.agentId === '' || loop.holds.includes('stopped')) {
+          return
+        }
+        const list = await $.agent.list()
+        const shells = shellsOf(await $.fs.read(`${base}/${sidNow}/${SHELLS_FILE}`).catch(() => null))
+        for (const a of list.filter(x => x.parentId === t.agentId)) {
+          if (!['waiting', 'idle', 'completed'].includes(a.status) || shellsOut(shells, [a.id]).length === 0) {
+            continue
+          }
+          const facts = await $.fs.read(`${base}/${sidNow}/agents/${a.id}.json`).catch(() => null)
+          let at = 0
+          let type = ''
+          try {
+            const d = JSON.parse(facts ?? '') as Record<string, unknown>
+            at = typeof d['at'] === 'number' ? d['at'] : 0
+            type = typeof d['type'] === 'string' ? d['type'] : ''
+          } catch {
+            continue // no facts yet: nothing to time a ping by
+          }
+          const role = type || a.type || ''
+          const ttl = cacheTtlOf(role === '' ? null : await $.fs.read(`${root}/.claude/agents/${role}.md`).catch(() => null))
+          if (ttl !== '5m') {
+            continue
+          }
+          const step = stepFactsOf(facts)
+          const blank: WarmAgent = {
+            role, lastPingAt: 0, pingInFlight: false, waitKind: '', waitStart: 0, waitUsd: 0, waitPings: 0, waitCount: 0, pings: 0,
+            pingUsd: 0, avoidedUsd: 0,
+          }
+          const w0 = (await read($, stateAtom))?.warmAgents[a.id] ?? blank
+          if (w0.pingInFlight) {
+            continue
+          }
+          if (w0.waitKind !== 'shell') {
+            await saveWarm(a.id, x => ({ ...x, role, waitKind: 'shell', waitStart: at, waitUsd: 0, waitPings: 0, waitCount: pingCount(step.ctx, 'coder') }), blank)
+          }
+          const w = (await read($, stateAtom))?.warmAgents[a.id] ?? blank
+          const now = await $.clock.now()
+          const lastRequestAt = Math.max(at, w.lastPingAt)
+          const d = pingDecision({ status: 'idle', lastRequestAt, ctx: step.ctx }, now, { ttl, pings: w.waitPings, count: w.waitCount })
+          if (!d.ping) {
+            continue
+          }
+          const pc = await priceOf(step.model)
+          const rates0 = pc === null ? null : ratesFrom(pc.table, pc.lookup, step.ctx)
+          const rates = rates0 === null ? null : tierRates(rates0, ttl)
+          await sendPing(a.id, { role, task: t.id, ttl, model: step.model, ctx: step.ctx, rates, lastRequestAt, now, why: d.why, n: w.pings + 1 }, blank)
+        }
+      }
       // The warming tick (design.md "Warming", policy.pingDecision): the idle partner (the router's only spawn) gets a
       // `.` before its 1h cache lapses, the idle stretch's pings set by its size (3.28.1 T12, policy.pingCount).
       // The `warm_ping` event is spooled first, so the audit's 60-second match holds; its `.` answer lifts the hold.
@@ -1323,6 +1386,7 @@ export const register: Register = (on, options) => {
           warming = true
           try {
             await warmExpert().catch(async err => log('warm.expert.error', { err: clip(String(err), 300) }))
+            await warmCoders().catch(async err => log('warm.coders.error', { err: clip(String(err), 300) }))
             const st = await read($, stateAtom)
             const p = st?.partner ?? null
             if (st === null || p === null || p.pingInFlight || st.awaiting !== null || st.outbox.length > 0) {
@@ -1337,7 +1401,7 @@ export const register: Register = (on, options) => {
             }
             const now = await $.clock.now()
             // 3.28.1 T12: the stretch's ping count, from its context at its start (its first tick; applyReply resets it).
-            const count = st.warm.waitCount > 0 ? st.warm.waitCount : pingCount(p.ctx, '1h')
+            const count = st.warm.waitCount > 0 ? st.warm.waitCount : pingCount(p.ctx, 'claude')
             if (st.warm.waitCount === 0 && (status === 'idle' || status === 'completed')) {
               const counted = await update($, stateAtom, x => (x === null || x.warm.waitCount > 0 ? x : { ...x, warm: { ...x.warm, waitCount: count } }))
               if (counted !== null) {
@@ -1599,6 +1663,8 @@ export const register: Register = (on, options) => {
       let data: Record<string, unknown> = { origin: e.origin, text: clip(text, 200) }
       let change: ((s: RouterState) => RouterState) | null = null
       if (route === 'developer') {
+        // 3.28.8: its attachments' files reach Claude through Claude Code's own source lines (the session.append below).
+        imageWait = (e.attachments?.length ?? 0) > 0 ? { at: now, count: e.attachments?.length ?? 0, lines: [] } : null
         if ((e.attachments?.length ?? 0) > 0) {
           await update($, turnsAtom, r => addAttach(r, text))
           data = { ...data, attachments: e.attachments?.map(a => a.type) }
@@ -1768,6 +1834,31 @@ export const register: Register = (on, options) => {
     return out
   })
 
+  // 3.28.8: the developer's pasted images: Claude Code names each one's file in a hidden row after the prompt
+  // (`[Image: source: <path>]`); the lines go to Claude with the message, and Claude opens the files with Read.
+  on('session.append', async ($, e, next) => {
+    const out = await next(e)
+    const w = imageWait
+    try {
+      if (e.agentId === undefined && e.message.isMeta === true && w !== null) {
+        const lines = imageSourceLines(e.message.content)
+        if (lines.length > 0 && (await read($, routeAtom))) {
+          imageWait = { ...w, lines: [...w.lines, ...lines] }
+          const saved = await update($, stateAtom, x => (x === null ? x : withImageSources(x, lines)))
+          if (saved !== null) {
+            await $.fs.write(statePath(`${await $.session.root()}/.run/mod`, saved.sid), serializeState(saved))
+          }
+        }
+      }
+    } catch (err) {
+      // The row stays as it came; the message goes without the lines.
+      if (debugBase !== '') {
+        await $.fs.write(...ev('image.error', { err: clip(String(err), 300) })).catch(quiet)
+      }
+    }
+    return out
+  })
+
   // Every turn is registered (turn.start carries no agentId, so agents' turns too; each is cleared at its turn.complete).
   on('turn.start', async ($, e, next) => {
     if ((await read($, routeAtom)) && isFeedText(e.text)) {
@@ -1866,6 +1957,10 @@ export const register: Register = (on, options) => {
       reply = entry === null ? null : markerReply(entry)
     }
     let text = localAnswer(kind, reply)
+    // 3.28.8: every attachment's file went to Claude (Claude Code's source lines): no text-only notice.
+    if (kind.kind === 'attach' && imageWait !== null && imageWait.lines.length >= imageWait.count) {
+      text = STUB
+    }
     // 3.24 T13B (decision 8): Claude's reply, on its hand-back's turn or a marker's, answers as an orange Claude card
     // (registered, so the AssistantMessage rule draws it; the stored text is the card's markdown, its title line first).
     // 3.24 T13E: a marker carrying a registered card (the loop's, inbox kind `card`) answers that card as it is.

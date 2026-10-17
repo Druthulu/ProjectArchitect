@@ -60,6 +60,18 @@ describe('expert contract', () => {
     expect(parseCoderReturn('## Partial, the gate is red')?.status).toBe('partial')
   })
 
+  // 3.28.8: TerrainDiffusion T12's report ended `Summary: <path>; log: <path> (commit b2edc0f).`; the card showed only it.
+  test('plain: the free text wins over a Summary: pointer line inside it', async () => {
+    const report = 'done. Every town is on one road network.\n\nFix (commit 421f027): a new dial.\n\n' +
+      'Summary: Z:\\p\\tasks\\T12.md; log: Z:\\p\\logs\\T12.md (commit b2edc0f).'
+    const c = parseExpertContract(report)
+    expect(c?.status).toBe('done')
+    expect(c?.summary.startsWith('Every town is on one road network.')).toBe(true)
+    expect(c?.summary.endsWith('(commit b2edc0f).')).toBe(true)
+    expect(parseCoderReturn('Done. Added x.\nSummary: see logs/T1.c1.md')?.summary).toBe('Added x.\nSummary: see logs/T1.c1.md')
+    expect(parseExpertContract('STATUS: done\nSUMMARY: did x')?.summary).toBe('did x')
+  })
+
   test('plain: legacy STATUS still wins; no status word, `.`, blank and WAITING: are null', async () => {
     expect(parseExpertContract('Notes.\nSTATUS: done\nLOG: l')?.log).toBe('l')
     expect(parseExpertContract('I think it works')).toBe(null)
