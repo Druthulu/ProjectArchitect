@@ -80,6 +80,14 @@ class KeepLastTest(unittest.TestCase):
         reqs = list(T.iter_requests(self.path))
         self.assertEqual([r["msg_id"] for r in reqs], ["msg_ok"])
 
+    def test_hook_made_up_replies_skipped(self):
+        """3.29.9: a msg_hook_ reply (the mod's local answer, usage input 1) is never a request."""
+        recs = [_assistant("msg_hook_abc", 0, inp=1, cw=0, cr=0, split=False),
+                _assistant("msg_real", 11)]
+        _write(self.path, recs)
+        reqs = list(T.iter_requests(self.path))
+        self.assertEqual([r["msg_id"] for r in reqs], ["msg_real"])
+
     def test_gap_cold_and_rewrite_flags(self):
         recs = [_assistant("m1", 5, ts="2026-09-12T10:00:00.000Z", cw=60000, cr=0),
                 _assistant("m2", 5, ts="2026-09-12T10:01:00.000Z", cw=100, cr=60000),

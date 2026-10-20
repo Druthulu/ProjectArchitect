@@ -2,6 +2,12 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.29.9 — Your main session never fills up
+
+- Your PA3 session no longer stops with Claude Code's “Context limit reached”. No model reads the main session, and each reply the mod makes there now says so, so you can keep one session open for as long as you like.
+- The mod keeps the main session short: each time a task is marked done, and when you resume a session, it keeps the last finished task and everything after it. Nothing is lost: the transcript file and the journal keep everything, and each trim is one line in the journal.
+- Your usage figures are unchanged: the ledger never counts the mod’s own replies. `/compact` still does nothing in a PA3 project.
+
 ## 3.29.8 — Your picker approves the cleanup; Claude hears your commands
 
 - The one-time `.run/` cleanup no longer asks you to run a command. Claude writes the exact items to delete, the mod checks them (all inside `.run/`, none of PA3’s own, not the open phase), and its picker asks you: “Delete them” is your approval, and the mod deletes exactly those items, each by name, then Claude tells you the result.

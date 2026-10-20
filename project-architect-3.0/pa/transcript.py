@@ -159,6 +159,9 @@ def _usage_of(rec):
     msg = rec.get("message")
     if not isinstance(msg, dict) or msg.get("role") != "assistant":
         return None, None
+    # 3.29.9: a reply a hook made up (the mod's local answer) carries id msg_hook_…; never a request
+    if str(msg.get("id") or "").startswith("msg_hook_"):
+        return None, None
     u = msg.get("usage")
     if not isinstance(u, dict) or not u:
         return None, None

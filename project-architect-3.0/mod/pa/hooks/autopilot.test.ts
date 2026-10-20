@@ -7,6 +7,7 @@ import type { On } from 'claude-code'
 import { GIT_WRITE_MS, gitWrite, lastAssistantText, resolveBash, subagentTranscript } from './autopilot'
 import { stamp } from './journal'
 import { CONTINUE_TEXT, START_CHECK } from './loop'
+import { tailOf } from './trim'
 
 const ROOT = '/r'
 /** 3.29.1 T8: the start hook's note for session S1, timed after any test clock's start (the tests' default). */
@@ -3367,5 +3368,190 @@ describe('the band (3.23 T13)', () => {
       expect(drawn).not.toContain('engine')
       expect(await mount(surface, true)).toContain('engine')
     }
+  })
+})
+
+// 3.29.9: the display trim. A task's first spawn marks its place in the main conversation; its done (routed or a review
+// release) asks the watcher's `pa-trim` compaction to keep the rows from there on; a resumed start catches up.
+describe('display trim (3.29.9)', () => {
+  type Row = { role: 'user' | 'assistant'; text: string; toolUses: never[] }
+  const row = (role: Row['role'], text: string): Row => ({ role, text, toolUses: [] })
+  const BEFORE = [row('user', 'hello'), row('assistant', 'Sent.'), row('user', 'go on'), row('assistant', 'Going on.')]
+  const AFTER = [...BEFORE, row('user', 'how is T1?'), row('assistant', 'Running.'), row('user', 'ok'), row('assistant', 'Done soon.')]
+  const MARK = { sid: 'S1', task: 'T1', len: 4, tail: tailOf(BEFORE, 4), anchor: 'goon' } // H1.c2: the last user row, no whitespace
+  const CUT = `pa-trim ${JSON.stringify({ k: 4, tail: tailOf(AFTER, 4) })}`
+  type Seen = { rows: Row[]; calls: { instructions?: string; agentId?: string }[]; fail: string[] }
+  /** The main conversation's rows and the compactions the router asks for, answered as the watcher would. */
+  const main = (on: On, rows: Row[]): Seen => {
+    const m: Seen = { rows, calls: [], fail: [] }
+    on('session.messages', async () => ({ value: m.rows as never }))
+    on('session.compact', async ($, e) => {
+      m.calls.push({ instructions: e.instructions, agentId: e.agentId })
+      const f = m.fail.shift()
+      if (f !== undefined) {
+        throw new Error(f)
+      }
+      const k = (JSON.parse((e.instructions ?? '').slice('pa-trim '.length)) as { k: number }).k
+      return { messages: m.rows.slice(k) as never }
+    })
+    return m
+  }
+  const markIn = (w: W, key: string): unknown => (JSON.parse(w.files.get(LOOP) ?? '{}') as Record<string, unknown>)[key]
+  const trimDebug = (w: W, kind: string): Array<Record<string, unknown>> => [...w.files].filter(([p]) => p.endsWith(`-autopilot.trim.${kind}.json`))
+    .map(([, t]) => JSON.parse(t) as Record<string, unknown>)
+  const doneAnswer = (w: W): void => {
+    let done = false
+    w.answer = argv => {
+      const a = argv.slice(1).join(' ')
+      if (a.startsWith('tools/plan_edit.py set-status')) {
+        done = true
+      }
+      return done && a.startsWith('tools/plan_edit.py next') ? ok('{"kind": "none", "reason": "done", "waiting_on": []}\n') : defaultAnswer(argv)
+    }
+  }
+  const DONE = notification('E1', 'STATUS: done\nLOG: logs/T1.md')
+  const finish = async (clock: { advance: (ms: number) => Promise<unknown> }): Promise<void> => {
+    await clock.advance(60_000) // the run ends after the quiet (RUN_QUIET_MS)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+  }
+
+  test('the first attempt marks its place; the routed done asks for the trim at it and journals it', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {})
+    const m = main(on, BEFORE)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(markIn(w, 'trimMark')).toEqual(MARK)
+    m.rows = AFTER
+    doneAnswer(w)
+    await $.prompt.submit({ text: DONE, origin: { kind: 'task-notification' }, wait: false })
+    await finish(clock)
+    expect(markIn(w, 'doneMark')).toEqual(MARK)
+    expect(m.calls).toEqual([{ instructions: CUT, agentId: undefined }]) // the engine sets trigger `plugin`; the kit none
+    const [note] = entries(w, 'mod-note')
+    expect(w.files.get(note ?? '')).toContain('Display trimmed (done): the main conversation kept from T1\'s start, 4 rows dropped, 4 kept.')
+  })
+
+  test('a handoff keeps the first attempt\'s mark', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {})
+    const m = main(on, BEFORE)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    m.rows = AFTER
+    await $.turn.complete(complete('E1', 'Wrote the progress file.\n\nSTATUS: handoff\nLOG: logs/T1.md'))
+    await finish(clock)
+    expect([loopOf(w).task?.kind, loopOf(w).task?.attempt]).toEqual(['handoff', 2])
+    expect(markIn(w, 'trimMark')).toEqual(MARK)
+    expect(m.calls).toEqual([])
+  })
+
+  test('a relaunch keeps the mark it found', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const lf = { ...(JSON.parse(held('question', NOW - 61 * 60_000)) as Record<string, unknown>), trimMark: MARK }
+    const w = world(on, { [LOOP]: JSON.stringify(lf) })
+    main(on, AFTER)
+    releaseReq(w, NOW, { hold: 'question', note: 'use ints' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(loopOf(w).task?.kind).toBe('relaunch')
+    expect(markIn(w, 'trimMark')).toEqual(MARK)
+  })
+
+  test('a review release marks the task done and trims to it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const lf = { ...(JSON.parse(held('review', NOW - 60_000)) as Record<string, unknown>), trimMark: MARK }
+    const w = world(on, { [LOOP]: JSON.stringify(lf) })
+    const m = main(on, AFTER)
+    w.answer = showStatus('done')
+    releaseReq(w, NOW, { hold: 'review' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(markIn(w, 'doneMark')).toEqual(MARK)
+    expect(m.calls.map(c => c.instructions)).toEqual([CUT])
+    expect(w.files.get(entries(w, 'mod-note')[0] ?? '')).toContain('4 rows dropped, 4 kept')
+  })
+
+  for (const [name, mark] of [['another session\'s mark', { ...MARK, sid: 'S0' }], ['no mark', undefined]] as const) {
+    test(`${name}: the done asks for no trim`, async ($, on) => {
+      const clock = mock.clock(on, { now: 1_000 })
+      const w = world(on, {})
+      const m = main(on, BEFORE)
+      await $.session.start(START)
+      await clock.advance(2_000)
+      const lp = JSON.parse(w.files.get(LOOP) ?? '{}') as Record<string, unknown>
+      w.files.set(LOOP, JSON.stringify({ ...lp, trimMark: mark }))
+      m.rows = AFTER
+      doneAnswer(w)
+      await $.prompt.submit({ text: DONE, origin: { kind: 'task-notification' }, wait: false })
+      await finish(clock)
+      expect(loopOf(w).task).toBe(null)
+      expect(markIn(w, 'doneMark')).toBe(null)
+      expect(m.calls).toEqual([])
+      expect(entries(w, 'mod-note')).toEqual([])
+    })
+  }
+
+  // The kit runs a throwing hook's dispatch on to its bottom, which rejects (no messages): a refusal, retried. The
+  // headless refusal's skip is trimFailure's (trim.test.ts): the kit cannot raise the engine's own message.
+  test('a refusal while a turn runs retries about every 2 s', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {}, { PA_MOD_DEBUG: '1' })
+    const m = main(on, BEFORE)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    m.rows = AFTER
+    m.fail = ['a turn is running', 'a turn is running']
+    doneAnswer(w)
+    await $.prompt.submit({ text: DONE, origin: { kind: 'task-notification' }, wait: false })
+    await finish(clock)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(m.calls.length).toBe(3)
+    expect(trimDebug(w, 'retry').map(d => d['tries'])).toEqual([1, 2])
+    expect(entries(w, 'mod-note').length).toBe(1)
+  })
+
+  test('an interactive start catches up a trim that never ran', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: loopAt({ doneMark: MARK }) })
+    const m = main(on, AFTER)
+    await $.session.start(ISTART)
+    await clock.advance(5_000)
+    expect(m.calls.map(c => c.instructions)).toEqual([CUT])
+    expect(w.files.get(entries(w, 'mod-note')[0] ?? '')).toContain('Display trimmed (start)')
+    // H1.c3: a missing trim file is "not trimmed yet"; the trim records its mark there
+    expect(JSON.parse(w.files.get(`${BASE}/trim.json`) ?? '{}')).toEqual({ sid: 'S1', task: 'T1', len: 4, at: NOW + 4_000 })
+  })
+
+  test('a start after the trim ran asks for nothing; a headless start never asks', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on, { [LOOP]: loopAt({ doneMark: MARK }) })
+    const m = main(on, AFTER.slice(4))
+    await $.session.start(ISTART)
+    await clock.advance(5_000)
+    m.rows = AFTER
+    await $.session.start(START)
+    await clock.advance(5_000)
+    expect(m.calls).toEqual([])
+  })
+
+  // H1.c3: a mark whose trim already ran is never searched again, even when its anchor text comes back later.
+  test('a start skips a mark already trimmed; another task\'s record does not stop it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: loopAt({ doneMark: MARK }), [`${BASE}/trim.json`]: JSON.stringify({ sid: 'S1', task: 'T1', len: 4, at: 1 }) }, { PA_MOD_DEBUG: '1' })
+    const m = main(on, [...AFTER.slice(4), row('user', 'go on'), row('assistant', 'Going on.'), row('user', 'later')])
+    await $.session.start(ISTART)
+    await clock.advance(5_000)
+    expect(m.calls).toEqual([])
+    expect(trimDebug(w, 'skip').map(d => d['reason'])).toEqual(['trimmed'])
+    w.files.set(`${BASE}/trim.json`, JSON.stringify({ sid: 'S1', task: 'T0', len: 2, at: 1 }))
+    m.rows = AFTER
+    await $.session.start(ISTART)
+    await clock.advance(5_000)
+    expect(m.calls.map(c => c.instructions)).toEqual([CUT])
   })
 })

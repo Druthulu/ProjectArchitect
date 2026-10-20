@@ -45,6 +45,9 @@ def run(inp, cfg):
     conn = open_db()
     try:
         _record(conn, inp, cfg, sid, source, status, email)
+        if source == "compact":
+            # 3.29.9: the mod compacts at each task done; a compaction's start only logs (design C)
+            return None
         if email:
             # the plan tier from .credentials.json: one file read, no subprocess, never raises
             accounts.restamp_tier(conn, email)

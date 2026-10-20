@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 3.29.8" src="https://img.shields.io/badge/version-3.29.8-3b82f6">
+  <img alt="version 3.29.9" src="https://img.shields.io/badge/version-3.29.9-3b82f6">
   <img alt="for Claude Code" src="https://img.shields.io/badge/for-Claude%20Code-d97757">
   <img alt="Windows, WSL, Linux, macOS" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20WSL%20%7C%20Linux%20%7C%20macOS-64748b">
 </p>
@@ -72,6 +72,10 @@ and retrievers. Every change an expert wants to make to the plan goes to Claude,
 milestone and asks you about the rest. A task that hits a wall comes back blocked with its evidence and a
 recommendation. When the milestone is met, Claude asks you before the phase closes, and the close leaves a
 plain-English recap of what was done.
+The session can stay open for as long as you like: no model reads the main session, the mod tells Claude Code so,
+and it trims the main session to the last finished task. Claude, every expert and every coder runs in its own
+context, handed to a fresh one before it grows too large, so nothing grows without bound.
+[One session that never fills up](https://github.com/Druthulu/ProjectArchitect/wiki/How-it-works#one-session-that-never-fills-up) ·
 [What PA3 is and does](https://github.com/Druthulu/ProjectArchitect/wiki/What-PA3-does) ·
 [The roles](https://github.com/Druthulu/ProjectArchitect/wiki/How-it-works) ·
 [A day in the life](https://github.com/Druthulu/ProjectArchitect/wiki/A-day-in-the-life)

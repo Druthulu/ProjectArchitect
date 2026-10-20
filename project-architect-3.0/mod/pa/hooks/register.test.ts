@@ -270,6 +270,10 @@ describe('router route', () => {
     const s1 = await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))
     expect(s1.result.answer).toBe(SENT)
     expect(s1.chunks[0]).toEqual({ kind: 'text', index: 0, text: SENT })
+    // 3.29.9: the local answer states its real model input, 1 token (0 reads as no usage), at its stop and in its result.
+    const ONE = { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: 'opus' }
+    expect(s1.chunks[1]).toEqual({ kind: 'stop', stopReason: 'end_turn', usage: ONE })
+    expect([s1.result.stopReason, s1.result.usage, s1.result.toolUses]).toEqual(['end_turn', ONE, []])
     await $.turn.complete({ turnId: 'T1', answer: SENT, durationMs: 1, isAborted: false, reason: 'answer' })
 
     // 3.22 T8f: the watcher's last-step facts of P1 stamp model and effort on the answer.

@@ -1558,5 +1558,34 @@ class TestBeside(unittest.TestCase):
         self.assertIn("- beside 9.9: session beside-s $1.75 (3 turns), not attributed\n", md)
 
 
+class TestHookRepliesSkipped(unittest.TestCase):
+    """3.29.9: a msg_hook_ reply (the mod's local answer) is never counted as a request."""
+
+    def test_requests_after_read_skip_hook_replies(self):
+        from pa import audit
+        usage = {"input_tokens": 1, "output_tokens": 0,
+                 "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+        real = {"input_tokens": 5, "output_tokens": 3}
+        recs = [
+            {"message": {"role": "assistant", "id": "msg_r0", "model": "m", "usage": real,
+                         "content": [{"type": "tool_use", "id": "t1", "name": "Read", "input": {}}]}},
+            {"message": {"role": "user",
+                         "content": [{"type": "tool_result", "tool_use_id": "t1", "content": "x"}]}},
+            {"message": {"role": "assistant", "id": "msg_hook_1", "model": "m", "usage": usage,
+                         "content": [{"type": "text", "text": "local"}]}},
+            {"message": {"role": "assistant", "id": "msg_hook_2", "model": "m", "usage": usage,
+                         "content": [{"type": "text", "text": "local"}]}},
+            {"message": {"role": "assistant", "id": "msg_r1", "model": "m", "usage": real,
+                         "content": [{"type": "text", "text": "real"}]}},
+        ]
+        tmp = tempfile.mkdtemp(prefix="pa_audit_hook_")
+        self.addCleanup(shutil.rmtree, tmp, True)
+        path = os.path.join(tmp, "s.jsonl")
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            for r in recs:
+                fh.write(json.dumps(r) + "\n")
+        self.assertEqual(audit._walk_transcript_requests_after_read(path), [1])
+
+
 if __name__ == "__main__":
     unittest.main()

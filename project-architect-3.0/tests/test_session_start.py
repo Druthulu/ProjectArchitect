@@ -246,8 +246,43 @@ class PhaseTagTest(unittest.TestCase):
                                 ("test@test.com",)).fetchone()
         self.assertEqual(tuple(row), ("max20", "credentials"))
 
+    def _patched_run(self, source):
+        """3.29.9: run() with the start-up work patched; returns (result, mocks)."""
+        from pa import health
+        from pa.hooks import session_start as ss
+        inp = {"session_id": self.sid, "source": source, "cwd": self.root,
+               "transcript_path": self.transcript_path}
+        names = ("_update_check", "_auto_run", "_record_behind", "_start_checked",
+                 "_offer_parts", "_ensure_memory_link", "_unstop_runs", "_progress_from_kill")
+        ms = {n: mock.patch.object(ss, n, return_value=None) for n in names}
+        started = {n: p.start() for n, p in ms.items()}
+        try:
+            with mock.patch.object(health, "mod_on", return_value=True), \
+                    mock.patch.object(health, "session_start", return_value=None) as hs, \
+                    mock.patch.object(health, "run_running", return_value=False):
+                started["health.session_start"] = hs
+                out = ss.run(inp, config.defaults())
+        finally:
+            for p in ms.values():
+                p.stop()
+        return out, started
 
-_CREDS = {"max20": {"rateLimitTier": "default_claude_max_20x"},
+    def test_compact_only_logs(self):
+        self._patched_run("startup")                   # the session row exists before a compaction
+        out, m = self._patched_run("compact")
+        self.assertIsNone(out)
+        for n in ("_update_check", "_auto_run", "_record_behind", "_start_checked",
+                  "_ensure_memory_link", "health.session_start"):
+            self.assertFalse(m[n].called, n)
+
+    def test_startup_and_resume_still_start(self):
+        for source in ("startup", "resume"):
+            _, m = self._patched_run(source)
+            for n in ("_update_check", "_record_behind", "_start_checked", "health.session_start"):
+                self.assertTrue(m[n].called, (source, n))
+
+
+_CREDS ={"max20": {"rateLimitTier": "default_claude_max_20x"},
           "max5": {"rateLimitTier": "default_claude_max_5x"},
           "pro": {"subscriptionType": "pro"}}
 

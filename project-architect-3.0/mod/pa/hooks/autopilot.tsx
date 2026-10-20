@@ -99,6 +99,7 @@ import { asksQuestion, classify, handbackChild, isNote, journalOut, noteBody, pa
 import { DONE_TTL_MS, feedDirOf } from './state'
 import { cacheTtlOf, isCold } from './policy'
 import { modRecord, nudgeName, startRecord } from './feed'
+import { anchorOf, cutPoint, markOf, tailOf, trimFailure, trimInstructions } from './trim'
 
 /** The router's generation token (register.tsx `genAtom`, the same key): a re-arm moves it on and old ticks stop. */
 const genAtom = atom({ plugin: 'pa', key: 'gen' } as const, 0)
@@ -130,6 +131,13 @@ const REPLAN_NOTICE = '‹pa› the plan needs replanning (REPLAN.md): draft the
 /** Removes a file if present (no `$.fs` remove); no double quote, so Windows argv quoting cannot bend it. */
 const RM_PY = 'import os,sys;p=sys.argv[1];os.path.isfile(p) and os.remove(p)'
 const TICK_MS = 2_000
+// 3.29.9: the display trim runs this long after its request (off the loop's path), retries a refusal while a turn runs
+// every TRIM_RETRY_MS up to TRIM_TRIES times (about 30 s), and the session start's catch-up waits TRIM_START_MS.
+const TRIM_DELAY_MS = 1_000
+const TRIM_RETRY_MS = 2_000
+const TRIM_TRIES = 15
+const TRIM_START_MS = 3_000
+const TRIM_FILE = '.run/mod/trim.json' // H1.c3: the last mark trimmed: { sid, task, len, at }
 /** Recovery (T5d1): an expert sent `continue:` and not seen running this long after is respawned. */
 const RECOVER_WAIT_MS = 30_000
 /** An agent `$.agent.list()` shows at work (recovery's "seen running"). */
@@ -198,6 +206,11 @@ let recalc: { phase: string; line: string } | null = null
 let armedAp = { sid: '', gen: 0 }
 let transcriptSeen = { sid: '', path: '' }
 let apRearm: ((sid: string) => Promise<void>) | null = null
+// 3.29.9: the armed session's display trim request (null until armed), and its single flight: a request while one runs
+// is run once more after it.
+let apTrim: ((why: string) => void) | null = null
+let trimBusy = false
+let trimAgain = ''
 // A session whose SessionStart (startup, resume or clear) its first owning tick has not seen: it pushes `held(session)`
 // when the loop would act (3.23 T13d.c11; was T13b.c3's freshSid, which lifted `held(generation)` on startup or clear).
 let startSid = ''
@@ -497,6 +510,83 @@ export function armAutopilot(on: On): void {
         } catch (err) {
           await log('journal.error', { err: clip(String(err), 300) })
         }
+      }
+
+      // 3.29.9: the display trim (trim.ts). The loop state's `doneMark` (the last completed task's `trimMark`, this
+      // session's) is found again in the main conversation and the rows before it are compacted away by the watcher
+      // (pa-watch answers the `pa-trim` compaction; no model). Off the loop's path: a refusal while a turn runs retries,
+      // a headless run skips; a trim is one `mod/note` journal line, a skip or a give-up a debug event.
+      const trimFile = `${root}/${TRIM_FILE}`
+      const trimRun = async (why: string): Promise<void> => {
+        for (let tries = 1; ; tries += 1) {
+          const dm = markOf((parseLoop(await $.fs.read(loopPath).catch(() => null)) as { doneMark?: unknown }).doneMark)
+          if (dm === null || dm.sid !== sidNow) {
+            await log('trim.skip', { why, reason: 'no mark' })
+            return
+          }
+          // H1.c3: a mark already trimmed (its own file, apart from loop.json's saves) is never searched again
+          const done = objectOf((await $.fs.read(trimFile).catch(() => null)) ?? '')
+          if (done !== null && done['sid'] === dm.sid && done['task'] === dm.task && done['len'] === dm.len) {
+            await log('trim.skip', { why, task: dm.task, reason: 'trimmed' })
+            return
+          }
+          const rows = await $.session.messages().catch(() => null)
+          const k = rows === null ? -1 : cutPoint(rows, dm)
+          if (rows === null || k < 0) {
+            await log('trim.skip', { why, task: dm.task, reason: 'no cut point', rows: rows?.length ?? -1 })
+            return
+          }
+          try {
+            const r = await $.session.compact({ instructions: trimInstructions(rows, k) })
+            if (r.skip !== undefined) {
+              await log('trim.skip', { why, task: dm.task, reason: r.skip })
+              return
+            }
+            await $.fs.write(trimFile, `${JSON.stringify({ sid: dm.sid, task: dm.task, len: dm.len, at: await $.clock.now() })}\n`).catch(quiet)
+            await journal('mod', 'note', { task: dm.task },
+              `Display trimmed (${why}): the main conversation kept from ${dm.task}'s start, ${String(k)} rows dropped, ${String(r.messages.length)} kept.`)
+            return
+          } catch (err) {
+            const fail = trimFailure(err, tries, TRIM_TRIES)
+            if (fail === 'headless') {
+              await log('trim.skip', { why, task: dm.task, reason: 'headless' })
+              return
+            }
+            if (fail === 'giveup') {
+              await log('trim.giveup', { why, task: dm.task, tries, err: clip(String(err), 200) })
+              return
+            }
+            await log('trim.retry', { why, task: dm.task, tries, err: clip(String(err), 200) })
+          }
+          await new Promise<void>(res => { $.clock.after(TRIM_RETRY_MS, res) })
+        }
+      }
+      const trimSoon = (why: string): void => {
+        $.clock.after(TRIM_DELAY_MS, () => {
+          void (async () => {
+            if (trimBusy) {
+              trimAgain = why
+              return
+            }
+            trimBusy = true
+            try {
+              let w = why
+              while (w !== '') {
+                trimAgain = ''
+                await trimRun(w)
+                w = trimAgain
+              }
+            } finally {
+              trimBusy = false
+            }
+          })().catch(quiet)
+        })
+      }
+      apTrim = trimSoon
+      // The loop state's `doneMark` at task `id`'s done: its `trimMark` when this session marked it, else none.
+      const doneMarkOf = (st: LoopState, id: string): { doneMark: unknown } => {
+        const m = markOf((st as { trimMark?: unknown }).trimMark)
+        return { doneMark: m !== null && m.task === id && m.sid === sidNow ? m : null }
       }
 
       // A notice to Claude through the router's inbox (the router writes its own state.json): text, a toast cause, and
@@ -830,7 +920,11 @@ export function armAutopilot(on: On): void {
             id: plan.id, title, agent, coder: plan.coder ?? 'none', effort, attempt, kind, agentId: '',
             startSha, spawnedAt, lastCompleteAt: 0, contract: null,
           }
-          await save({ ...s, state: 'running', task: { ...task, plan } as LoopTask }, '')
+          // 3.29.9: a task's first spawn marks where it began in the main conversation (the display trim's `trimMark`);
+          // a relaunch or handoff keeps the mark already there.
+          const msgs = kind === 'task' ? await $.session.messages().catch(() => null) : null
+          const mark = msgs === null ? {} : { trimMark: { sid: sidNow, task: plan.id, len: msgs.length, tail: tailOf(msgs, msgs.length), anchor: anchorOf(msgs, msgs.length) } }
+          await save({ ...s, state: 'running', task: { ...task, plan } as LoopTask, ...mark } as LoopState, '')
           // 3.24 T7b: the brief carries the card's expert slice, so the card reaches every task by construction.
           const sl = await py('tools/card.py', 'slice', 'expert')
           const card = sl.exitCode === 0 ? sl.stdout : ''
@@ -1188,8 +1282,13 @@ export function armAutopilot(on: On): void {
               await $.fs.write(`${inboxDir}/${cr.name}`, cr.body).catch(quiet)
             }
             // 3.26 T2: the review release names the last done task too, as the done path does (T17p).
-            await save({ ...r.state, state: 'boundary', task: null, ...(t === null ? {} : { lastDone: { id: t.id, at: await $.clock.now() } }) } as LoopState,
+            // 3.29.9: and its trim mark, when this session marked it: the display is trimmed to it.
+            const dm = t === null ? {} : doneMarkOf(r.state, t.id)
+            await save({ ...r.state, state: 'boundary', task: null, ...(t === null ? {} : { lastDone: { id: t.id, at: await $.clock.now() } }), ...dm } as LoopState,
               'release:review')
+            if (markOf((dm as { doneMark?: unknown }).doneMark) !== null) {
+              trimSoon('done')
+            }
             await reply('released: review')
             return
           }
@@ -2482,7 +2581,11 @@ ${REPLAN_NOTICE}`)
           }
           await journal(t.id, 'end', meta, sha === '' ? body : `${body}\n\n(commit ${sha.slice(0, 12)})`)
           delete facts[t.agentId]
-          await save({ ...s, state: 'boundary', task: null, lastDone: { id: t.id, at: await $.clock.now() } } as LoopState, 'done') // 3.24 T17p
+          const dm = doneMarkOf(s, t.id) // 3.29.9: the display is trimmed to the task's start when this session marked it
+          await save({ ...s, state: 'boundary', task: null, lastDone: { id: t.id, at: await $.clock.now() }, ...dm } as LoopState, 'done') // 3.24 T17p
+          if (dm.doneMark !== null) {
+            trimSoon('done')
+          }
           return
         }
         if (route === 'handoff') {
@@ -2594,6 +2697,8 @@ ${REPLAN_NOTICE}`)
     updWait = ''
     releaseCheckedAt = 0
     apRearm = arm
+    apTrim = null
+    trimAgain = ''
     startAt = await $.clock.now() // 3.29.1 T8: the update check's note must be this start's
     pausedAskedSid = ''
     // 3.28.2 T17: the release this process loads (the tick's update report and release record compare with it).
@@ -2630,6 +2735,11 @@ ${REPLAN_NOTICE}`)
       }
     }
     await arm(sid, true)
+    // 3.29.9: an interactive start (a --continue resumes its rows): a completion trim that never ran runs now.
+    const tr = apTrim
+    if (e.isInteractive && tr !== null) {
+      $.clock.after(TRIM_START_MS, () => tr('start'))
+    }
     return out
   })
 
@@ -2649,7 +2759,8 @@ ${REPLAN_NOTICE}`)
     if ((e.source === 'resume' || e.source === 'clear') && f !== null) {
       const sidNow = e.session_id
       $.clock.after(1_000, () => {
-        void f(sidNow).catch(quiet)
+        // 3.29.9: a resume's rows may hold a completion trim that never ran (the start's catch-up)
+        void f(sidNow).then(() => (e.source === 'resume' ? apTrim?.('start') : undefined)).catch(quiet)
       })
     }
     return next(e)

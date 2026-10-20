@@ -36,6 +36,7 @@ import type { LadderRow } from './ladder'
 import { argLine, depthOf, HANDBACK, isPingStep, planningAfter, ctxOf } from './stream'
 import type { StepUsage } from './stream'
 import { argsOf, argSummary, queuedReply, requestBody, requestName, TOOL_NAMES, TOOL_SPECS, validateInput } from './tools'
+import { trimCut } from './trim'
 
 const activeAtom = atom({ plugin: 'pa-watch', key: 'active' } as const, false)
 const ladderAtom = atom({ plugin: 'pa-watch', key: 'ladder' } as const, {}) // 3.24 T17b: rows by agent type (3.25 T6b: `<type>@<level>` for a hint)
@@ -187,6 +188,23 @@ export const register: Register = on => {
       await errorRecord($, e.session_id, `classic.SessionStart:${e.source}`, next.error.message ?? '')
     }
     return next(e)
+  })
+
+  // 3.29.9: the router's display trim. The router's `$.session.compact({ instructions: 'pa-trim …' })` skips its own
+  // hooks, so this one answers it, no model: the main conversation's rows from the validated cut point on, the very
+  // objects handed in (their handles kept). Every other compaction goes on (the router refuses those, as before).
+  on('session.compact', async ($, e, next) => {
+    if (e.agentId !== undefined || e.trigger !== 'plugin') {
+      return next(e)
+    }
+    const k = trimCut(e.instructions, e.messages)
+    if (k === null) {
+      return next(e)
+    }
+    if (debugDir !== '') {
+      await $.fs.write(...ev('trim', { k, rows: e.messages.length })).catch(quiet)
+    }
+    return k < 0 ? { skip: 'pa trim: no cut point' } : { messages: e.messages.slice(k) }
   })
 
   // 3.24 T17b: every spawn asks the ladder for its type's row (once per session and tier; a planner spawn re-checks the

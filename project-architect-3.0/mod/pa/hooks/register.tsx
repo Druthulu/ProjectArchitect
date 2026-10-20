@@ -2054,7 +2054,10 @@ export const register: Register = (on, options) => {
       await update($, feedAtom, x => (x.speaker === '' ? x : { ...x, speaker: '' })) // the title shows again after other content
     }
     yield { kind: 'text', index: 0, text }
-    yield { kind: 'stop', stopReason: 'end_turn', usage: null }
+    // 3.29.9: the reply states its real model input (none: no model reads the main session); 1, as 0 reads as no usage.
+    // Claude Code then counts the conversation up to here as 1 token instead of estimating the whole display text.
+    const usage = { input_tokens: 1, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model }
+    yield { kind: 'stop', stopReason: 'end_turn', usage }
     if (debugBase !== '') {
       const what = registered === undefined ? 'main.unexpected' : 'main.local'
       await $.fs.write(...ev(what, { kind: kind.kind, turnId: e.turnId, index: e.index, chars: text.length, ...(drew.length > 0 ? { drew } : {}) })).catch(quiet)
@@ -2066,7 +2069,7 @@ export const register: Register = (on, options) => {
       }
       await $.fs.write(...ev('answer', { kind: drawKindOf(kind.kind), turnId: e.turnId, head: text.slice(0, 60), at: ms })).catch(quiet)
     }
-    return { turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: 'end_turn', usage: null }
+    return { turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: 'end_turn', usage }
   })
 
   // The partner's reply: its `partner/answer` journal entry (queued; the route tick writes it, then submits the marker

@@ -371,7 +371,8 @@ def _walk_transcript(path, role, accum, span=None):
         # --- count api requests
         if role_msg == "assistant" and in_span:
             u = msg.get("usage")
-            if isinstance(u, dict) and (msg.get("model") or "") != "<synthetic>":
+            if (isinstance(u, dict) and (msg.get("model") or "") != "<synthetic>"
+                    and not str(msg.get("id") or "").startswith("msg_hook_")):
                 for k in ("input_tokens", "cache_creation_input_tokens",
                            "cache_read_input_tokens", "output_tokens"):
                     if isinstance(u.get(k), (int, float)) and u.get(k):
@@ -413,7 +414,8 @@ def _walk_transcript_requests_after_read(path, span=None):
 
         if role_msg == "assistant":
             u = msg.get("usage")
-            if isinstance(u, dict) and (msg.get("model") or "") != "<synthetic>":
+            if (isinstance(u, dict) and (msg.get("model") or "") != "<synthetic>"
+                    and not str(msg.get("id") or "").startswith("msg_hook_")):
                 for k in ("input_tokens", "cache_creation_input_tokens",
                            "cache_read_input_tokens", "output_tokens"):
                     if isinstance(u.get(k), (int, float)) and u.get(k):

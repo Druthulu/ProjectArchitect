@@ -4,6 +4,8 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, On } from 'claude-code'
 
+import { tailOf, trimCut } from './trim'
+
 const ROOT = '/r'
 const ON = '{"mod":"on","warmer":"off","upgrade":"ask"}'
 const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
@@ -779,4 +781,59 @@ describe('background shells (3.28.1 T15)', () => {
     await $.tool.call({ tool: 'SendMessage', to: 'E1', message: 'STATUS: blocked', agentId: 'C1' } as never)
     expect(shells(m)).toEqual({})
   })
+})
+
+// 3.29.9: the router's display trim: the watcher answers the router's `pa-trim` compaction of the main conversation with
+// the rows from the validated cut point (the same objects, handles kept); every other compaction goes on below it.
+describe('the display trim (3.29.9)', () => {
+  const MSGS = [
+    { role: 'user' as const, text: 'a', toolUses: [], handle: 'h0' }, { role: 'assistant' as const, text: 'b', toolUses: [], handle: 'h1' },
+    { role: 'user' as const, text: 'c', toolUses: [], handle: 'h2' }, { role: 'assistant' as const, text: 'd', toolUses: [], handle: 'h3' },
+  ]
+  const TRIM = `pa-trim ${JSON.stringify({ k: 2, tail: tailOf(MSGS, 2) })}`
+  const bottom = (on: On): void => {
+    on('session.compact', async () => ({ skip: 'bottom' }))
+  }
+
+  test('pa-trim keeps the rows from the validated cut point, the very objects', async ($, on) => {
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {})
+    bottom(on)
+    await $.session.start(START)
+    const r = await $.session.compact({ trigger: 'plugin', instructions: TRIM, messages: MSGS })
+    expect(r.messages?.map(m => m.handle)).toEqual(['h2', 'h3'])
+    expect(r.messages?.[0]).toEqual(MSGS[2])
+  })
+
+  test('trimCut: the same objects; a cut point that does not validate is -1; another compaction null', () => {
+    expect(trimCut(TRIM, MSGS)).toBe(2)
+    expect(MSGS.slice(trimCut(TRIM, MSGS) ?? 0)[0]).toBe(MSGS[2])
+    expect(trimCut(`pa-trim ${JSON.stringify({ k: 2, tail: tailOf(MSGS, 3) })}`, MSGS)).toBe(-1)
+    expect(trimCut(`pa-trim ${JSON.stringify({ k: 3, tail: tailOf(MSGS, 3) })}`, MSGS)).toBe(-1) // an assistant row at the cut
+    expect(trimCut(`pa-trim ${JSON.stringify({ k: 4, tail: tailOf(MSGS, 4) })}`, MSGS)).toBe(-1) // nothing kept
+    expect(trimCut('pa-trim {', MSGS)).toBe(-1)
+    expect([trimCut(undefined, MSGS), trimCut('keep the plan', MSGS)]).toEqual([null, null])
+  })
+
+  test('a cut point that does not validate is skipped', async ($, on) => {
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {})
+    bottom(on)
+    await $.session.start(START)
+    const r = await $.session.compact({ trigger: 'plugin', instructions: TRIM, messages: MSGS.slice(1) })
+    expect(r).toEqual({ skip: 'pa trim: no cut point' })
+  })
+
+  for (const [name, input] of [
+    ['manual', { trigger: 'manual' as const, instructions: TRIM }],
+    ['auto', { trigger: 'auto' as const }],
+    ['precompute', { trigger: 'precompute' as const }],
+    ['an agent\'s', { trigger: 'plugin' as const, instructions: TRIM, agentId: 'A1' }],
+    ['a plugin call without pa-trim', { trigger: 'plugin' as const, instructions: 'keep the plan' }],
+  ] as const) {
+    test(`${name} compaction goes on to the next hook`, async ($, on) => {
+      world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {})
+      bottom(on)
+      await $.session.start(START)
+      expect(await $.session.compact({ ...input, messages: MSGS })).toEqual({ skip: 'bottom' })
+    })
+  }
 })
