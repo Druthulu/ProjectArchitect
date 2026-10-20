@@ -86,7 +86,7 @@ instead of overwriting it; a `TASK_PROGRESS.patch` beside it is the unfinished c
 finish that change first; then continue.
 
 Finish: write `phase-ends/current/logs/T<n>.md` (the full log:
-timeline, hypotheses rejected, commands run with their `.run/logs` names, coder briefs sent, retriever questions asked and
+timeline, hypotheses rejected, commands run with their run.sh log names, coder briefs sent, retriever questions asked and
 report ids) and `phase-ends/current/tasks/T<n>.md` (the summary from `templates/task.template.md`, ≤ 150 lines, no tool
 output, no tables); run `PY tools/task_log.py finish T<n>`; commit; return your report.
 A task whose entry says `review: yes` ends at the developer's review: fill the summary's `Review:` block (`ran:`,

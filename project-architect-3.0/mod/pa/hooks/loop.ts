@@ -753,6 +753,66 @@ export const RESTART_LINE = '**To load it: /exit, then claude --continue (not /c
 export const loadedNotice = (version: string): string =>
   `‹pa› PA3 ${version} was installed and this start loaded it. Say this one line first, before anything else:\n\n` +
   `**Project Architect ${version} is installed and loaded. Ready to continue work.**\n\nThen carry on as usual.`
+/** 3.29.1 T8: the start hook's note that this session start's update check has answered (pa/hooks/session_start.py
+ * `_start_checked`): `{session, at (s), update}`. */
+export const START_CHECK = '.run/mod/start-check.json'
+/** 3.29.1 T8: how long work waits for that note before going on (a broken hook must not freeze the project). */
+export const START_CHECK_WAIT_MS = 120_000
+/** A note this much older than the mod's session start belongs to an earlier start of the same session (a resume). */
+const START_CHECK_SKEW_MS = 60_000
+/** 3.29.1 T8: this start's check: `pending` (no answer yet), `update` (it started an update run), `done`, or `timeout`. */
+export function startCheckState(text: string | null, sid: string, startAt: number, now: number): 'pending' | 'update' | 'done' | 'timeout' {
+  let doc: unknown = null
+  try {
+    doc = text === null ? null : JSON.parse(text)
+  } catch {
+    doc = null
+  }
+  const o = typeof doc === 'object' && doc !== null ? (doc as Record<string, unknown>) : {}
+  const at = typeof o['at'] === 'number' ? o['at'] * 1000 : 0
+  if (o['session'] === sid && at >= startAt - START_CHECK_SKEW_MS && o['state'] !== 'checking') { // 3.29.2: still checking
+    return o['update'] === true ? 'update' : 'done'
+  }
+  return now - startAt >= START_CHECK_WAIT_MS ? 'timeout' : 'pending'
+}
+/** 3.29.1 T9: a task paused on the developer's request, found at a session start once the update check let work go on. */
+export const pausedNotice = (id: string): string =>
+  `‹pa› ${id} was paused on the developer's request before the last session ended, and it has not resumed. Ask them in ` +
+  'one line, such as "The session was paused on your request. Ready to resume?"; on their yes, in any words, call ' +
+  'release({hold: "stopped"}).'
+/** 3.29 T6: the one-time `.run/` cleanup's marker: offered once per project, at its first start on 3.29. */
+export const RUN_REVIEW_MARKER = '.run/mod/run-review.json'
+/** PA3's own `.run/` entries, never older work. */
+const RUN_OWN = new Set(['mod', 'status.json', 'health.json', 'plans', 'PHASE_PLAN.draft.md', 'GENERATION_PLAN.draft.md'])
+/** 3.29 T6: whether `.run/` holds work from before 3.29: an entry that is not PA3's own, or run.sh logs in `.run/logs/`. */
+export const olderRunWork = (names: readonly string[], logsCount: number): boolean =>
+  names.some(n => !RUN_OWN.has(n) && n !== 'logs') || logsCount > 0
+/** 3.29 T6: Claude offers the one-time cleanup (agents/pa-claude.md, "The one-time `.run/` cleanup"). */
+/** 3.29.3: the mod's own picker for the one-time cleanup (the recommended answer first). */
+export const RUN_REVIEW_QUESTION = 'PA3 3.29 added a cleanup step to every phase end: each phase keeps its temp work in ' +
+  '.run/<phase>/, and the phase close clears it. This project\'s .run/ still holds work from before 3.29, which that ' +
+  'step never covers. A one-time cleanup is highly recommended: Claude reviews it folder by folder and shows you what it ' +
+  'would keep, rebuild or delete, with sizes. Nothing is deleted until you say yes. Clean it up?'
+export const RUN_REVIEW_OPTIONS: readonly string[] = ['Clean it up (Recommended)', 'Not now']
+/** 3.29.3: the developer's answer, to Claude (agents/pa-claude.md, "The one-time `.run/` cleanup"). */
+/** 3.29.8: the cleanup's list (Claude writes it), the picker's ask (the mod writes it), the picker. */
+export const CLEANUP_LIST = '.run/mod/cleanup.json'
+export const CLEANUP_ASK = '.run/mod/cleanup-ask.json'
+export const CLEANUP_OPTIONS: readonly string[] = ['Delete them', 'Not now']
+export const cleanupQuestion = (summary: string, checked: string): string =>
+  `Delete the items Claude listed above${summary === '' ? '' : ` (${summary})`}? ${checked}. Only those items are ` +
+  'deleted, each by name; nothing outside .run/ is touched.'
+/** 3.29.7: work waits for the developer's go after the update's after-restart work. */
+const CONTINUE_ASK = ' No work resumes until they say so: ask "Ready to continue work?", and on their yes, in any words, ' +
+  'call release({hold: "session"}), and release({hold: "stopped"}) too when a task is held.'
+export const runReviewNotice = (go: boolean): string => go
+  ? '‹pa› The developer chose the one-time `.run/` cleanup in the mod\'s picker. Do it now, as your instructions say: ' +
+    'review, then show them what you would keep, rebuild or delete; write exactly the items to delete to ' +
+    '.run/mod/cleanup.json and call cleanup({summary}): the mod asks them with its picker and deletes on their yes ' +
+    '(never delete anything yourself). When the cleanup is done (or they stop it), the update\'s after-restart work ' +
+    'is done.' + CONTINUE_ASK
+  : '‹pa› The developer put off the one-time `.run/` cleanup; do nothing about it unless they ask, it is not asked again. ' +
+    'The update\'s after-restart work is done.' + CONTINUE_ASK
 /** loop.json `release`: the check's release, asked once per version (`asked` the picker's request id); `step` asked →
  * install (the developer's yes) → running (pa3_update.py started) → done, or later (not now, or no answer). */
 export type Release = { version: string; kind: string; asked: string; step: 'asked' | 'install' | 'running' | 'later' | 'done' }

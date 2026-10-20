@@ -52,6 +52,7 @@ Approved: <date>   Planner: <model/effort>   Plan-hash: <sha>
 - T1 | title: the parser | done-when: …
   <optional indented continuation lines belong to the task above>
 - T2 | queued | pa-expert | title: … | effort: high | files: a.py, b.py | verify: <cmd> | done-when: …
+- T3 | title: phase cleanup | done-when: what the project still needs from .run/<N>/ is in its proper place in the repo
 
 ## Risks
 <!-- what could make this phase miss its milestone; the detection for each -->

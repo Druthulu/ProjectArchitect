@@ -34,7 +34,7 @@ in the hope that someone else cleans up.
 
 Edits are surgical: change the lines the change needs, keep the file's style, never rewrite a whole file to change part of
 it, never drop comments or doc headers (project-architect §6). Build and test only with the commands the brief gives, run through
-`tools/run.sh` so long output lands in `.run/logs/` and you read the tail (project-architect §2). A command that may
+`tools/run.sh` so long output lands in `.run/<phase>/logs/` and you read the tail (project-architect §2). A command that may
 run longer than a few minutes runs as a background shell (Bash `run_in_background: true`); then end your turn without
 handing back (a hand-back ends your run). The shell's completion notice wakes you: read its output, finish, and hand
 back your report. Do not add features,

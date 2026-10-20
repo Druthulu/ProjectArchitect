@@ -49,8 +49,8 @@ hypothesis, next five steps, gotchas, state to carry verbatim), commit only what
 uncommitted, saved as `TASK_PROGRESS.patch` beside it), return `handoff`. The respawn reads it first and archives it to `logs/T<n>.progress<k>.md` when done.
 
 ## 2. Output and context
-A command that may print more than ~40 lines runs through `bash tools/run.sh <name> -- <cmd>` (log in `.run/logs/`, tail
-printed). Never dump JSON, CSV, directory listings, or diffs of generated files into the conversation. When the harness
+A command that may print more than ~40 lines runs through `bash tools/run.sh <name> -- <cmd>` (log in
+`.run/<phase>/logs/`, tail printed). Never dump JSON, CSV, directory listings, or diffs of generated files into the conversation. When the harness
 spills a result to `tool-results/*.txt`, grep or tail it; never read it whole. A file over `guard.whole_read_chars`
 (20,000 chars by default) is outlined first (`{{PY}} tools/outline.py <path>`), then Read by range; a Read, or a shell
 read (`cat`, `sed`, `head`, `tail`) without a narrowing range, of such a file is denied for every role. Scripts, not inline `python -c` or
@@ -90,11 +90,13 @@ A `-` saving on the statusline is repaired in the same session on the next turn 
 ## 6. Hygiene
 Generated files are regenerated from their inputs, never hand-edited. Preserve comments and doc headers on rewrite;
 disabled logic gets `// DISABLED: <name> — <date/phase> / Original intent / Why disabled (evidence) / Re-enable if
-<condition>`; a tuned value keeps its old value in a comment (`= 8; // was 5`). No system temp: scratch lives under
-`.run/` (gitignored). Determinism and pinning at every boundary: stable sorts and fixed tie-breaks on gate-crossing
-metrics, toolchains pinned by evidence, cross-boundary contracts asserted at startup. Every imported datum carries source,
-scope and verification status; unverified data stays quarantined. Raw outputs and logs are an archive: analysis writes new
-files, losing candidates stay on disk.
+<condition>`; a tuned value keeps its old value in a comment (`= 8; // was 5`). No system temp: all of a phase's work
+in `.run/` goes under `.run/<phase>/` (gitignored), nowhere else in `.run/`. It is a temp folder only, never a home for
+long-term content: what the project needs lives in its proper place in the repo, and a tool deletes its own temp folders
+when it finishes. Determinism and pinning at every boundary:
+stable sorts and fixed tie-breaks on gate-crossing metrics, toolchains pinned by evidence, cross-boundary contracts asserted
+at startup. Every imported datum carries source, scope and verification status; unverified data stays quarantined. Raw
+outputs and logs are never edited: analysis writes new files.
 Fixture and grader keys assert facts the prompt asks for; forbidden strings and unasked tokens are not keys (H9).
 Agent `version:` is `<phase>.<N>` (all `3.10.N` at 3.10); a changed body sets `<phase of the change>.<N+1>` in the same
 commit (N counts the agent's changes for its lifetime and never resets: `3.10.5` changed in 4.2 is `4.2.6`, never

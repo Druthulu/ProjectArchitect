@@ -30,7 +30,7 @@ export type Effect =
  * `forward`, written by the router when it queues a forward of a child's hand-back to the loop's expert. T6a1: the
  * router's `install` (an approved generation or phase plan) and `answer` (the answer to the loop's own `ask`).
  */
-export const LOOP_KINDS: ReadonlySet<string> = new Set(['release', 'plan_edit', 'steer', 'forward', 'install', 'answer'])
+export const LOOP_KINDS: ReadonlySet<string> = new Set(['release', 'plan_edit', 'steer', 'forward', 'install', 'answer', 'cleanup'])
 
 /** A file name's kind is one the loop drains. */
 export const isLoopKind = (name: string): boolean => LOOP_KINDS.has(parseRequestName(name)?.kind ?? '')

@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.28.8: PA 3.2 (the version is the phase that published it).
+Project Architect 3.0, version 3.29.8: PA 3.2 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -97,8 +97,9 @@ Three ways in, one install:
 It prints an inventory of the repository and one confirmation (skipped from the `!` line,
 which runs with `--yes`), then:
 
-- **bootstrap** — `.run/` (gitignored), `phase-ends/` with `current/{tasks,logs,research,
-  discussions}` and their indexes, `.claude/pa.json`, a `.gitignore` block;
+- **bootstrap** — `.run/` (gitignored; a phase's temp work goes in `.run/<phase>/`, which the phase's close
+  deletes), `phase-ends/` with `current/{tasks,logs,research,discussions}` and their indexes, `.claude/pa.json`, a
+  `.gitignore` block;
 - **files** — the 10 agents, the `project-architect` skill and the `/bench` command into `.claude/`, the tools into `tools/`, plus
   `templates/`, the 31 seed rules into `rules/`, `cookbook/INDEX.md` and
   `docs/project-architect.md` (every copy is byte-compared; an edited rule or cookbook index is

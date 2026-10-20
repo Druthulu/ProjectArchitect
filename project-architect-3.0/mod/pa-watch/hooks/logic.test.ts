@@ -108,6 +108,11 @@ describe('tools', () => {
     expect(validateInput('plan_edit', { command: ' ' })).toBe('command is empty')
     expect(validateInput('plan_edit', { why: 'x' })).toBe('command is required')
     expect(validateInput('steer', { task: 'T1', text: 'call it plus' })).toBe(null)
+    expect(validateInput('steer', { task: 'T1', text: 'pause here', pause: true })).toBe(null) // 3.29.1 T9
+    expect(validateInput('cleanup', { summary: '3 items, 4.2 GB' })).toBe(null) // 3.29.8
+    expect(validateInput('cleanup', {})).toBe(null)
+    expect(validateInput('cleanup', { summary: 3 })).toBe('summary must be a string')
+    expect(validateInput('steer', { task: 'T1', text: 'pause here', pause: 'yes' })).toBe('pause must be a boolean')
     expect(validateInput('steer', { task: 'T1' })).toBe('text is required')
     expect(validateInput('steer', { text: 'x' })).toBe('task is required')
     expect(validateInput('plan', null)).toBe('input must be an object')

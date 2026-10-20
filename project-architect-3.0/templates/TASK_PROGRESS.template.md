@@ -16,7 +16,7 @@ Attempt: <k>   Agent: <agent file>   Ctx at handoff: <n>k   Commit: <sha>
 
 ## In flight
 - <file mid-edit> — <what state it is in, what is left>
-- last commands + results: <name → .run/logs/<name>.log → verdict>
+- last commands + results: <name → .run/<phase>/logs/<name>.log → verdict>
 
 ## Hypotheses rejected
 - <hypothesis> — <evidence>

@@ -6,9 +6,11 @@ import type { On } from 'claude-code'
 
 import { GIT_WRITE_MS, gitWrite, lastAssistantText, resolveBash, subagentTranscript } from './autopilot'
 import { stamp } from './journal'
-import { CONTINUE_TEXT } from './loop'
+import { CONTINUE_TEXT, START_CHECK } from './loop'
 
 const ROOT = '/r'
+/** 3.29.1 T8: the start hook's note for session S1, timed after any test clock's start (the tests' default). */
+const START_DONE = '{"session":"S1","at":9999999999,"update":false}\n'
 const BASE = `${ROOT}/.run/mod`
 const LOOP = `${BASE}/loop.json`
 const PLAN = 'phase-ends/current/PHASE_PLAN.md'
@@ -45,7 +47,8 @@ type W = {
 
 function world(on: On, files: Record<string, string>, env: Record<string, string> = {}): W {
   const w: W = {
-    files: new Map(Object.entries({ [`${ROOT}/.claude/pa.json`]: PA, [`${ROOT}/${PLAN}`]: '# plan\n', ...files })),
+    // 3.29.1 T8: the start hook's check has answered (no update) unless a test says otherwise
+    files: new Map(Object.entries({ [`${ROOT}/.claude/pa.json`]: PA, [`${ROOT}/${PLAN}`]: '# plan\n', [`${ROOT}/${START_CHECK}`]: START_DONE, ...files })),
     runs: [], spawns: [], sends: [], list: [],
     answer: argv => defaultAnswer(argv),
   }
@@ -1162,7 +1165,7 @@ describe('queued edits and the talk hold (T5b2)', () => {
 })
 
 // T5c: the running-now note on developer messages, `steer` to the running expert, the queued count, the trial coder.
-const steerReq = (w: W, ms: number, input: Record<string, string>): string => {
+const steerReq = (w: W, ms: number, input: Record<string, string | boolean>): string => {
   const id = `${String(ms)}-1-steer`
   w.files.set(`${INBOX}/${id}.json`, JSON.stringify({ id, kind: 'steer', caller: 'P1', input, at: ms }))
   return id
@@ -1236,6 +1239,49 @@ describe('visible and steerable (T5c)', () => {
     expect(w.files.get(entries(w, 'mod-prompt')[0] ?? '')).toContain('steered: T1') // the silent confirmation is journaled
     expect((loopOf(w).task as unknown as { steerAt: number }).steerAt).toBe(NOW + 2_000)
     expect(loopOf(w).state).toBe('running')
+  })
+
+  test('3.29.1 T9: a steer with pause: true records the pause; pause: false clears it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    const paused = (): unknown => (loopOf(w).task as unknown as { paused?: unknown }).paused ?? null
+    steerReq(w, NOW, { task: 'T1', text: 'Pause at a clean point.', pause: true })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(paused()).toEqual({ at: NOW + 2_000 })
+    steerReq(w, NOW + 3_000, { task: 'T1', text: 'Go on.', pause: false })
+    await clock.advance(2_000)
+    expect(paused()).toBe(null)
+  })
+
+  test('3.29.8: cleanup: a checked list gets the mod\'s picker; its yes runs the deletion and tells Claude', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    const asked = askWith(on, w, ['Delete them'])
+    w.answer = argv => (argv[1] === 'tools/run_cleanup.py'
+      ? ok(argv[2] === '--check' ? 'checked 3 items, all inside .run/, 4.20 GB\n' : 'deleted 3 of 3 items, 4.20 GB, all inside .run/\n')
+      : defaultAnswer(argv))
+    w.files.set(`${INBOX}/${String(NOW)}-1-cleanup.json`, JSON.stringify({ id: `${String(NOW)}-1-cleanup`, kind: 'cleanup', caller: 'P1', input: { summary: '3 items, 4.2 GB' }, at: NOW }))
+    await $.session.start(START)
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(asked.map(a => a.q).filter(q => q.startsWith('Delete the items Claude listed above (3 items, 4.2 GB)? checked 3 items'))).toHaveLength(1)
+    expect(w.runs.some(r => r[1] === 'tools/run_cleanup.py' && r[2] === '.run/mod/cleanup.json')).toBe(true)
+    expect(notices(w).some(n => n.input.text.includes('the mod ran the deletion') && n.input.text.includes('deleted 3 of 3 items'))).toBe(true)
+  })
+
+  test('3.29.8: cleanup: a list that fails its check is refused; nothing is asked or deleted', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    const asked = askWith(on, w, [])
+    w.answer = argv => (argv[1] === 'tools/run_cleanup.py' ? { exitCode: 1, stdout: 'refused: .run/mod: PA3\'s own entry\n', stderr: '' } : defaultAnswer(argv))
+    w.files.set(`${INBOX}/${String(NOW)}-1-cleanup.json`, JSON.stringify({ id: `${String(NOW)}-1-cleanup`, kind: 'cleanup', caller: 'P1', input: {}, at: NOW }))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(asked).toEqual([])
+    expect(w.runs.filter(r => r[1] === 'tools/run_cleanup.py').map(r => r[2])).toEqual(['--check'])
+    expect(notices(w).some(n => n.input.text.includes('did not pass its check'))).toBe(true)
   })
 
   test('steer refused when the task is not the running one', async ($, on) => {
@@ -1760,6 +1806,72 @@ describe('the session hold (T13d.c11)', () => {
     expect(notices(w).map(n => n.input.text).filter(t => t.includes('cut off when the session ended'))).toHaveLength(1)
   })
 
+  test('3.29.1 T8: no recovery until this start\'s update check answers; an earlier start\'s note does not count', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: orphan(NOW - 50_000), [`${ROOT}/${START_CHECK}`]: JSON.stringify({ session: 'S1', at: (NOW - 3_600_000) / 1000, update: false }) })
+    await $.session.start(START)
+    await $.classic.SessionStart({ source: 'resume', session_id: 'S1', transcript_path: 'C:\\p\\S1.jsonl' } as never)
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(w.sends).toEqual([])
+    w.files.set(`${ROOT}/${START_CHECK}`, JSON.stringify({ session: 'S1', at: (NOW + 6_000) / 1000, update: false }))
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect([loop3(w).task?.recovery?.phase, w.sends]).toEqual(['sent', [CONTINUE_TEXT]])
+  })
+
+  test('3.29.1 T8: a check that never answers lets work go on after the wait', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: orphan(NOW - 50_000), [`${ROOT}/${START_CHECK}`]: '{}' })
+    await $.session.start(START)
+    await $.classic.SessionStart({ source: 'resume', session_id: 'S1', transcript_path: 'C:\\p\\S1.jsonl' } as never)
+    for (let i = 0; i < 55; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(w.sends).toEqual([])
+    for (let i = 0; i < 8; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(w.sends).toEqual([CONTINUE_TEXT])
+  })
+
+  test('3.29.7: an update\'s after-restart work (the cleanup) comes first: the task is held, then Claude asks to continue', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: orphan(NOW - 50_000), [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n' })
+    const asked = askWith(on, w, ['Not now'])
+    await $.session.start(START)
+    await $.classic.SessionStart({ source: 'resume', session_id: 'S1', transcript_path: 'C:\\p\\S1.jsonl' } as never)
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    const lp = loop3(w)
+    const stopped = (lp.task as { stopped?: { status?: string } | null } | null)?.stopped?.status
+    expect([lp.holds.includes('stopped'), stopped, w.sends]).toEqual([true, 'post-update', []])
+    expect(asked.filter(a => a.q.includes('one-time cleanup'))).toHaveLength(1)
+    expect(notices(w).some(n => n.input.text.includes('Ready to continue work?'))).toBe(true)
+    expect(notices(w).some(n => n.input.text.includes('cut off when the session ended'))).toBe(false)
+  })
+
+  test('3.29.1 T9: a task paused on request is held at the restart, and Claude asks whether to resume', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const doc = JSON.parse(orphan(NOW - 50_000)) as { task: Record<string, unknown> }
+    doc.task['paused'] = { at: NOW - 60_000 }
+    const w = world(on, { [LOOP]: JSON.stringify(doc) })
+    await $.session.start(START)
+    await $.classic.SessionStart({ source: 'resume', session_id: 'S1', transcript_path: 'C:\\p\\S1.jsonl' } as never)
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(2_000)
+    }
+    const lp = loop3(w)
+    const stopped = (lp.task as { stopped?: { status?: string } | null } | null)?.stopped?.status
+    expect([lp.holds.includes('stopped'), stopped, lp.task?.recovery ?? null, w.sends]).toEqual([true, 'paused', null, []])
+    const asks = notices(w).map(n => n.input.text).filter(t => t.includes('paused on the developer\'s request'))
+    expect(asks).toHaveLength(1)
+    expect(notices(w).some(n => n.input.text.includes('cut off when the session ended'))).toBe(false)
+  })
+
   test('3.24 T12c: a message routed before the resume\'s first owning tick gets the session line, not the talk line', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: orphan(NOW - 50_000), [`${BASE}/S1/state.json`]: PRIOR })
@@ -2192,6 +2304,21 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     }
   }
 
+  for (const rc of [0, 1]) {
+    test(`3.29.2: the start hook's run ends (exit ${String(rc)}): its release reads ${rc === 0 ? 'installed' : 'nothing'}`, async ($, on) => {
+      const RELM2 = `${BASE}/release.json`
+      const clock = mock.clock(on, { now: NOW })
+      const w = world(on, { [MARKER]: marker({ state: 'running' }), [RELM2]: '{"version":"3.24.0","kind":"feature update","state":"running"}' })
+      await $.session.start(START)
+      await clock.advance(4_000)
+      expect(JSON.parse(w.files.get(RELM2) ?? '{}')).toEqual({ version: '3.24.0', kind: 'feature update', state: 'running' }) // kept at the start
+      w.files.set(MARKER, marker({ rc, at: (NOW + 5_000) / 1000 }))
+      w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+      await until(clock, () => (JSON.parse(w.files.get(RELM2) ?? '{}') as Record<string, unknown>)['state'] !== 'running')
+      expect(JSON.parse(w.files.get(RELM2) ?? '{}')).toEqual(rc === 0 ? { version: '3.24.0', kind: 'feature update', state: 'installed' } : {})
+    })
+  }
+
   test('3.24 T6e: a running marker holds T1; the done marker is reported once, then T1 spawns', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [MARKER]: marker({ state: 'running', mode: 'repair' }) })
@@ -2295,6 +2422,62 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     await $.session.start(START) // a plain start: the marker is empty
     await clock.advance(20_000)
     expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+  })
+
+  test('3.29 T6: the first start offers the one-time .run/ cleanup when .run/ holds older work, once', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n', [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, ['Clean it up (Recommended)'])
+    const offers = (): number => asked.filter(a => a.q.includes('one-time cleanup')).length
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(1) // 3.29.3: the mod's own picker
+    expect(w.files.has(`${ROOT}/.run/mod/run-review.json`)).toBe(true)
+    expect(notices(w).some(n => n.input.text.includes('chose the one-time'))).toBe(true)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(1)
+  })
+
+  test('3.29.5: a project offered in plain text before the picker (3.29-3.29.2) gets the picker once', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n', [`${ROOT}/.run/mod/run-review.json`]: '{"offered":"3.29","at":1}\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, ['Not now'])
+    const offers = (): number => asked.filter(a => a.q.includes('one-time cleanup')).length
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(1)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(1)
+  })
+
+  test('3.29.2: the cleanup offer waits for the update check, then says it is part of the phase end and recommended', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n', [`${ROOT}/${START_CHECK}`]: '{}',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, ['Not now'])
+    const offers = (): string[] => asked.map(a => a.q).filter(t => t.includes('one-time cleanup'))
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toEqual([])
+    w.files.set(`${ROOT}/${START_CHECK}`, JSON.stringify({ session: 'S1', at: (NOW + 21_000) / 1000, update: false, state: 'done' }))
+    await clock.advance(4_000)
+    expect(offers()).toHaveLength(1)
+    expect(offers()[0]).toContain('cleanup step to every phase end')
+    expect(offers()[0]).toContain('highly recommended')
+    expect(notices(w).some(n => n.input.text.includes('put off the one-time'))).toBe(true)
+  })
+
+  test('3.29 T6: a .run/ holding only PA3\'s own entries gets no offer', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${ROOT}/.run/status.json`]: '{}\n', [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, [])
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(asked.filter(a => a.q.includes('one-time cleanup'))).toEqual([])
+    expect(w.files.has(`${ROOT}/.run/mod/run-review.json`)).toBe(true)
   })
 
   test('3.28.1 T14: 8 hours on, a picker while the task runs; install: at the clean stop, then a toast and no new task', async ($, on) => {
@@ -2579,6 +2762,7 @@ describe('the phase close (T6b)', () => {
       'tools/plan_edit.py gen-close 1.1 --by router', 'tools/genend_index.py assemble 1',
       'tools/commit_task.sh phase-end Phase 1.1 archived phase-ends GENERATION_PLAN.md .claude-state/ledger/phase-1.1.jsonl',
       'tools/status.py clear',
+      'tools/phaseend_index.py scratch 1.1', // 3.29 T5: the phase's temp folder
       'tools/commit_task.sh phase-end Phase 1.1 closed', // 3.24 T13f: the closed journal entry lands in a commit
     ])
     expect(entries(w, 'mod-close').some(p => (w.files.get(p) ?? '').includes('Phase 1.1 close started (generation end)'))).toBe(true)
@@ -2807,6 +2991,7 @@ describe('the phase close (T6b)', () => {
       'tools/genend_index.py assemble 1',
       'tools/commit_task.sh phase-end Phase 1.1 archived phase-ends GENERATION_PLAN.md .claude-state/ledger/phase-1.1.jsonl docs/ops/INDEX.md',
       'tools/status.py clear',
+      'tools/phaseend_index.py scratch 1.1',
       'tools/commit_task.sh phase-end Phase 1.1 closed',
     ])
     expect(loop5(w).state).toBe('off')
@@ -2849,7 +3034,8 @@ describe('no contract yet (T11-fix)', () => {
       await clock.advance(2_000)
     }
     const runs = chainRuns(w)
-    expect(runs.some(r => r.startsWith('tools/phaseend_index.py'))).toBe(false)
+    expect(runs.some(r => r.startsWith('tools/phaseend_index.py') && !r.startsWith('tools/phaseend_index.py scratch'))).toBe(false)
+    expect(runs).toContain('tools/phaseend_index.py scratch 1.1') // 3.29 T5: the temp folder still goes
     expect(runs).toContain('tools/commit_task.sh phase-end Phase 1.1 archived phase-ends GENERATION_PLAN.md')
     const line = 'Phase 1.1 closed. Push when ready. The generation is complete; the next one is yours to start.'
     expect(loop5(w).holds).toEqual(['generation'])

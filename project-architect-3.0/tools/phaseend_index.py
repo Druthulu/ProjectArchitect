@@ -20,6 +20,7 @@ import argparse
 import datetime
 import os
 import re
+import shutil
 import subprocess
 import sys
 
@@ -962,6 +963,51 @@ def cmd_legacy(a, root, conf):
     return 0
 
 
+_SCRATCH_STATUSES = ("done", "next", "queued", "blocked", "superseded")
+
+
+def cleanup_done(plan_text):
+    """True when the plan has a phase-cleanup task (`title: phase cleanup`) whose status is done (3.29 T5)."""
+    for line in plan_text.split("\n"):
+        if not PE.TASK_RE.match(line):
+            continue
+        parts = [x.strip() for x in line.split("|")]
+        title = next((x[len("title:"):].strip() for x in parts if x.lower().startswith("title:")), "")
+        if not title.lower().startswith("phase cleanup"):
+            continue
+        status = parts[1].lower() if len(parts) > 1 and parts[1].lower() in _SCRATCH_STATUSES else "queued"
+        if status == "done":
+            return True
+    return False
+
+
+def cmd_scratch(a, root, conf):
+    """The close's last cleanup (3.29 T5): delete .run/<phase>/, the phase's temp folder, once the phase's plan
+    (archived, else current) has its phase-cleanup task done; else keep it. Never fails the close: always exit 0."""
+    phase = (a.phase or "").strip()
+    if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", phase) or phase in (".", ".."):
+        PE.emit(["scratch: no phase id; nothing deleted"])
+        return 0
+    folder = os.path.join(root, ".run", phase)
+    if not os.path.isdir(folder):
+        PE.emit(["scratch: no .run/%s/" % phase])
+        return 0
+    text = ""
+    for parts in (("phase-ends", "phase-%s" % phase, "PHASE_PLAN.md"), ("phase-ends", "current", "PHASE_PLAN.md")):
+        path = os.path.join(root, *parts)
+        if os.path.isfile(path):
+            text = PE.read_text(path)
+            break
+    if not cleanup_done(text):
+        PE.emit(["scratch: .run/%s/ kept: the plan has no phase-cleanup task done" % phase])
+        return 0
+    n = sum(len(files) for _, _, files in os.walk(folder))
+    shutil.rmtree(folder, ignore_errors=True)
+    left = " (some files were in use and stay)" if os.path.isdir(folder) else ""
+    PE.emit(["scratch: .run/%s/ deleted, %d files%s" % (phase, n, left)])
+    return 0
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] == "--archive":
@@ -976,11 +1022,13 @@ def main(argv=None):
                        help="git mv current/ -> phase-<N>/ and extend the indexes")
     s.add_argument("phase", nargs="?")
     sub.add_parser("legacy-index", help="index pre-PA3 PhaseEnd files")
+    s = sub.add_parser("scratch", help="delete .run/<N>/ once the plan's phase-cleanup task is done")
+    s.add_argument("phase", nargs="?")
     a = p.parse_args(argv)
     root = PE.find_root()
     conf = PE.cfg(root)
-    return {"assemble": cmd_assemble, "archive": cmd_archive,
-            "--archive": cmd_archive, "legacy-index": cmd_legacy}[a.cmd](a, root, conf)
+    return {"assemble": cmd_assemble, "archive": cmd_archive, "--archive": cmd_archive,
+            "legacy-index": cmd_legacy, "scratch": cmd_scratch}[a.cmd](a, root, conf)
 
 
 if __name__ == "__main__":

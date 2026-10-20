@@ -2,10 +2,11 @@
 # run.sh -- the house pattern for long or noisy commands (D11).
 #
 #   run.sh <name> [--tail N | --grep PAT] [--timeout S] -- <cmd...>
-#   run.sh --bg <name> -- <cmd...>        detached; writes .run/logs/<name>.pid
+#   run.sh --bg <name> -- <cmd...>        detached; writes <logs>/<name>.pid
 #   run.sh --wait <name> [--max 3000]     poll the pid every 30 s, then print the tail
 #
-# Output goes to .run/logs/<name>.log; the caller sees at most 40 lines.
+# Output goes to <logs>/<name>.log; the caller sees at most 40 lines. <logs> is .run/<phase>/logs while a phase
+# plan is open (the phase's temp folder, deleted at its close), else .run/logs.
 set -u
 
 TAILN=40
@@ -61,12 +62,16 @@ while [ $# -gt 0 ]; do
 done
 
 ROOT="$(find_root)"
-LOGDIR="$ROOT/.run/logs"
+# 3.29 T4: the open plan's phase id (`# Phase <id> — <name>`) names the phase's temp folder.
+PHASE="$(sed -n '1s/^#[[:space:]]*Phase[[:space:]][[:space:]]*\([A-Za-z0-9._-][A-Za-z0-9._-]*\).*/\1/p' \
+  "$ROOT/phase-ends/current/PHASE_PLAN.md" 2>/dev/null | head -n 1)"
+case "$PHASE" in ""|.|..) LOGSUB=".run/logs";; *) LOGSUB=".run/$PHASE/logs";; esac
+LOGDIR="$ROOT/$LOGSUB"
 mkdir -p "$LOGDIR"
 LOG="$LOGDIR/$NAME.log"
 PIDF="$LOGDIR/$NAME.pid"
 EXITF="$LOGDIR/$NAME.exit"
-REL=".run/logs/$NAME.log"
+REL="$LOGSUB/$NAME.log"
 [ "$TAILN" -gt 39 ] 2>/dev/null && TAILN=39
 
 report() {

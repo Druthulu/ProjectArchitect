@@ -307,6 +307,10 @@ export function claudeRows(agents: readonly BandAgent[], partnerId: string, now:
   return bandRows(named, [{ id: partnerId, task: '' }], now)
 }
 
+/** 3.29 T3: Claude's row while a developer message waits for Claude's turn to start: `received`, with the time since. */
+export const receivedRow = (at: number, now: number): BandRow =>
+  ({ role: 'claude', name: 'Claude', task: '', step: 'received', elapsed: elapsedText(now - at) })
+
 /** The conversation-only note (3.23 T5d1, moved from pa-watch's usage line in 3.24 T13B): another session owns the loop
  * with a fresh heartbeat; '' when this session may own it. */
 export const loopNoteOf = (owns: boolean, ownerSid: string): string =>

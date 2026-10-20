@@ -3170,6 +3170,16 @@ class ReleaseLineTest(LedgerCase):
         self.release({"version": "3.28.2", "kind": "hotfix", "state": "installed"})
         self.assertIn("⬆ Project Architect 3.28.2 hotfix installed · /exit, then claude --continue (not /clear)", self.lines())
 
+    def test_checking_for_updates_while_the_start_check_runs(self):
+        """3.29.2: the start hook's check under way reads checking; its answer, or an old note, shows nothing."""
+        note = os.path.join(self.project, ".run", "mod", "start-check.json")
+        write_json(note, {"session": "s", "at": time.time(), "update": False, "state": "checking"})
+        self.assertIn("⬆ checking for updates…", self.lines())
+        write_json(note, {"session": "s", "at": time.time(), "update": False, "state": "done"})
+        self.assertFalse(any("checking for updates" in l for l in self.lines()))
+        write_json(note, {"session": "s", "at": time.time() - 600, "update": False, "state": "checking"})
+        self.assertFalse(any("checking for updates" in l for l in self.lines()))
+
     def test_installed_not_clear_in_red(self):
         """3.28.2 T16: the installed line is green but its "(not /clear)", red."""
         self.release({"version": "3.28.2", "kind": "hotfix"})

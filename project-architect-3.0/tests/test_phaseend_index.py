@@ -704,5 +704,44 @@ class TestAgentRunsThisProject(unittest.TestCase):
         self.assertIn("T-MINE", lines[0])
 
 
+class TestScratch(unittest.TestCase):
+    """3.29 T5: scratch deletes .run/<N>/, the phase's temp folder, once the plan's phase-cleanup task is done."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pa3-pe-scratch-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        _build_archive(self.tmp)
+        _write(os.path.join(self.tmp, ".run", "9.9", "logs", "t7-unit.log"), "ok\n")
+        self.folder = os.path.join(self.tmp, ".run", "9.9")
+
+    def _scratch(self, phase="9.9"):
+        import argparse
+        return PI.cmd_scratch(argparse.Namespace(phase=phase), self.tmp, {})
+
+    def _plan(self, cleanup_line):
+        _write(os.path.join(self.tmp, "phase-ends", "phase-9.9", "PHASE_PLAN.md"), PLAN_TEXT + cleanup_line)
+
+    def test_kept_without_a_cleanup_task(self):
+        self.assertEqual(self._scratch(), 0)
+        self.assertTrue(os.path.isdir(self.folder))
+
+    def test_kept_while_the_cleanup_task_is_open(self):
+        self._plan("- T9 | title: phase cleanup | done-when: what is still needed is in its place\n")
+        self.assertEqual(self._scratch(), 0)
+        self.assertTrue(os.path.isdir(self.folder))
+
+    def test_deleted_once_the_cleanup_task_is_done(self):
+        self._plan("- T9 | done | title: phase cleanup | done-when: what is still needed is in its place\n")
+        self.assertEqual(self._scratch(), 0)
+        self.assertFalse(os.path.exists(self.folder))
+        self.assertTrue(os.path.isdir(os.path.join(self.tmp, ".run")))
+
+    def test_a_bad_phase_id_deletes_nothing(self):
+        self._plan("- T9 | done | title: phase cleanup | done-when: x\n")
+        for bad in ("", ".", "..", "../x", "a/b"):
+            self.assertEqual(self._scratch(bad), 0)
+        self.assertTrue(os.path.isdir(self.folder))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -2161,6 +2161,12 @@ def _release_line(project, colors):
     doc = _read_json(os.path.join(project, ".run", "mod", "release.json"), None)
     want = _version_key(_text(doc.get("version"))) if isinstance(doc, dict) else None
     if want is None:
+        # 3.29.2: the start hook's update check is under way (its note says checking, at most 2 minutes old)
+        sc = _read_json(os.path.join(project, ".run", "mod", "start-check.json"), None)
+        sat = sc.get("at") if isinstance(sc, dict) else None
+        if (isinstance(sc, dict) and sc.get("state") == "checking" and isinstance(sat, (int, float))
+                and time.time() - sat < 120):
+            return _paint("⬆ checking for updates…", GREEN, colors)
         return ""
     version, kind = _text(doc.get("version")), _text(doc.get("kind")) or "hotfix"
     run = _read_json(os.path.join(project, ".run", "mod", "update.json"), None)

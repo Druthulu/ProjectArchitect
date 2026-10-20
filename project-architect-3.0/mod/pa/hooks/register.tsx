@@ -30,7 +30,7 @@ import { decide, ERROR_FILE, errorText, HEARTBEAT_FILE, heartbeatText, ledgerPat
 import { armAutopilot, sessionStartPending } from './autopilot'
 import {
   type BandAgent, bandCells, bandHex, bandIds, bandStepOf, bandView, borderOf, type Card, type CardStyle, cardStyleOf, claudeCard, claudeRows, coderIdOf, finishCardOf,
-  loopNoteOf, noteCardOf, numstatOf, parseCard, ROLE_HEX, type Sender,
+  loopNoteOf, noteCardOf, numstatOf, parseCard, receivedRow, ROLE_HEX, type Sender,
 } from './card'
 import { parseCoderReturn } from './contract'
 import { clip, eventFile, isStale, PRUNE_DAYS, pruneArgv } from './debug'
@@ -48,7 +48,7 @@ import {
 } from './planview'
 import { cacheTtlOf, expertStatus, isCold, partnerStatus, pingCount, pingDecision, pingUsd, type Rates, ratesFrom, tierRates } from './policy'
 import {
-  addAttach, addReply, applyReply, childOut, classify, clearTurn, dueMarkers, emptyTurns, enqueue, entryUsage, fileEntry,
+  addAttach, addReply, applyReply, bangOf, bangText, childOut, classify, clearTurn, dueMarkers, emptyTurns, enqueue, entryUsage, fileEntry,
   framedOther, handbackChild, hideAssistant, hideSpinner, hideUser, isBusy, isLive, isSeedName, journalOut, localAnswer, markerReply,
   markerText, newestPartner, newPartner, otherTarget, PARTNER_TYPE, stepFactsOf, nextMarker, outboxHeld, parentOf, partnerReport, partnerRoute, partnerTurnEnded, priceCacheOf,
   registerTurn, replyKey, RESUME_CHECK_MS, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
@@ -75,6 +75,8 @@ const cardsAtom = atom({ plugin: 'pa', key: 'cards' } as const, [] as string[])
 const bandAtom = atom({ plugin: 'pa', key: 'band' } as const, { line: '', rows: [] } as Band)
 // 3.24 T13B: the router's own band part, written by its work tick (Claude's rows, the conversation-only note, the dots).
 const workAtom = atom({ plugin: 'pa', key: 'work' } as const, { rows: [], note: '', working: false, dots: 1 } as Work)
+/** 3.29 T3: when the router took a developer message Claude has not started on yet (ms); 0 none. */
+const receivedAtom = atom({ plugin: 'pa', key: 'received' } as const, 0)
 // 3.23 T13d: the feed's records collected at prompt.submit and not yet drawn, the last drawn number and speaker.
 const feedAtom = atom({ plugin: 'pa', key: 'feed' } as const, emptyFeed())
 // 3.23 T13d.c1c: the feed's life (a feed seen, the first developer prompt, the restarts, the router's Monitor call running).
@@ -112,6 +114,7 @@ let expertSkip = '' // 3.23 T13b.c4: warmExpert's last skip reason, logged once 
 let noToastLogged = false
 /** 3.28.8: the developer's latest message with attachments (when, how many) and Claude Code's source lines for them. */
 let imageWait: { at: number; count: number; lines: string[] } | null = null
+let lastBang = '' // 3.29.8: the `!` command whose output row comes next
 let presenting = false // the presentation tick's one dialog at a time
 let lastHold = '' // the last deferral logged, so a long wait logs once
 let turnWaitLogged = '' // 3.24 T17j: the your-turn toast's last loop wait logged (turnId + why), once per change
@@ -1553,7 +1556,15 @@ export const register: Register = (on, options) => {
               }
             }
           }
-          const rows = claudeRows(agents, pid, now)
+          // 3.29 T3: a developer message Claude has not started on: its row says received, with the time since; once
+          // Claude is listed running or pending, its own row takes over.
+          let received = await read($, receivedAtom)
+          if (received !== 0 && pid !== '' && listed.some(a => a.id === pid && isLive(a.status))) {
+            await update($, receivedAtom, () => 0)
+            received = 0
+          }
+          const own = claudeRows(agents, pid, now)
+          const rows = received === 0 ? own : [receivedRow(received, now), ...own.filter(r => r.role !== 'claude')]
           const loop = parseLoop(await $.fs.read(`${root}/${LOOP_FILE}`).catch(() => null))
           const owns = ownsLoop(loop, sidNow, now)
           const loopWorks = owns && (loop.state === 'running' || loop.state === 'routing' || loop.state === 'closing' ||
@@ -1721,6 +1732,13 @@ export const register: Register = (on, options) => {
         }
         // 3.24 T17t: and a stop's toast still waiting for his quiet.
         change = s => fileEntry(enqueue(heardDeveloper({ ...s, yourTurn: null }), 'dev', sent, '', now), journalOut(now, seq, 'dev', 'msg', { session: s.sid }, text))
+        // 3.29 T3: Claude's band row says the message was received until Claude's turn starts (the work tick then shows
+        // its steps); drawn here at once, so it never waits on a tick. An earlier unanswered message keeps its time.
+        if ((await read($, receivedAtom)) === 0) {
+          await update($, receivedAtom, () => now)
+        }
+        const takenAt = await read($, receivedAtom)
+        await update($, workAtom, w => (w.rows.some(r => r.role === 'claude') ? w : { ...w, rows: [receivedRow(takenAt, now), ...w.rows], working: true }))
       } else if (route === 'feed') {
         // 3.23 T13d: the feed's records wait in feedAtom for the next feed turn; a skipped number is read from the log;
         // records delivered into a running turn get a nudge, so a feed turn follows that draws them.
@@ -1784,6 +1802,7 @@ export const register: Register = (on, options) => {
         const loopTask = loopNowS.task
         if (st?.partner?.agentId === child) {
           kind = 'handback.partner' // its answer is filed at turn.complete; its turn shows the report (turn.start, T8d)
+          await update($, receivedAtom, () => 0) // 3.29 T3: Claude answered
         } else if (loopAgentIds(loopNowS).includes(child)) {
           kind = 'handback.loop' // 3.23 T5a: a loop agent's hand-back goes to the autopilot's capture, never filed or forwarded (T6a2: the curator and the auditor too)
         } else if (st !== null && st.forwarded[child] !== undefined) {
@@ -1839,6 +1858,29 @@ export const register: Register = (on, options) => {
   on('session.append', async ($, e, next) => {
     const out = await next(e)
     const w = imageWait
+    // 3.29.8: a `!` command the developer runs at the prompt starts no turn: its input row, then its output row, go to
+    // Claude as the developer's message, so it answers (whether a command it gave them worked) without being asked.
+    try {
+      if (e.agentId === undefined && (await read($, routeAtom))) {
+        const text = e.message.content.flatMap(b => (b.type === 'text' && typeof b['text'] === 'string' ? [b['text']] : [])).join('\n')
+        const bang = bangOf(text)
+        if (bang.input !== null) {
+          lastBang = bang.input
+        } else if (bang.output !== null && lastBang !== '') {
+          const cmd = lastBang
+          lastBang = ''
+          const now = await $.clock.now()
+          const saved = await update($, stateAtom, x => (x === null ? x : enqueue(x, 'dev', bangText(cmd, bang.output ?? ''), '', now)))
+          if (saved !== null) {
+            await $.fs.write(statePath(`${await $.session.root()}/.run/mod`, saved.sid), serializeState(saved))
+          }
+        }
+      }
+    } catch (err) {
+      if (debugBase !== '') {
+        await $.fs.write(...ev('bang.error', { err: clip(String(err), 300) })).catch(quiet)
+      }
+    }
     try {
       if (e.agentId === undefined && e.message.isMeta === true && w !== null) {
         const lines = imageSourceLines(e.message.content)

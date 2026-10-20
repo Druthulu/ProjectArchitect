@@ -435,6 +435,38 @@ describe('router route', () => {
     expect(noted).not.toContain('working')
   })
 
+  test('3.29 T3: a developer message shows Claude as received at once; Claude\'s own row once it runs', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    w.files.set(`${BASE}/S1/agents/P1.json`, JSON.stringify({ line: 'Read the plan' }))
+    // an empty band draws nothing of the mod's (the engine's own band, absent here): ''
+    const band = async (): Promise<string> => {
+      try {
+        return JSON.stringify(await (await $.ui.mount({
+          plugin: 'pa', surface: 'terminal', component: 'AbovePrompt',
+          props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+        })).drawn())
+      } catch {
+        return ''
+      }
+    }
+    await $.session.start(ISTART)
+    await clock.advance(500)
+    expect(await band()).not.toContain('received')
+    await $.prompt.submit({ text: 'whats going on?', origin: { kind: 'composer' }, wait: false })
+    expect(await band()).toContain('received') // at once, before any tick
+    await clock.advance(1_500)
+    expect(await band()).toContain('received') // Claude has not started yet
+    n.list = [{ id: 'P1', status: 'running' }]
+    await clock.advance(500)
+    const own = await band()
+    expect(own).toContain('Read the plan')
+    expect(own).not.toContain('received')
+  })
+
   test('an attachment message gets the notice', async ($, on) => {
     mock.clock(on, { now: 1_000 })
     world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {})

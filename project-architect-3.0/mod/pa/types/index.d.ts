@@ -235,6 +235,8 @@ export type LoopTask = {
   recovery?: { phase: 'start' | 'sent'; at: number } | null
   /** A stopped agent sent `continue:` at `at` (3.23 T11-fix2), its status then (`killed`, `failed`, `absent`); absent when none. */
   stopped?: { at: number; status: string } | null
+  /** 3.29.1 T9: the developer asked the task to pause (a `steer` with `pause: true`, at `at`); kept across a restart. */
+  paused?: { at: number } | null
 }
 
 /** A picked task's WAIT-FOR being polled: the task, the file (project-relative), the literal, since when (ms). */
@@ -355,6 +357,8 @@ declare module 'claude-code' {
       dialogs: string[]
       /** 3.24 T13B: the router's band part (its work tick); the AbovePrompt rule draws it with `band`. */
       work: Work
+      /** 3.29 T3: when the router took a developer message Claude has not started on yet (ms); 0 none. */
+      received: number
     }
   }
 }

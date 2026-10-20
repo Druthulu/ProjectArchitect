@@ -1167,13 +1167,29 @@ class TestShellTools(ToolCase):
         self.assertEqual(p.returncode, 1, p.out)
         self.assertIn("--file", p.out)
 
+    def test_run_sh_logs_in_the_open_phase_folder(self):
+        """3.29 T4: while a plan is open, run.sh logs go to the phase's temp folder, .run/<phase>/logs;
+        with none open, .run/logs."""
+        os.makedirs(os.path.join(self.root, "phase-ends", "current"), exist_ok=True)
+        with open(os.path.join(self.root, "phase-ends", "current", "PHASE_PLAN.md"), "w",
+                  encoding="utf-8", newline="\n") as f:
+            f.write("# Phase 3.5.1 — Draped tiles        (implements GENERATION_PLAN.md phase 3.5)\n")
+        p = self.sh("run.sh", "t1-unit", "--", "echo", "in-phase")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertEqual(p.out.split("\n")[0], "exit=0 log=.run/3.5.1/logs/t1-unit.log lines=1")
+        self.assertEqual(read(os.path.join(self.root, ".run", "3.5.1", "logs",
+                                           "t1-unit.log")).strip(), "in-phase")
+        os.remove(os.path.join(self.root, "phase-ends", "current", "PHASE_PLAN.md"))
+        p = self.sh("run.sh", "between", "--", "echo", "no-plan")
+        self.assertEqual(p.out.split("\n")[0], "exit=0 log=.run/logs/between.log lines=1")
+
     def test_run_sh_logs_tails_and_greps(self):
         p = self.sh("run.sh", "hello", "--", "echo", "hello-world")
         self.assertEqual(p.returncode, 0, p.out)
         lines = p.out.rstrip().split("\n")
-        self.assertEqual(lines[0], "exit=0 log=.run/logs/hello.log lines=1")
+        self.assertEqual(lines[0], "exit=0 log=.run/24/logs/hello.log lines=1")
         self.assertEqual(lines[1], "hello-world")
-        self.assertEqual(read(os.path.join(self.root, ".run", "logs",
+        self.assertEqual(read(os.path.join(self.root, ".run", "24", "logs",
                                            "hello.log")).strip(), "hello-world")
         p = self.sh("run.sh", "three", "--grep", "needle", "--",
                     "bash", "-c", "echo hay; echo needle; echo hay")
@@ -1183,7 +1199,7 @@ class TestShellTools(ToolCase):
         self.assertNotIn("hay", p.out.split("\n", 1)[1])
         p = self.sh("run.sh", "boom", "--", "bash", "-c", "echo bad >&2; exit 3")
         self.assertEqual(p.returncode, 3, p.out)
-        self.assertIn("exit=3 log=.run/logs/boom.log", p.out)
+        self.assertIn("exit=3 log=.run/24/logs/boom.log", p.out)
         self.assertIn("bad", p.out)
         self.assertLessEqual(len(p.out.rstrip().split("\n")), 40)
         p = self.sh("run.sh", "nope")
@@ -1194,15 +1210,15 @@ class TestShellTools(ToolCase):
         p = self.sh("run.sh", "--bg", "bgjob", "--", "bash", "-c",
                     "echo started; echo finished")
         self.assertEqual(p.returncode, 0, p.out)
-        self.assertRegex(p.out, r"bg=bgjob pid=\d+ log=\.run/logs/bgjob\.log")
-        self.assertTrue(os.path.isfile(os.path.join(self.root, ".run", "logs",
+        self.assertRegex(p.out, r"bg=bgjob pid=\d+ log=\.run/24/logs/bgjob\.log")
+        self.assertTrue(os.path.isfile(os.path.join(self.root, ".run", "24", "logs",
                                                     "bgjob.pid")))
         p = self.sh("run.sh", "--wait", "bgjob", "--max", "60")
         self.assertEqual(p.returncode, 0, p.out)
-        self.assertIn("exit=0 log=.run/logs/bgjob.log", p.out)
+        self.assertIn("exit=0 log=.run/24/logs/bgjob.log", p.out)
         self.assertIn("finished", p.out)
         # the wrapper closes stdin, so a prompting command cannot stall (3.9.6 T1)
-        with open(os.path.join(self.root, ".run", "logs", "bgjob.cmd.sh"),
+        with open(os.path.join(self.root, ".run", "24", "logs", "bgjob.cmd.sh"),
                   encoding="utf-8") as fh:
             cmd = [ln for ln in fh.read().splitlines() if "bgjob.log" in ln]
         self.assertEqual(len(cmd), 1, cmd)

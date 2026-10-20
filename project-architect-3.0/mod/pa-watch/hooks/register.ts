@@ -224,7 +224,13 @@ export const register: Register = on => {
     const r = await next(model === null ? e : { ...e, model })
     const id = r.agentId
     if (id !== undefined && r.deny === undefined) {
-      spawned.set(id, { type, row })
+      // 3.29 T2: a message to a finished agent (a warming ping) resumes it through this hook under its own id. Its
+      // facts file is already written, so it is a resume: no second spawn entry and no second start line.
+      const factsPath = `${await $.session.root()}/.run/mod/${await $.session.id()}/agents/${id}.json`
+      const resumed = await $.fs.read(factsPath).then(() => true, () => false)
+      if (!resumed) {
+        spawned.set(id, { type, row })
+      }
       if (level !== '' && row !== null) {
         ownRows.set(id, row) // 3.25 T6b: a hinted agent keeps its own row's effort on every request
       }
@@ -482,7 +488,7 @@ export const register: Register = on => {
     return r
   })
 
-  // The six tools: a good call becomes one request file in the router's inbox, which its one-second tick drains.
+  // The seven tools: a good call becomes one request file in the router's inbox, which its one-second tick drains.
   for (const name of TOOL_NAMES) {
     on('tool.call', { tool: `mcp__pa-watch__${name}` }, async ($, e) => {
       const input = argsOf(e as unknown as Record<string, unknown>)

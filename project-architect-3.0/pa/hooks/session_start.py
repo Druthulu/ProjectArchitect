@@ -111,6 +111,11 @@ def run(inp, cfg):
         except Exception as exc:       # fail soft: a missed check waits for the first prompt or the next start
             mod_root = None
             log.log("health_check_failed", session_id=sid, error=str(exc)[:200])
+    if mod_root:
+        try:   # 3.29.2: the statusline's "checking for updates" line until the note below says it answered
+            _start_checked(mod_root, sid, False, state="checking")
+        except Exception as exc:
+            log.log("start_check_failed", session_id=sid, error=str(exc)[:200])
     update = None
     try:
         update = _update_check(inp, cfg)
@@ -126,6 +131,13 @@ def run(inp, cfg):
                 lines.append(_auto_run(mod_root, sid, behind))
         except Exception as exc:
             log.log("record_behind_failed", session_id=sid, error=str(exc)[:200])
+    if mod_root:
+        # 3.29.1 T8: the mod starts no work at a session start until this note says the check has answered
+        try:
+            from .. import health
+            _start_checked(mod_root, sid, health.run_running(mod_root))
+        except Exception as exc:
+            log.log("start_check_failed", session_id=sid, error=str(exc)[:200])
     if source == "startup" and not agent_of(inp):
         try:
             missing = _agent_not_loaded(inp)
@@ -1069,12 +1081,39 @@ def _auto_run(root, sid, line):
         if not health.start_run(root, False, line):
             return line
         health.mark_ran(root, sid)
+        # 3.29.2: the release this run installs, as the mod's own install records it (.run/mod/release.json): the
+        # statusline's "installing · please wait", then "installed · /exit, then claude --continue"
+        v = _re.search(r"\(version (?:[^)]*-> )?([0-9][0-9.]*[0-9])\)", line)
+        if v:
+            kind = "hotfix" if len(v.group(1).split(".")) >= 3 else "feature update"
+            _write_mod_json(root, "release.json", {"version": v.group(1), "kind": kind, "state": "running"})
     except Exception as exc:           # fail soft: the offer line stands
         log.log("auto_update_failed", session_id=sid, error=str(exc)[:200])
         return line
     return ("PA3: updating: the session-start hook started %s in the background (tools/pa3_update.py, log "
             ".run/mod/update.log). The mod starts no task until it finishes, then says what changed; %s."
             % (what, health.RELOAD))
+
+
+def _start_checked(root, sid, update_running, state="done"):
+    """3.29.1 T8: ``.run/mod/start-check.json``: this session start's update check has answered, and whether an
+    update run is going (``{"session", "at" (s), "update", "state"}``). The mod holds every piece of work until it
+    reads this for its own start (or its wait ends), then none while an update runs or until the restart loads it.
+    3.29.2: ``state: "checking"`` is written as the check begins (the statusline says so; the mod still waits)."""
+    import time as _time
+    _write_mod_json(root, "start-check.json",
+                    {"session": sid, "at": _time.time(), "update": bool(update_running), "state": state})
+
+
+def _write_mod_json(root, name, doc):
+    """One ``.run/mod/<name>`` JSON file, written whole (a temp file, then a rename)."""
+    import json as _json
+    path = os.path.join(root, ".run", "mod", name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(_json.dumps(doc) + "\n")
+    os.replace(tmp, path)
 
 
 def _version_key(text):

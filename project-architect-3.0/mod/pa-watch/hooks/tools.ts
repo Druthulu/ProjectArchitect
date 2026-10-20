@@ -1,10 +1,10 @@
-// The partner's six tools `mcp__pa-watch__<name>` (agents/pa-claude.md, "The mod's tools"): their specs, input checks,
+// The partner's seven tools `mcp__pa-watch__<name>` (agents/pa-claude.md, "The mod's tools"): their specs, input checks,
 // and the inbox request each good call becomes. `requestName` is a copy of the router's mod/pa/hooks/inbox.ts naming,
 // kept identical (plugins never import across each other); the same test vectors pin both. Pure.
 
-export type ToolName = 'plan' | 'ask' | 'topic' | 'release' | 'plan_edit' | 'steer'
+export type ToolName = 'plan' | 'ask' | 'topic' | 'release' | 'plan_edit' | 'steer' | 'cleanup'
 
-export const TOOL_NAMES: readonly ToolName[] = ['plan', 'ask', 'topic', 'release', 'plan_edit', 'steer']
+export const TOOL_NAMES: readonly ToolName[] = ['plan', 'ask', 'topic', 'release', 'plan_edit', 'steer', 'cleanup']
 
 const LATER = 'Returns at once; the answer arrives later as a message, so end your turn after calling it.'
 /** 3.23 T13d.c3: release, plan_edit and steer send no confirmation that only says done. */
@@ -56,8 +56,13 @@ export const TOOL_SPECS: readonly { name: ToolName; description: string; inputSc
   },
   {
     name: 'steer',
-    description: `A developer's correction for the running plan task \`task\` (T<n>), relayed to its expert, which tells its own coder what to stop, keep or undo; nothing is stopped. Refused: a refused: line. ${QUIET}`,
-    inputSchema: { type: 'object', properties: { task: { type: 'string' }, text: { type: 'string' } }, required: ['task', 'text'] },
+    description: `A developer's correction for the running plan task \`task\` (T<n>), relayed to its expert, which tells its own coder what to stop, keep or undo; nothing is stopped. \`pause: true\` when the developer asks the work to pause (finish what runs, start nothing new): the pause is kept across a restart; \`pause: false\` when they want it to go on. Refused: a refused: line. ${QUIET}`,
+    inputSchema: { type: 'object', properties: { task: { type: 'string' }, text: { type: 'string' }, pause: { type: 'boolean' } }, required: ['task', 'text'] },
+  },
+  {
+    name: 'cleanup',
+    description: `3.29.8: the one-time .run/ cleanup's deletion. First write the exact items to delete as {"paths": [...]} (paths inside .run/) to .run/mod/cleanup.json; this call has the mod check them, ask the developer with its own picker, and on their yes delete exactly those items. \`summary\`: one line for the picker (count and size). ${LATER}`,
+    inputSchema: { type: 'object', properties: { summary: { type: 'string' } } },
   },
 ]
 
@@ -118,7 +123,12 @@ export function validateInput(name: string, input: unknown): string | null {
     }
     case 'plan_edit':
       return field(o, 'command', true) ?? field(o, 'why', false)
+    case 'cleanup':
+      return field(o, 'summary', false)
     case 'steer':
+      if (o['pause'] !== undefined && typeof o['pause'] !== 'boolean') {
+        return 'pause must be a boolean'
+      }
       return field(o, 'task', true) ?? field(o, 'text', true)
     default:
       return `unknown tool ${name}`

@@ -347,6 +347,18 @@ class HealthFixtureTest(unittest.TestCase):
         self.assertIn("to", mk)
         self.assertIsNone(health.newer_release(self.pa3, self.clone))
 
+    def test_09b_start_check_note(self):
+        """3.29.1 T8: the hook's note that this start's update check answered, and whether a run is going."""
+        before = time.time()
+        ss._start_checked(self.proj, "q9", False)
+        with open(os.path.join(self.proj, ".run", "mod", "start-check.json"), encoding="utf-8") as fh:
+            doc = json.load(fh)
+        self.assertEqual((doc["session"], doc["update"], doc["state"]), ("q9", False, "done"))
+        self.assertGreaterEqual(doc["at"], before)
+        ss._start_checked(self.proj, "q9", True)
+        with open(os.path.join(self.proj, ".run", "mod", "start-check.json"), encoding="utf-8") as fh:
+            self.assertTrue(json.load(fh)["update"])
+
     def test_10_auto_run_after_the_i48_checks(self):
         self.bump("3.24.2")
         offer = "PA3: update available: 1 commits (release 3.24.2) (version 3.24.2). Say yes to update."
@@ -359,6 +371,8 @@ class HealthFixtureTest(unittest.TestCase):
         self.assertTrue(line.startswith("PA3: updating: the session-start hook started the update to the newer "
                                         "release (version 3.24.2)"), line)
         self.assertIn(health.RELOAD, line)
+        with open(os.path.join(self.proj, ".run", "mod", "release.json"), encoding="utf-8") as fh:   # 3.29.2
+            self.assertEqual(json.load(fh), {"version": "3.24.2", "kind": "hotfix", "state": "running"})
         self.assert_ran("update")
         self.assertEqual(self.root_version(), "3.24.2")
         self.assertEqual(health.hook_record(self.proj)["healed"], "q2")

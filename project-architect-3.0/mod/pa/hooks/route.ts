@@ -518,6 +518,27 @@ export function otherTarget(child: string, partnerId: string, list: readonly { i
 
 export const forwardText = (child: string, text: string): string => `Hand-back from your background agent ${child}:\n${text}`
 
+/** 3.29.8: a `!` command's rows in the main session: its input (`<bash-input>`) or its output (`<bash-stdout>`, `<bash-stderr>`). */
+export function bangOf(text: string): { input: string | null; output: string | null } {
+  const inp = /<bash-input>([\s\S]*?)<\/bash-input>/.exec(text)
+  if (inp !== null) {
+    return { input: (inp[1] ?? '').trim(), output: null }
+  }
+  const outs = [/<bash-stdout>([\s\S]*?)<\/bash-stdout>/.exec(text), /<bash-stderr>([\s\S]*?)<\/bash-stderr>/.exec(text)]
+  if (outs.every(m => m === null)) {
+    return { input: null, output: null }
+  }
+  return { input: null, output: outs.map(m => (m?.[1] ?? '').trim()).filter(t => t !== '').join('\n') }
+}
+
+/** 3.29.8: what Claude gets for the developer's `!` command: the command and the last 40 lines of its output. */
+export function bangText(cmd: string, output: string): string {
+  const lines = output.split(/\r?\n/)
+  const tail = lines.slice(-40).join('\n')
+  return `‹pa› The developer ran this at the prompt: \`${cmd}\`\nIts output${lines.length > 40 ? ' (the last 40 lines)' : ''}:\n` +
+    `${tail === '' ? '(none)' : tail}\nIf it was a command you gave them, tell them now whether it worked.`
+}
+
 export function enqueue(s: RouterState, kind: OutMsg['kind'], text: string, child: string, at: number): RouterState {
   return { ...s, outbox: [...s.outbox, { kind, text, child, at }] }
 }

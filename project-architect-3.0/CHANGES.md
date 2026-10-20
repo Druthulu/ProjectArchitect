@@ -2,6 +2,49 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.29.8 — Your picker approves the cleanup; Claude hears your commands
+
+- The one-time `.run/` cleanup no longer asks you to run a command. Claude writes the exact items to delete, the mod checks them (all inside `.run/`, none of PA3’s own, not the open phase), and its picker asks you: “Delete them” is your approval, and the mod deletes exactly those items, each by name, then Claude tells you the result.
+- When you run a command at the prompt with `!`, Claude now gets the command and its output, so it tells you whether a command it gave you worked without being asked.
+
+## 3.29.7 — After an update, its own work comes first
+
+- When an update brings work to do after its restart (the one-time `.run/` cleanup), no task resumes on its own at that restart: a task that was running is held. When that work is done, or you put it off, Claude asks “Ready to continue work?” and work goes on only on your yes.
+
+## 3.29.6 — Only .run/<phase>/
+
+- The rule now says all of a phase’s work in `.run/` goes under `.run/<phase>/` and nowhere else in `.run/`, and that `.run/` is never a home for long-term content.
+
+## 3.29.5 — Every project gets the cleanup picker once
+
+- A project that was offered the one-time `.run/` cleanup in plain text (3.29 to 3.29.2) gets the picker at its next start, once its update check is done. Projects that already saw the picker are not asked again.
+
+## 3.29.4 — The .run/ cleanup hands you a verified command
+
+- After you approve the one-time cleanup’s list, Claude no longer runs the deletion itself (auto mode’s safety check refuses it). It writes the deletion as a script, checks that it removes nothing outside `.run/`, says so (“This action has been verified to only delete temp data in the .run folders”), and gives you one `!` command to run it.
+
+## 3.29.3 — The cleanup offer comes after the update, and says why
+
+- The one-time `.run/` cleanup is now offered with a picker ("Clean it up (Recommended)" / "Not now"), after the session start's update check (and any restart it needs) is done.
+- The picker explains that 3.29 added a cleanup step to every phase end, that the older work in `.run/` is outside it, and that the one-time cleanup is highly recommended. Choosing it starts Claude's review; nothing is deleted until you approve its list.
+
+## 3.29.2 — The statusline says when PA3 checks for and installs an update
+
+- While a session start checks for an update, the statusline reads "⬆ checking for updates…".
+- An update the session start installs now shows like one you chose mid-session: "installing · please wait" while it runs, then "installed · /exit, then claude --continue" until you restart. With no update, the line just goes away.
+
+## 3.29.1 — Updates first at a session start; a pause you asked for stays paused
+
+- At a session start nothing runs until the update check has answered: not a task cut off by the last session's end, not the next task, not a phase close. If the check installs an update, nothing runs until the restart that loads it; if not (or the check never answers within two minutes), work goes on as before.
+- When you ask Claude to pause the work, the pause is kept across a restart. After the restart, once the update check is done, Claude says the session was paused on your request and asks whether to resume; nothing restarts on its own.
+
+## 3.29 — The tidy-up
+
+- Keep-warm pings no longer repeat an agent's "Starting:" line: not in the main session, not in what Claude reads with your next message, and not as a journal entry every few minutes.
+- Claude's row in the band appears the moment you send a message, reading "received". Once Claude starts, it shows what Claude is doing, and it goes away when Claude answers.
+- Each phase keeps its temporary work in `.run/<phase>/`, including `tools/run.sh`'s logs. It is a temp folder only: what the project needs lives in its proper place in the repo. Every phase plan now ends with a phase-cleanup task that checks the folder, and the close deletes it.
+- The first start on 3.29 has Claude offer a one-time cleanup of the older work in `.run/`. Claude reviews it against the plans, the PhaseEnds and the code that uses it, shows you what it would keep, rebuild or delete, and deletes nothing until you say yes.
+
 ## 3.28.8 — No stalls while an expert waits; pictures reach Claude; warming by role
 
 - A task no longer stalls after its expert waits on a coder. Experts and coders now hand back once, when the task is done, so they stay on Claude Code's agent list while they wait. An expert missing from the list while its coder works counts as waiting, not stopped, and if a stop was only inferred from a missing expert, that expert's own report lifts it and the next task starts.

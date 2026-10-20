@@ -677,6 +677,22 @@ describe('the ladder: model at spawn, effort per request (3.24 T17b)', () => {
     expect([f['model'], f['effort']]).toEqual(['claude-opus-5-5', 'medium'])
   })
 
+  test('3.29 T2: a warming ping resumes a finished agent under its id: no second start line, no second spawn entry', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: PA_PY }, { USERPROFILE: 'C:\\Users\\u' })
+    ladder(on, '{"agent":"pa-coder","managed":false,"model":"","effort":"","tier":"max20","source":"default"}')
+    await $.session.start(START)
+    await $.agent.spawn({ subagentType: 'pa-coder', prompt: 'x', description: 'T3.c2 calibrate' })
+    await stepOf($, 'P1')
+    for (let i = 0; i < 2; i += 1) {
+      await $.agent.spawn({ subagentType: 'pa-coder', prompt: '.', description: 'T3.c2 calibrate' }) // the engine's resume
+      await stepOf($, 'P1')
+    }
+    const recs = [...m].filter(([p]) => p.startsWith(`${ROOT}/.run/mod/S1/feed/in/`)).map(([, t]) => JSON.parse(t) as Record<string, unknown>)
+    expect(recs.map(r => r['text'])).toEqual(['Starting: T3.c2 calibrate'])
+    expect([...m].filter(([p]) => p.endsWith('-spawn.md')).length).toBe(1)
+  })
+
   test('3.25 T6b: a hinted spawn gets its own row (model, effort on every request); a second expert at medium keeps medium; the hint is not shown', async ($, on) => {
     mock.clock(on)
     const m = world(on, { [`${ROOT}/.claude/pa.json`]: PA_PY }, { USERPROFILE: 'C:\\Users\\u' })

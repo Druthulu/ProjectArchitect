@@ -218,12 +218,16 @@ def _research_lines(root, tid):
 
 
 def _run_log_names(root, since_iso, tid):
-    """Names of .run/logs/*.log files at/after since_iso whose base name starts
-    with tid (lower case) followed by '-' or 'c' (t6-unit.log, t6c2-tools.log
-    for T6; the separator keeps t11-idx.log out of T1). Newest last."""
+    """Names of run.sh logs at/after since_iso whose base name starts with tid
+    (lower case) followed by '-' or 'c' (t6-unit.log, t6c2-tools.log for T6;
+    the separator keeps t11-idx.log out of T1). Newest last. They are in
+    .run/<phase>/logs while a plan is open (3.29 T4), else .run/logs."""
     import datetime as _dt
-    logs_dir = os.path.join(root, ".run", "logs")
-    if not os.path.isdir(logs_dir):
+    phase_id, _ = _plan_header(root)
+    dirs = [os.path.join(root, ".run", phase_id, "logs")] if phase_id else []
+    dirs.append(os.path.join(root, ".run", "logs"))
+    dirs = [d for d in dirs if os.path.isdir(d)]
+    if not dirs:
         return []
     since_ts = 0
     if since_iso:
@@ -234,14 +238,15 @@ def _run_log_names(root, since_iso, tid):
             since_ts = 0
     prefix_re = re.compile(r"^%s[-c]" % re.escape(tid.lower()))
     rows = []
-    for name in os.listdir(logs_dir):
-        if not name.endswith(".log"):
-            continue
-        if not prefix_re.match(name.lower()):
-            continue
-        mtime = os.path.getmtime(os.path.join(logs_dir, name))
-        if mtime >= since_ts:
-            rows.append((mtime, name))
+    for logs_dir in dirs:
+        for name in os.listdir(logs_dir):
+            if not name.endswith(".log"):
+                continue
+            if not prefix_re.match(name.lower()):
+                continue
+            mtime = os.path.getmtime(os.path.join(logs_dir, name))
+            if mtime >= since_ts:
+                rows.append((mtime, name))
     rows.sort()
     return [name for _, name in rows]
 
@@ -477,7 +482,7 @@ def lint_summary(root, tid):
             errs.append("line %d: markdown table (summaries carry no tables)" % (i + 1))
             break
     for i, raw in enumerate(lines):
-        if ".run/logs" in raw and not raw.strip().startswith(("Full log:", "-", "Commands")):
+        if re.search(r"\.run/(?:[^/\s]+/)?logs", raw) and not raw.strip().startswith(("Full log:", "-", "Commands")):
             warns.append("line %d: mentions .run/logs -- paths only, never dumps" % (i + 1))
             break
     log = cur(root, "logs", "%s.md" % tid)

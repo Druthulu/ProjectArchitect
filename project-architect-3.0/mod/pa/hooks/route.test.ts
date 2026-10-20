@@ -4,7 +4,7 @@ import {
   addReply, ATTACH_NOTICE, applyReply, classify, clearTurn, dueMarkers, HANDBACK_WAIT_MS, handbackChild, handbackReport, hideAssistant,
   hideSpinner, hideUser, isSeedName, localAnswer, markerText, newestPartner, newPartner, nextMarker, outboxHeld, parentOf, parseMarker, partnerReport, registerTurn,
   replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds,
-  bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS,
+  bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS, bangOf, bangText,
 } from './route'
 import type { Entry } from './journal'
 import { defaultState } from './state'
@@ -254,3 +254,20 @@ describe('3.24 T17g: a late report, a marker\'s model and effort, the agents sti
     expect(yourTurnStep(y, YOUR_TURN_MS + 1, [], 'P', '')).toEqual({ do: 'fire' })
   })
 })
+
+describe('a `!` command at the prompt (3.29.8)', () => {
+  test('bangOf reads the input row and the output row; bangText gives Claude the command and the tail', () => {
+    expect(bangOf('<bash-input>bash /tmp/run_cleanup.sh</bash-input>')).toEqual({ input: 'bash /tmp/run_cleanup.sh', output: null })
+    expect(bangOf('<bash-stdout>done</bash-stdout><bash-stderr></bash-stderr>')).toEqual({ input: null, output: 'done' })
+    expect(bangOf('<bash-stdout></bash-stdout><bash-stderr>rm: no such file</bash-stderr>')).toEqual({ input: null, output: 'rm: no such file' })
+    expect(bangOf('hello')).toEqual({ input: null, output: null })
+    const t = bangText('bash x.sh', 'a\nb')
+    expect(t).toContain('`bash x.sh`')
+    expect(t).toContain('a\nb')
+    expect(t).toContain('tell them now whether it worked')
+    const long = Array.from({ length: 50 }, (_, i) => String(i)).join('\n')
+    expect(bangText('c', long)).toContain('(the last 40 lines)')
+    expect(bangText('c', long)).not.toContain('\n9\n')
+  })
+})
+

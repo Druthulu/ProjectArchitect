@@ -50,7 +50,10 @@ PY = {{PY}}
 - Data: {{DATA_PATHS}}
 - Generated (never hand-edited, H1): {{GENERATED_PATHS}}
 - Hand-edited: {{HAND_EDITED_PATHS}}
-- Scratch: `.run/` (gitignored; never the system temp)
+- Scratch: all of a phase's work in `.run/` goes under `.run/<phase>/` (gitignored; never the system temp), nowhere
+  else in `.run/`. It is a temp folder only, never a home for long-term content: what the project needs lives in its
+  proper place in the repo. The phase's cleanup task checks it and
+  the close deletes it; a tool deletes its own temp folders when it finishes.
 
 ## Build / run / test <!-- roles: claude expert coder planner review auditor curator -->
 - Build: `{{BUILD_COMMAND}}`

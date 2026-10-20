@@ -47,6 +47,9 @@ Every expert reads it in a fresh context. Follow the task-line grammar: a task l
 the rest is added when it helps the expert: files and methods, a `verify:` command, the `coder:` tier, `effort:`
 (medium by default), the task summaries to read, dependencies, an `est-ctx`, and `review: yes` when the developer must
 sift results.
+The last task is always the phase cleanup: `- T<n> | title: phase cleanup | done-when: what the project still needs from
+.run/<phase>/ is in its proper place in the repo`. Its expert checks the phase's temp folder and moves what is still
+needed (or asks); the close deletes the folder once this task is done.
 `## Interfaces` carries the exact signatures and record shapes the tasks touch, with `file:line`, from retrievers.
 Each task line, or its context, names the research report (`R<N>-<nnn>`) that covers it; `## Research` lists every
 report the plan cites, and `## Cookbook` names the entries the tasks should consult; `## Risks` names what could invalidate the

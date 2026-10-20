@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  type BandAgent, bandCells, bandHex, bandRole, bandRows, bandStepOf, bandView, acceptedCard, claudeCard, claudeRows, elapsedText, borderOf, cardStyleOf, cardText, loopNoteOf, coderIdOf, FILES_MAX, finishCardOf, firstLine, noteCardOf, numstatOf, parseCard, ROLE_HEX, type Sender,
+  type BandAgent, bandCells, bandHex, bandRole, bandRows, bandStepOf, bandView, acceptedCard, claudeCard, claudeRows, receivedRow, elapsedText, borderOf, cardStyleOf, cardText, loopNoteOf, coderIdOf, FILES_MAX, finishCardOf, firstLine, noteCardOf, numstatOf, parseCard, ROLE_HEX, type Sender,
 } from './card'
 import { parseCoderReturn, parseExpertContract } from './contract'
 import { classify, isNote, noteBody } from './route'
@@ -205,6 +205,7 @@ describe('3.24 T13B: Claude\'s reply card, the new roles, the router\'s band par
     expect(claudeRows(agents, 'P1', 5_000).map(r => [r.role, r.name, r.step, r.elapsed])).toEqual([['claude', 'Claude', 'Write plan', '5s'], ['thinker', 'thinker', '', '4s']])
     expect(claudeRows(agents, '', 5_000)).toEqual([])
     expect(claudeRows([{ ...agents[0] as BandAgent, status: 'idle' }], 'P1', 5_000)).toEqual([])
+    expect(receivedRow(1_000, 13_000)).toEqual({ role: 'claude', name: 'Claude', task: '', step: 'received', elapsed: '12s' }) // 3.29 T3
     expect(loopNoteOf(false, 'abcdefgh-1234')).toBe('conversation only: the loop runs in abcdefgh')
     expect(loopNoteOf(true, 'abcdefgh-1234')).toBe('')
     expect(loopNoteOf(false, '')).toBe('')

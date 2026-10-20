@@ -91,7 +91,7 @@ import {
   contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, FIRST_RUN_WAITS, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
   archiveLines, bandLine, CHAIN_STEPS, closeNotice, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withPhaseSid,
-  installingNotice, loadedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
+  installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, RUN_REVIEW_OPTIONS, RUN_REVIEW_QUESTION, runReviewNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckState, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
   UPGRADE_MD, upgradeLeftNotice, upgradeOf, UPGRADE_ROUNDS, FORWARD_TTL_MS, SHELLS_FILE, shellNotice, shellsOf, shellsOut, waitingShell,
 } from './loop'
 import { APPROVED, changesAsked, DIALOG_FILE, dialogOpen, planFilePath } from './planview'
@@ -158,6 +158,17 @@ const HOLD_NAMES: readonly string[] = ['talk', 'review', 'question', 'plan', 'cl
 const MILESTONE = 'milestone: `PY tools/plan_edit.py show --section Milestone`'
 const DECIDE = 'Decide small changes inside the milestone yourself (plan_edit, then release({hold: "question", note})); ask the developer about the milestone or the scope.'
 const BUSY = new Set(['pending', 'running', 'waiting'])
+/** 3.29.1 T8: the releases that start work (resume a stop, go past a review or question, close); they wait for the gate. */
+const WORK_HOLDS = new Set(['stopped', 'review', 'question', 'close'])
+/** A request file's `release` hold, '' for any other kind or a bad file. */
+const holdOf = (text: string): string => {
+  try {
+    const o = JSON.parse(text) as { kind?: unknown; input?: { hold?: unknown } }
+    return o.kind === 'release' && typeof o.input?.hold === 'string' ? o.input.hold : ''
+  } catch {
+    return ''
+  }
+}
 const MEMORY_DIR = '.claude-state/memory'
 /** launch.py's mode, cached this long while no plan is installed (T6a2). */
 const GEN_MODE_MS = 30_000
@@ -220,6 +231,9 @@ function waitsOnShell(agentId: string | undefined, text: string, at: number): vo
 let modSeen: string | null = null
 let modStale = false
 let updWait = ''
+let startAt = 0 // 3.29.1 T8: this process's session start (ms): the update check's note must be this start's
+let pausedAskedSid = '' // 3.29.1 T9: the session Claude was asked about a paused task in (once a session start)
+let runReviewDue = false // 3.29.2: the one-time `.run/` cleanup is to be offered once the update gate opens
 let releaseCheckedAt = 0 // 3.28.1 T14: the 8-hour release check's last run (ms); 0 until the first tick
 let modLoaded = '' // 3.28.2 T17: the PA3 release this process loaded (`<pa3>/VERSION` at its session start)
 
@@ -649,7 +663,23 @@ export function armAutopilot(on: On): void {
         }
         // 3.23 T13d.c11: under `held(session)` the recovery is recorded; 3.28.1 T9c: it runs at once (no release needed).
         if (taken && s.state === 'running' && s.task !== null && !s.holds.some(h => h !== 'talk' && h !== 'session')) {
-          await save({ ...s, task: { ...s.task, recovery: { phase: 'start', at: now } } }, 'recover')
+          if (runReviewDue) {
+            // 3.29.7: an update's after-restart work (the one-time `.run/` cleanup) comes first: the task is held as
+            // stopped until it is done and the developer says to continue (Claude asks; release stopped).
+            const pt = s.task
+            await save(pushHold({ ...s, task: { ...pt, stopped: { at: now, status: 'post-update' }, recovery: null } }, 'stopped'), 'post-update.held')
+            await journal('mod', 'hold', { task: pt.id, agentId: pt.agentId },
+              `${pt.id} held at this session start: the update's after-restart work (the .run/ cleanup) comes first.`)
+          } else if ((s.task.paused ?? null) !== null) {
+            // 3.29.1 T9: paused on the developer's request: never recovered on its own; held as stopped, and once the
+            // update check lets work go on, Claude asks whether to resume (release stopped).
+            const pt = s.task
+            await save(pushHold({ ...s, task: { ...pt, stopped: { at: now, status: 'paused' }, recovery: null } }, 'stopped'), 'paused.held')
+            await journal('mod', 'hold', { task: pt.id, agentId: pt.agentId },
+              `${pt.id} was paused on the developer's request: not resumed at this session start; Claude asks.`)
+          } else {
+            await save({ ...s, task: { ...s.task, recovery: { phase: 'start', at: now } } }, 'recover')
+          }
         }
         loopAgent = s.task?.agentId ?? ''
         routedText = s.task?.lastRouted ?? ''
@@ -699,6 +729,13 @@ export function armAutopilot(on: On): void {
           }
           // 3.28.1 T14: the release the developer chose to install is installed: no task starts on the old code until
           // the restart (updateDoneNotice told Claude: /exit, then claude --continue); a toast says so too.
+          // 3.29.2: a run the start hook began records its release in the marker (`running`): installed, the statusline's
+          // "installed" stage until the restart; failed, the line goes. The mod's own install (below) does the same.
+          const hookRel = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+          if (releaseOf(s) === null && hookRel?.['state'] === 'running' && um.mode !== 'repair') {
+            const done = um.rc === 0 ? { ...hookRel, state: 'installed' } : {}
+            await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify(done)}\n`).catch(quiet)
+          }
           const rl = releaseOf(s)
           if (rl !== null && rl.step === 'running') {
             if (um.rc === 0 && !loaded) {
@@ -1023,6 +1060,13 @@ export function armAutopilot(on: On): void {
               await go('clear')
             } else if (step === 'clear') {
               await py('tools/status.py', 'clear')
+              // 3.29 T5: the phase's temp folder `.run/<phase>/` goes once the plan's phase-cleanup task is done; never a stop
+              try {
+                const sc = await py('tools/phaseend_index.py', 'scratch', phase)
+                await journal('mod', 'close', {}, clip((sc.stdout || sc.stderr).trim() || `scratch exit ${String(sc.exitCode)}`, 300))
+              } catch (err) {
+                await log('close.scratch', { err: clip(String(err), 300) })
+              }
               await go('recap')
             } else {
               const genEnd = s.chainGenEnd === true // T13b: the generation end is a stop (s is replaced by the save)
@@ -1159,7 +1203,7 @@ export function armAutopilot(on: On): void {
               const sent = await $.session.send({ to: { agentId: t.agentId }, text: stoppedText(note) })
               await log('release.resume', { agentId: t.agentId, delivered: sent.isDelivered, reason: sent.reason ?? '' })
               if (sent.isDelivered) {
-                await save({ ...r.state, task: { ...t, stopped: { at: await $.clock.now(), status: 'resumed' }, recovery: null } }, 'release:stopped resumed')
+                await save({ ...r.state, task: { ...t, stopped: { at: await $.clock.now(), status: 'resumed' }, recovery: null, paused: null } }, 'release:stopped resumed')
                 await journal('mod', 'hold', meta, `${t.id} stopped released: ${t.agentId} resumed under its id${note === '' ? '' : ` (${note})`}.`)
                 await reply('released: stopped (resumed)')
                 return
@@ -1396,12 +1440,35 @@ ${REPLAN_NOTICE}`)
           }
         }
 
+        // 3.29.8: `cleanup({summary})`: the one-time `.run/` cleanup's deletion. The list Claude wrote is checked
+        // (tools/run_cleanup.py --check: inside .run/, no PA3 entry, not the open phase); good, the mod's own picker asks
+        // the developer, and its yes (answered, below) is the approval: the mod deletes exactly those items.
+        const cleanupReq = async (req: Request): Promise<void> => {
+          const input = typeof req.input === 'object' && req.input !== null ? (req.input as Record<string, unknown>) : {}
+          const summary = strOf(input['summary']).trim()
+          const chk = await py('tools/run_cleanup.py', '--check', CLEANUP_LIST)
+          const out = (chk.stdout || chk.stderr).trim()
+          if (chk.exitCode !== 0) {
+            await confirm(`refused: the cleanup list did not pass its check, so nothing was asked or deleted:\n${clip(out, 1200)}`, req.caller)
+            return
+          }
+          nseq += 1
+          const at = await $.clock.now()
+          const q = requestFile(at, nseq, 'ask', 'loop', { question: cleanupQuestion(summary, out.split(/\r?\n/).pop() ?? ''), options: [...CLEANUP_OPTIONS] })
+          await $.fs.write(`${inboxDir}/${q.name}`, q.body)
+          await $.fs.write(`${root}/${CLEANUP_ASK}`, `${JSON.stringify({ asked: q.name.slice(0, -'.json'.length), caller: req.caller, at })}\n`).catch(quiet)
+          await journal('mod', 'decision', {}, `The .run/ cleanup list passed its check (${out}); the developer is asked.`)
+        }
+
         // `steer({task, text})` (T5c): a correction sent to the running task's expert, never a kill; `steerAt` keeps the run
         // from counting as ended until the expert's next turn.complete. The answer is `steered: T<n>` or `refused: …`.
         const steer = async (req: Request): Promise<void> => {
           const input = typeof req.input === 'object' && req.input !== null ? (req.input as Record<string, unknown>) : {}
           const id = typeof input['task'] === 'string' ? input['task'].trim() : ''
           const text = typeof input['text'] === 'string' ? input['text'].trim() : ''
+          // 3.29.1 T9: `pause: true` records the developer's pause (kept across a restart), `pause: false` clears it
+          const pause = typeof input['pause'] === 'boolean' ? input['pause'] : null
+          const pausePatch = (at: number): Partial<LoopTask> => (pause === true ? { paused: { at } } : pause === false ? { paused: null } : {})
           const reply = async (line: string): Promise<void> => {
             await confirm(line, req.caller) // 3.23 T13d.c3: a confirmation that only says done is journaled, not sent
             await log('steer', { id: req.id, task: id, line: clip(line, 200), sent: !quietReply(line) })
@@ -1418,6 +1485,9 @@ ${REPLAN_NOTICE}`)
           const at = await $.clock.now()
           if (await expertCold(t)) {
             if (await relaunchCold(t, text, 'a steer')) {
+              if (pause !== null && s.task !== null) {
+                await save({ ...s, task: { ...s.task, ...pausePatch(at) } }, pause ? 'paused' : 'unpaused')
+              }
               await journal('mod', 'steer', { task: id }, `${id} steered (a fresh expert): ${text}`)
               await reply(`steered: ${id} (its expert was cold: a fresh one has the correction)`)
               return
@@ -1429,7 +1499,7 @@ ${REPLAN_NOTICE}`)
             await reply(`refused: ${id} did not take the message (${clip(sent.reason ?? 'not delivered', 120)})`)
             return
           }
-          await save({ ...s, task: { ...t, steerAt: at } }, 'steer')
+          await save({ ...s, task: { ...t, steerAt: at, ...pausePatch(at) } }, pause === true ? 'steer.paused' : 'steer')
           await journal('mod', 'steer', { task: id, agentId: t.agentId }, `${id} steered: ${text}`)
           await reply(`steered: ${id}`)
         }
@@ -1507,6 +1577,25 @@ ${REPLAN_NOTICE}`)
             await save({ ...s, update: { ...u, answer } } as LoopState, 'update.answer')
           } else if (rel !== null && rel.asked !== '' && input['id'] === rel.asked) {
             await releaseAnswer(rel, /^install\b/i.test(answer)) // 3.28.1 T14
+          } else if (typeof input['id'] === 'string' && input['id'] !== '' &&
+            objectOf((await $.fs.read(`${root}/${RUN_REVIEW_MARKER}`).catch(() => null)) ?? '')?.['asked'] === input['id']) {
+            const go = /^clean\b/i.test(answer) // 3.29.3: the one-time `.run/` cleanup picker
+            await journal('mod', 'decision', {}, go ? 'The developer chose the one-time .run/ cleanup.' : 'The developer put off the one-time .run/ cleanup.')
+            await notice(runReviewNotice(go))
+          } else if (typeof input['id'] === 'string' && input['id'] !== '' &&
+            objectOf((await $.fs.read(`${root}/${CLEANUP_ASK}`).catch(() => null)) ?? '')?.['asked'] === input['id']) {
+            // 3.29.8: the deletion picker: yes deletes exactly the checked list (the tool checks it again first)
+            await $.fs.write(`${root}/${CLEANUP_ASK}`, '{}\n').catch(quiet)
+            if (/^delete\b/i.test(answer)) {
+              const del = await py('tools/run_cleanup.py', CLEANUP_LIST)
+              const out = clip((del.stdout || del.stderr).trim(), 1500)
+              await journal('mod', 'decision', {}, `The developer said yes to the .run/ cleanup; the mod ran it (exit ${String(del.exitCode)}):\n${out}`)
+              await notice(`‹pa› The developer said yes in the cleanup picker, and the mod ran the deletion (exit ${String(del.exitCode)}):\n${out}\n` +
+                'Tell them the result in plain words now. If this was an update\'s after-restart work, then ask "Ready to continue work?".')
+            } else {
+              await journal('mod', 'decision', {}, 'The developer said not now to the .run/ cleanup deletion.')
+              await notice('‹pa› The developer said not now in the cleanup picker: nothing was deleted. Tell them in one line; the list stays in .run/mod/cleanup.json if they want it later.')
+            }
           } else {
             await log('answer.skip', { id: req.id, for: input['id'] })
           }
@@ -1861,10 +1950,19 @@ ${REPLAN_NOTICE}`)
         if (await dialogIsOpen()) {
           return
         }
+        // 3.29.1 T8: the session start's update gate (used below): this start's check, a running update, the stale mod.
+        const startState = startCheckState(await $.fs.read(`${root}/${START_CHECK}`).catch(() => null), sidNow, startAt, now)
+        const gateWhy = startState === 'pending' ? 'the update check has not answered'
+          : runRunning(markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)), now) ? 'an update is running'
+            : modStale ? 'the new mod is not loaded yet' : ''
         // The loop's own inbox kinds, oldest first, each marked done in loop.json before it acts.
         if (await $.fs.exists(inboxDir)) {
           const names = (await $.fs.list(inboxDir)).filter(f => f.kind === 'file').map(f => f.name)
           for (const name of pendingRequests(names, doneOf(s), now).filter(isLoopKind)) {
+            // 3.29.1 T8: a release that would start work waits, unread, until the update gate opens
+            if (gateWhy !== '' && WORK_HOLDS.has(holdOf(await $.fs.read(`${inboxDir}/${name}`).catch(() => '')))) {
+              continue
+            }
             const id = name.slice(0, -'.json'.length)
             const kept = Object.fromEntries(Object.entries(doneOf(s)).filter(([, at]) => now - at <= DONE_TTL_MS))
             await save({ ...s, inboxDone: { ...kept, [id]: now } } as LoopState, '')
@@ -1877,6 +1975,8 @@ ${REPLAN_NOTICE}`)
               await planEdit(req)
             } else if (req.kind === 'steer') {
               await steer(req)
+            } else if (req.kind === 'cleanup') {
+              await cleanupReq(req)
             } else if (req.kind === 'forward') {
               await forwarded(req)
             } else if (req.kind === 'install') {
@@ -1932,6 +2032,33 @@ ${REPLAN_NOTICE}`)
             }
           }
           return
+        }
+        // 3.29.1 T8: no work (the close chain, the first run, a plan, a recovery, a task) until this session's update check
+        // has answered, none while an update runs, and none until its restart loads it (modStale). The developer's
+        // requests, update runs and installs above still go.
+        if (gateWhy !== updWait) {
+          updWait = gateWhy
+          await log('update.wait', { why: gateWhy })
+          if (gateWhy === '' && startState === 'timeout') {
+            await journal('mod', 'hold', {}, `The update check had not answered ${String(START_CHECK_WAIT_MS / 1000)} s after the session start; work goes on.`)
+          }
+        }
+        if (gateWhy !== '') {
+          return
+        }
+        // 3.29.2: the one-time `.run/` cleanup offer (3.29 T6), after the update check and any restart it needed.
+        if (runReviewDue) { // 3.29.3: the mod's picker; the answer comes back through `answered`, matched by the marker
+          runReviewDue = false
+          nseq += 1
+          const q = requestFile(now, nseq, 'ask', 'loop', { question: RUN_REVIEW_QUESTION, options: [...RUN_REVIEW_OPTIONS] })
+          await $.fs.write(`${inboxDir}/${q.name}`, q.body)
+          await $.fs.write(`${root}/${RUN_REVIEW_MARKER}`,
+            `${JSON.stringify({ offered: modLoaded, at: now, asked: q.name.slice(0, -'.json'.length) })}\n`).catch(quiet)
+        }
+        // 3.29.1 T9: after the update check, a task paused on the developer's request: Claude asks, once a session start.
+        if (s.task !== null && s.task.stopped?.status === 'paused' && s.holds.includes('stopped') && pausedAskedSid !== sidNow) {
+          pausedAskedSid = sidNow
+          await notice(pausedNotice(s.task.id))
         }
         // The close chain (T6b) runs before the no-plan path: the archive moves the plan away mid-chain.
         if (s.state === 'closing') {
@@ -2467,6 +2594,8 @@ ${REPLAN_NOTICE}`)
     updWait = ''
     releaseCheckedAt = 0
     apRearm = arm
+    startAt = await $.clock.now() // 3.29.1 T8: the update check's note must be this start's
+    pausedAskedSid = ''
     // 3.28.2 T17: the release this process loads (the tick's update report and release record compare with it).
     const pa3 = ((await $.env.get('PA_MOD_PA3_DIR')) ?? '') ||
       `${((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')}/.claude/pa3`
@@ -2482,7 +2611,23 @@ ${REPLAN_NOTICE}`)
         const r = noticeRequest(await $.clock.now(), nseq, loadedNotice(v))
         await $.fs.write(`${root}/.run/mod/${sid}/inbox/${r.name}`, r.body).catch(quiet)
       }
-      await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet) // 3.28.1 T14: the restart loaded it
+      // 3.28.1 T14: the restart loaded it. 3.29.2: but a release still installing (the start hook's run) stays.
+      if (v === installed || relm?.['state'] !== 'running') {
+        await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
+      }
+    }
+    // 3.29 T6: the one-time `.run/` cleanup, offered once per project when `.run/` holds work from before 3.29.
+    // 3.29.5: a marker counts once the picker was shown (`asked`, '' when there was nothing to offer); an older one
+    // (3.29-3.29.2's plain-text offer, easy to miss) gets the picker at the next start
+    const rvm = objectOf((await $.fs.read(`${root}/${RUN_REVIEW_MARKER}`).catch(() => null)) ?? '')
+    if (rvm === null || typeof rvm['asked'] !== 'string') {
+      const names = (await $.fs.list(`${root}/.run`).catch(() => [])).map(f => f.name)
+      const logs = (await $.fs.list(`${root}/.run/logs`).catch(() => [])).length
+      // 3.29.2: offered once the update gate opens (the tick), never before an update and its restart; marked then
+      runReviewDue = olderRunWork(names, logs)
+      if (!runReviewDue) {
+        await $.fs.write(`${root}/${RUN_REVIEW_MARKER}`, `${JSON.stringify({ offered: '', asked: '', at: await $.clock.now() })}\n`).catch(quiet)
+      }
     }
     await arm(sid, true)
     return out
