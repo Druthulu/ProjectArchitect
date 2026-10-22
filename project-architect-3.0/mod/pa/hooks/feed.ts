@@ -250,6 +250,9 @@ export function speakerOf(rec: FeedRecord, partnerId: string, sender: Sender): S
   if (rec.type === 'planner-gen' || rec.type === 'planner-phase' || rec.type === 'pa-planner') { // 3.24 T17b: pa-planner
     return { role: 'planning', label: 'Planning' }
   }
+  if (rec.type === 'ext-coder') { // 3.3 T7: an external coder's record (tools/pa_ext.py), titled by its brief's id
+    return { role: 'coder', label: rec.desc === '' ? 'External coder' : `External coder · ${rec.desc}` }
+  }
   if (sender.role === 'expert') {
     return { role: 'expert', label: titled('Expert', sender.task) }
   }

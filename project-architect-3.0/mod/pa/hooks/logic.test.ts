@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { decide, errorText, ledgerPath, paSetting, releaseOf, heartbeatText, versionAtLeast, versionOf } from './activation'
 import { clip, eventFile, isStale, pruneArgv } from './debug'
-import { handle, parseRequest, parseRequestName, pendingRequests, requestName } from './inbox'
+import { handle, parseRequest, parseRequestName, pendingRequests, requestName, RETRIEVE_TYPE } from './inbox'
 import { defaultState, lastJson, markDone, parseLast, parseState, pruneDone, serializeState, STATE_V } from './state'
 
 const ON = '{"mod":"on","warmer":"off","upgrade":"ask"}'
@@ -35,6 +35,12 @@ describe('activation', () => {
     expect(decide(ON, undefined, 'dev').active).toBe(false)
     expect(versionAtLeast('2.1.300-dev.20260920', '2.1.292')).toBe(true)
     expect(versionAtLeast('x', '2.1.292')).toBe(null)
+    // 3.3 T7: a two-part version (VERSION 3.30) reads as x.y.0.
+    expect(versionAtLeast('3.30', '3.30')).toBe(true)
+    expect(versionAtLeast('3.29.9', '3.30')).toBe(false)
+    expect(versionAtLeast('3.30', '3.29.9')).toBe(true)
+    expect(versionAtLeast('3.30.1', '3.30')).toBe(true)
+    expect(versionAtLeast('3', '3.30')).toBe(null)
     expect(versionOf({ version: '2.1.293-dev.20261001.t1.sha1', base: '2.1.293-dev' })).toBe('2.1.293-dev')
     expect(versionOf({ version: '2.1.293' })).toBe('2.1.293')
   })
@@ -125,6 +131,22 @@ describe('inbox', () => {
     expect(handle({ id: '1-2-topic', kind: 'topic', caller: 'P1', input: {}, at: 1 }).at(-1)).toEqual({ do: 'topic', agentId: 'P1' })
     expect(handle({ id: '1-3-ask', kind: 'ask', caller: 'P1', input: { question: 'A or B?' }, at: 1 })[1])
       .toEqual({ do: 'toast', cause: 'input', body: 'A or B?' })
+  })
+
+  test('3.3 T7: retrieve: a question and an answer .md inside <root>/.run/mod/, else retrieve.bad', async () => {
+    const req = (input: unknown) => ({ id: '1-4-retrieve', kind: 'retrieve', caller: 'pa_ext', input, at: 1 })
+    const ok = { question: 'Where is X?', label: 'T4.c1', answer: '/r/.run/mod/ext/a1.md' }
+    expect(handle(req(ok), '/r').at(-1)).toEqual({ do: 'retrieve', question: 'Where is X?', label: 'T4.c1', answer: '/r/.run/mod/ext/a1.md' })
+    // Windows paths compare forward-slashed, the drive letter in either case.
+    expect(handle(req({ ...ok, answer: 'z:\\p\\.run\\mod\\a.md' }), 'Z:\\p\\').at(-1)?.do).toBe('retrieve')
+    const bad = (input: unknown): unknown => handle(req(input), '/r').at(-1)
+    expect(bad({ ...ok, question: '  ' })).toEqual({ do: 'log', kind: 'retrieve.bad', data: { id: '1-4-retrieve', answer: ok.answer } })
+    expect(bad({ ...ok, answer: '/r/.run/other/a1.md' })).toMatchObject({ kind: 'retrieve.bad' })
+    expect(bad({ ...ok, answer: '/elsewhere/.run/mod/a1.md' })).toMatchObject({ kind: 'retrieve.bad' })
+    expect(bad({ ...ok, answer: '/r/.run/mod/../../etc/a1.md' })).toMatchObject({ kind: 'retrieve.bad' })
+    expect(bad({ ...ok, answer: '/r/.run/mod/a1.txt' })).toMatchObject({ kind: 'retrieve.bad' })
+    expect(handle(req(ok)).at(-1)).toMatchObject({ kind: 'retrieve.bad' }) // no root: refused
+    expect(RETRIEVE_TYPE).toBe('retriever-code')
   })
 })
 

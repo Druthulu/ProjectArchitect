@@ -153,6 +153,17 @@ describe('the band (3.23 T13)', () => {
     ])
   })
 
+  test('3.30: an external coder\'s shell is drawn as pa-coder, its task from the label, its latest step (3.30.3: no model)', () => {
+    const agents = [ag({ id: 'E1', description: 'T11 crack wave', since: 0 })]
+    const shells = { E1: [{ id: 'b1', name: 'external T11.cG05', at: 0, type: 'pa-expert' },
+      { id: 'b2', name: 'external T11.cG06', at: 0, type: 'pa-expert', exit: 1 }] }
+    const ext = { 'T11.cG05': 'Created  .run/P40/c0.c' }
+    expect(bandRows(agents, [{ id: 'E1', task: 'T11' }], 240_000, shells, ext).slice(1)).toEqual([
+      { role: 'coder', name: 'pa-coder', task: 'T11 · cG05', step: 'Created .run/P40/c0.c', elapsed: '4m' },
+      { role: 'coder', name: '✗ pa-coder', task: 'T11 · cG06', step: '', elapsed: '4m' },
+    ])
+  })
+
   test('cells fit the columns: the dim cell gives way first, then the task, then the name', () => {
     const r = { role: 'coder', name: 'coder-opus55', task: 'T3 · c1', step: 'Edit route.ts', elapsed: '4m' }
     expect(bandCells(r, 80)).toEqual({ name: 'coder-opus55', task: ' T3 · c1', dim: '  Edit route.ts · 4m' })

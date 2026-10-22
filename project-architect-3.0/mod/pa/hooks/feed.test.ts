@@ -204,6 +204,13 @@ describe('every agent names its model and effort (3.24 T17b)', () => {
   test('the planner speaks as Planning', async () => {
     expect(speakerOf(rec(1, 'L1', 'Reading.', 'pa-planner'), 'P1', { role: 'other', task: '', coder: '' })).toEqual({ role: 'planning', label: 'Planning' })
   })
+  test('3.3 T7: an external coder speaks as a coder titled by its brief id; its model name as given', async () => {
+    const ext = { ...rec(1, 'ext-T4.c1', 'Editing.', 'ext-coder'), desc: 'T4.c1' }
+    expect(speakerOf(ext, 'P1', { role: 'expert', task: 'T4', coder: '' })).toEqual({ role: 'coder', label: 'External coder · T4.c1' })
+    expect(speakerOf({ ...ext, desc: '' }, 'P1', { role: 'other', task: '', coder: '' })).toEqual({ role: 'coder', label: 'External coder' })
+    expect(announces(ext, 'P1')).toBe(true)
+    expect(shownOf('DeepSeek V4.1 Flash', '')).toBe('DeepSeek V4.1 Flash')
+  })
 })
 
 describe('3.24 T17g: Claude\'s reply cards name their model and effort', () => {

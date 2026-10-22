@@ -2,6 +2,110 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.30.7 — Running side by side no longer counts against a model
+
+- When two external coders run at once on Linux, their sandboxes can collide and one command fails before it runs;
+  the coder just runs it again. That no longer counts against the run, so running several coders at once can't put a
+  model back to one at a time by itself. Refusals, read-guard blocks and the expert's notes still count.
+
+## 3.30.6 — External coders get your project's memory too
+
+- An external coder now starts with your project's memory index (Claude Code's MEMORY.md for the project), as
+  in-house coders always have, beside the CLAUDE.md and house rules it already had. When the memory folder is inside
+  the project, it is told where the linked files are so it can read them.
+
+## 3.30.5 — A judge that costs a cent
+
+- PA3's judge for external coders now reads only PA3's short policy and the command, about a cent of your plan per
+  call. Before, every call also carried Claude Code's whole auto-mode rulebook (about 29,500 tokens, re-sent fresh
+  each time): about 24 cents a call, and in bfm about 11 points of a week's usage in a single day. The policy now sits
+  where the cache answers it, so only the command is new each time.
+- The judge reads a coder's command and its description as text to judge, never as instructions, so a coder can't
+  talk its way past it.
+- Each external coder starts a little sooner: PA3 no longer reads auto mode's settings before every run.
+
+## 3.30.4 — Learning mode can end
+
+- A model new to your project leaves learning mode (one external coder at a time) after its first run with nothing
+  refused, no failures and nothing the expert had to note. Before, every command PA3's judge allowed and remembered
+  counted against the run, and since coders write new helper scripts for each batch, no run could ever come back
+  clean.
+
+## 3.30.3 — External coders show their context; no needless restart
+
+- An external coder's statusline row now ends with its context (`· 48k tokens`), as Claude Code shows its own
+  subagents, instead of "expert waiting"; one that ended keeps its last. Its row in the bands above the text input no
+  longer repeats its model, which the statusline row names.
+- After an update you ran by hand before starting Claude Code, Claude no longer asks for a restart: that start already
+  loaded it.
+
+## 3.30.2 — An update always tells you to restart
+
+- When PA3 updates itself as a session starts, that session now knows it is still running the old code: it no longer
+  says the new release is loaded, the statusline shows the install going on, and when the install ends Claude tells
+  you to restart (`/exit`, then `claude --continue`) and starts no work until you do. Before, a session could announce
+  the new release as loaded and carry on with the old code.
+- When the start's update check gets no answer in time, Claude tells you in one line, instead of the statusline's
+  "checking for updates" just disappearing.
+- PA3's own tests follow a change in Claude Code 2.1.307's test kit; nothing changes in your sessions.
+
+## 3.30.1 — Your order comes first; external coders learn as they go
+
+- A task you pause stays paused through any restart, a quick `/exit` and `claude --continue` included, and when its
+  expert hands back. Claude asks you before it goes on.
+- When you want other work first while a task is stopped or paused, the plan changes Claude makes for you take effect
+  at once, and the waiting task is set aside instead of resumed: it keeps its progress and picks up where it left off
+  when its turn comes back. A task cut off by a restart is set aside the same way when the plan no longer has it next,
+  and a task marked blocked counts as set back too.
+- External coders now get the judgment your in-house coders get from auto mode. A command no rule covers yet goes to
+  PA3's judge (Opus 5.5 with auto mode's own rules), which decides once; the project remembers the decision, so the
+  same command is never judged again, and you are never asked.
+- External coders are kept to your project: they read and write only inside it (a folder outside it that a project's
+  tools need can be declared once), never your home folder, keys or logins, and never the network. A coder that needs
+  the web says so, and its expert looks it up with the web retriever.
+- A model new to a project runs one external coder at a time until one of its runs comes back clean; then it gets
+  the project's usual number. Projects that run one coder at a time see no change.
+- After each external coder, its expert acts on the report at once: it corrects the coders still running, adjusts its
+  next brief, and writes down what a later coder needs. Each note reaches you as a one-line FYI with its undo, and
+  nothing waits for you.
+
+## 3.30 — External coders
+
+- A task's coding can now run on a cheaper model outside your subscription: DeepSeek or GLM through OpenRouter for
+  now, local models next. Experts, retrievers, the planner and Claude stay on Claude. External coders run at high
+  effort unless you ask Claude for another.
+- An external coder is our own coder, with the same instructions, house rules and allow and deny rules, running in
+  its own Claude Code process on your key. Its steps show on its card in your session ("External coder · T4.c1 ·
+  DeepSeek V4.1 Flash 1017"), its lookups go to PA3's Haiku retriever, corrections reach it at its next step, it is
+  journaled like any coder, and a run cut off by a restart picks up where it stopped. A run that fails goes to an
+  in-house coder.
+- To set it up, run `setup-external` once per machine. It asks for the key with hidden typing and tests each model.
+  It then lists each model's hosts by precision and price and tells you which to allow in the key's guardrail on
+  OpenRouter. Claude then asks how and when you want external coders in each project and writes that down.
+- What external coders spend is cash on your key, never subscription usage. From the first external coder's start,
+  the statusline shows a line `External · tokens · $ spent · $ left`, updated while they work ($0 for a free model).
+  At each session start, Claude mentions external coders in a project that has not set them up, until you set them
+  up or say to stop.
+- On the band and the statusline an external coder shows as a coder, `pa-coder T4 · c1` with its model and its
+  latest step, and the session's token counter on the model line (`170k/∞`) includes what external coders read.
+- External coders are journaled like in-house ones, their reasoning included, and at the same context size
+  (350k tokens) they save their progress and hand off to a fresh coder, instead of running until the model's window
+  stops them.
+- PA3 learns from each external run. A finished coder's report lists the commands it was refused and other friction;
+  the expert proposes fixes, and Claude asks you. What you approve is kept: an allow rule for the project, or a note
+  that every later coder gets, for this project or for that model in all your projects. After a phase in which
+  external coders ran, the auditor reviews all their runs: which fixes worked, what still hurts, and how the project
+  should use its external coders.
+- A task that stopped, or stopped on a question, and that you then cancel or put back in line is no longer restarted
+  when work goes on: the loop starts the plan's next task instead.
+- Your projects learn again. Since PA3 3.2 no step banked the techniques experts found: task summaries marked them for
+  the cookbook, and nothing put them there. Now each expert banks what a coder learned as soon as that coder reports,
+  before it starts the next one, by your project's own cookbook guidelines. Once per project, a picker offers a
+  one-time task that banks the lessons still waiting in your task summaries.
+- An expert cut off mid-task (a closed terminal, a crash) used to leave the expert that takes over only a digest of
+  the journal. Each expert now keeps a progress note, updated each time a coder reports, and the one that takes over
+  reads it.
+
 ## 3.29.9 — Your main session never fills up
 
 - Your PA3 session no longer stops with Claude Code's “Context limit reached”. No model reads the main session, and each reply the mod makes there now says so, so you can keep one session open for as long as you like.

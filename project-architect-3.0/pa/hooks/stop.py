@@ -22,6 +22,9 @@ Toast policy (design A section C.2):
     :func:`pa.hooks.toast`);
   * 3.24 T3.2: a governed project is always a mod session: the mod raises its own
     toast (skip ``mod``) and its hidden stub turn neither sets nor clears the marker.
+
+3.3: an external coder (``PA_EXT`` set) only records: no waiting marker, no toast, no savings, no
+liveness sweep; its turns are booked and model-checked (a Claude model in a child still alarms).
 """
 
 import json
@@ -29,7 +32,7 @@ import os
 import time
 
 from .. import log, notify, running
-from . import (close_db, drain_spool, governed, now_iso, open_db, pinned_for,
+from . import (close_db, drain_spool, ext_child, governed, now_iso, open_db, pinned_for,
                project_config, project_name, read_offset, role_of, session_pre_install,
                sid_of, status_patch, toast, waiting_clear, waiting_write, write_offset)
 
@@ -57,13 +60,16 @@ def run(inp, cfg):
         message = _last_assistant_text(inp.get("transcript_path"))
     root = governed(inp)
     pcfg = project_config(root)
+    child = ext_child()
 
     live = running.session(sid)
     waiting = _waiting_reason(message, root, live.get("started"))
     background = _running_children(inp.get("background_tasks"))
 
     # waiting marker and toast before the ledger: the 8 s watchdog ate a close toast (3.9.5 T6)
-    if message.strip() == MOD_STUB:                                # 3.22: a hidden stub turn
+    if child:                                                        # 3.3: an external coder
+        pass                                                          # never waits on the developer
+    elif message.strip() == MOD_STUB:                                # 3.22: a hidden stub turn
         pass                                                          # neither sets nor clears it
     elif waiting:
         waiting_write(sid, {"reason": waiting, "agent": inp.get("agent_type") or "main",
@@ -72,7 +78,8 @@ def run(inp, cfg):
             status_patch(root, {"waiting": waiting})
     else:
         waiting_clear(sid)
-    _maybe_toast(cfg, inp, sid, message, waiting, background, pcfg)
+    if not child:
+        _maybe_toast(cfg, inp, sid, message, waiting, background, pcfg)
 
     conn = open_db()
     try:
@@ -80,7 +87,8 @@ def run(inp, cfg):
         _ingest(conn, cfg, inp, sid)
         _refresh_children(conn, cfg, sid)
         _stamp_cost(conn, sid, cost)
-        _book_main_savings(conn, cfg, sid, root, live.get("started"))
+        if not child:
+            _book_main_savings(conn, cfg, sid, root, live.get("started"))
         drain_spool(conn, sid, cfg)
         _rebuild(conn, cfg)
         _restamp_phase(conn, sid, root)
@@ -88,6 +96,8 @@ def run(inp, cfg):
         close_db(conn)
 
     running.touch(sid)
+    if child:
+        return None
     _repair_savings_flag(cfg, inp, sid, root)
 
     # sweep finished agents that missed their SubagentStop

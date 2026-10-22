@@ -781,6 +781,19 @@ describe('background shells (3.28.1 T15)', () => {
     await $.tool.call({ tool: 'SendMessage', to: 'E1', message: 'STATUS: blocked', agentId: 'C1' } as never)
     expect(shells(m)).toEqual({})
   })
+
+  test('3.3 T7: a pa_ext.py run is named external <brief stem>; other commands as before', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
+    let n = 0
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `x${String(n += 1)}` } }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: '"C:/py/python.exe" tools/pa_ext.py run openrouter/deepseek .run/3.40/ext/T4.c1.md', run_in_background: true, agentId: 'C1' } as never)
+    await $.tool.call({ tool: 'Bash', command: '"C:/py/python.exe" tools/pa_ext.py run openrouter/deepseek .run/3.40/ext/T4.c2.md', run_in_background: true, agentId: 'C1' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'python tools/pa_ext.py say x', run_in_background: true, agentId: 'C1' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'make gate', run_in_background: true, agentId: 'C1' } as never)
+    expect(shells(m)['C1']?.map(s => s.name)).toEqual(['external T4.c1', 'external T4.c2', 'pa_ext.py', 'make'])
+  })
 })
 
 // 3.29.9: the router's display trim: the watcher answers the router's `pa-trim` compaction of the main conversation with

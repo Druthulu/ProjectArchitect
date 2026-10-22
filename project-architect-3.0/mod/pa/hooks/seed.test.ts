@@ -92,8 +92,8 @@ describe('seed', () => {
   })
 
   test('a session boundary line after the earlier session; none after the current one', async () => {
-    const old = 'aaaaaaaa-0000-4000-8000-000000000104'
-    const cur = 'bbbbbbbb-0000-4000-8000-000000000119'
+    const old = 'aaaaaaaa-0000-4000-8000-000000000105'
+    const cur = 'bbbbbbbb-0000-4000-8000-00000000011a'
     const entries = [e(1, 'dev', 'Q1', old), e(2, 'partner', 'A1', old), e(3, 'dev', 'Q2', cur), e(4, 'partner', 'A2', cur)]
     const s = buildSeed(entries)
     const ended = '— session aaaaaaaa ended; its agents are gone —'

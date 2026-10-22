@@ -27,7 +27,8 @@ STATUSES = ("done", "next", "queued", "blocked", "superseded")
 KNOWN_KEYS = ("coder", "effort", "title", "files", "done-when", "verify",
               "reads", "deps", "est-ctx", "review", "wait-for", "note")
 REQUIRED_KEYS = ("done-when",)  # was ("coder", "effort", "files", "done-when", "verify", "deps"); 3.25 T4
-CODERS = ("opus55", "none")  # was ("opus55", "sonnet", "none")
+CODERS = ("opus55", "none", "in-house")  # was ("opus55", "none"); was ("opus55", "sonnet", "none")
+EXT_CODER_RE = re.compile(r"^[a-z0-9][a-z0-9-]*/[a-z0-9][a-z0-9-]*$")  # 3.3 T6: <config>/<alias>, an external coder
 _LEGACY_CODERS = ("opus46", "sonnet")  # accepted by lint on existing plans, not offered by add-task
 DASH = "—"          # em dash, the "empty" marker in task lines
 TASK_RE = re.compile(r"^\s*-\s+(T[0-9]+(?:\.[0-9]+)*)\s*\|")
@@ -446,7 +447,7 @@ def brief_line(task):
     title = task.get("title", "-")[:100]
     return "%s | %s | %s | coder: %s | effort: %s | review: %s | wait-for: %s | title: %s" % (
         task.id, task.status, _run_agent(task.agent),
-        task.get("coder", "opus55"), task.get("effort", "medium"),
+        task.get("coder", "") or "-", task.get("effort", "medium"),
         rv, wf or DASH, title)
 
 
@@ -465,7 +466,7 @@ def task_json(task):
     wf = task.get("wait-for", "").strip()
     return {
         "id": task.id, "status": task.status, "agent": _run_agent(task.agent),
-        "coder": val("coder") if "coder" in task.fields else "opus55",
+        "coder": val("coder"),  # 3.3 T6: null without a coder field (the mod applies pa.json's default); was "opus55"
         "effort": val("effort") if "effort" in task.fields else "medium",
         "review": task.get("review", "no").strip().lower() in ("yes", "y"),
         "wait_for": None if wf in ("", "-", DASH, "none", "no") else wf,
@@ -676,12 +677,17 @@ def _run_agent(agent):
     return _RETIRED_AGENTS.get(agent, agent)
 
 
+def coder_ok(coder):
+    """opus55, none, in-house or <config>/<alias> (the syntax only; the launcher checks the config exists)."""
+    return coder in CODERS or bool(EXT_CODER_RE.match(coder))
+
+
 def _check_coder(coder):
     """--coder takes any string; a retired or unknown value is refused in one line."""
     if coder in _LEGACY_CODERS:
-        die("coder '%s' is retired: use opus55 or none" % coder)
-    if coder and coder not in CODERS:
-        die("unknown coder '%s': use opus55 or none" % coder)
+        die("coder '%s' is retired: use opus55, in-house, none or <config>/<alias>" % coder)
+    if coder and not coder_ok(coder):
+        die("unknown coder '%s': use opus55, in-house, none or <config>/<alias>" % coder)
 
 
 def cmd_reopen(a, root, path, text, explicit):
@@ -944,8 +950,8 @@ def cmd_lint(a, root, path, text, explicit):
             # 3.11 T13 (developer): a warning, never a failure, so approvals and the bench's grading stay as they were
             warns.append("line %d: %s no 'title:' (the statusline and the expert's label show it)" % (n, t.id))
         coder = t.get("coder")
-        if coder and coder not in CODERS and coder not in _LEGACY_CODERS:
-            problems.append("line %d: %s coder '%s' not in %s"
+        if coder and not coder_ok(coder) and coder not in _LEGACY_CODERS:
+            problems.append("line %d: %s coder '%s' not in %s|<config>/<alias>"
                             % (n, t.id, coder, "|".join(CODERS)))
         if t.agent in _RETIRED_AGENTS:
             notes.append("note: %s names the retired %s; it runs %s"
@@ -1025,7 +1031,7 @@ GRAMMAR = """Task-line grammar (3.25: the loose line):
 Everything else is optional at its default; parts are separated by ` | `:
   status (positional, after the id): done|next|queued|blocked|superseded (default queued)
   agent (positional, after the status): pa-expert (default; an old expert-* name reads as pa-expert)
-  coder: opus55|none (default opus55) | effort: medium|high (default medium)
+  coder: opus55|in-house|none|<config>/<alias> (default pa.json's external coder, else opus55) | effort: medium|high (default medium)
   files, verify, reads, deps, est-ctx, wait-for: <value or -> (default none) | review: yes|no (default no)
 A `key: value` part is a key, never the status or the agent.
 IDs are immutable; a reopened T3 becomes T3.1. Indented continuation lines belong to the task above."""

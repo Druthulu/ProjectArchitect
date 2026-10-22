@@ -104,7 +104,8 @@ commit (N counts the agent's changes for its lifetime and never resets: `3.10.5`
 
 ## 7. Knowledge capture
 Consult before, capture after. Grep `cookbook/INDEX.md` and `rules/INDEX.md` for the task's subjects before recurring
-work; add a technique with `bash tools/cookbook_add.sh`, never by editing a giant file. Every task ends with a full log
+work; add a technique with `bash tools/cookbook_add.sh`, never by editing a giant file. The expert banks what each coder
+learned when that coder reports, before it spawns the next coder. Every task ends with a full log
 (`logs/T<n>.md`) and a summary (`tasks/T<n>.md`, ≤ 150 lines); the next task reads summaries only. Retriever findings go to
 `research/R<N>-<nnn>.md` through `{{PY}} tools/research_add.py`; experts cite report ids and never read the bodies. Mark
 gotchas `generalizable:` (→ cookbook) or `workflow:` (→ a skill via `{{PY}} tools/skill_add.py`). Mark

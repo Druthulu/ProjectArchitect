@@ -24,8 +24,8 @@ import json
 import os
 
 from .. import handoff, log, prices, running
-from . import (agent_of, agent_transcript, close_db, find_project_root, governed, now_iso,
-               open_db, pinned_for, project_config, role_of, sid_of, spool_event,
+from . import (agent_of, agent_transcript, close_db, ext_child, find_project_root, governed,
+               now_iso, open_db, pinned_for, project_config, role_of, sid_of, spool_event,
                status_read, toast)
 
 MANAGED_RECORD = (".claude", "pa3-managed.json")         # pa/install/managed.py RECORD
@@ -407,10 +407,10 @@ def _main_credit(inp, cfg, tool):
     # in a PostToolUse payload); fall back to inp for future-proofing.
     model = (req.get("model") if req else None) or inp.get("model")
 
-    # Credit rows (Bash/Read only, needs governed root)
+    # Credit rows (Bash/Read only, needs governed root; 3.3: never in an external coder, no savings)
     credit_rows = []
     read_rel = None
-    if tool in ("Bash", "Read") and root:
+    if tool in ("Bash", "Read") and root and not ext_child():
         if tool != "Bash" or os.path.isdir(os.path.join(root, ".run", "credit")):
             credit_rows, read_rel = _build_credit_rows(tool, inp, root, sid, run_id, model, cfg)
 

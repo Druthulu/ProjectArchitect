@@ -27,7 +27,7 @@ from pa import ledger_cli  # noqa: E402
 from pa.ledger_cli import PRICE_TOLERANCE  # noqa: E402
 from pa import paths  # noqa: E402
 
-SID = "11111111-0000-4000-8000-000000000016"
+SID = "11111111-0000-4000-8000-000000000017"
 SLUG = "Z--Test-Proj"
 AGENT = "a1b2c3d4000000007"
 TOOL_USE_ID = "toolu_01SYNTH00000000000000159"
@@ -36,8 +36,8 @@ CWD = "Z:/Test/Proj"
 TOTAL_COST_USD = 5.0
 
 VANTAGE = ("C:/Users/you/.claude/projects/Z--Storage-git-Vantage/"
-           "e2eed858-0000-4000-8000-000000000160.jsonl")
-VANTAGE_SID = "e2eed858-0000-4000-8000-000000000160"
+           "e2eed858-0000-4000-8000-000000000161.jsonl")
+VANTAGE_SID = "e2eed858-0000-4000-8000-000000000161"
 SNIPPET = os.path.join(ROOT, "settings", "user.snippet.json")
 HOOK_PROBE = os.path.join(os.path.dirname(ROOT), "tools", "analysis", "hook_probe.py")  # 3.11 T27: dev repo
 _HAS_GIT = shutil.which("git") is not None
@@ -404,7 +404,7 @@ class RecalcTest(CliTestCase):
         future relative to the check's t0, in a session that has not ended) must not
         show up as a diff (T5.c2). A closed session never receives new turns."""
         run_cli("recalc", "--root", self.projects, "--account", "dev@example.com")
-        live = "99999999-0000-4000-8000-0000000000e8"
+        live = "99999999-0000-4000-8000-0000000000e9"
         conn = self.conn()
         try:
             db.upsert_session(conn, {"session_id": live, "account": "dev@example.com",
@@ -571,7 +571,7 @@ class RecalcSeveralSessionsTest(CliTestCase):
 
         from pa import fit, log, summary
 
-        sid2, sid3 = "22222222-0000-4000-8000-00000000002f", "33333333-0000-4000-8000-000000000049"
+        sid2, sid3 = "22222222-0000-4000-8000-000000000030", "33333333-0000-4000-8000-00000000004a"
         build_dated_session(self.projects, sid2, "b2c3d4e5f6071829a", "toolu_02PaTest02", "2026-09-15")
         build_dated_session(self.projects, sid3, "c3d4e5f60718293ab", "toolu_03PaTest03", "2026-09-16")
         with mock.patch.object(fit, "refit_all") as rf, \
@@ -625,7 +625,7 @@ class RecalcSeveralSessionsTest(CliTestCase):
 class PreInstallTest(CliTestCase):
     """T10: sessions started before the ledger's installed_at are cost only."""
 
-    SID2 = "22222222-0000-4000-8000-00000000002f"
+    SID2 = "22222222-0000-4000-8000-000000000030"
     AGENT2 = "b2c3d4e5f6071829a"
     TOOL_USE_ID2 = "toolu_01SYNTH00000000000000221"
 
@@ -772,7 +772,7 @@ class GovernedRecalcTest(CliTestCase):
     """T11: recalc voids retrievals of sessions whose cwd has no .claude/pa.json and books
     the ones whose cwd has."""
 
-    UNGOV_SID = "33333333-0000-4000-8000-00000000004a"
+    UNGOV_SID = "33333333-0000-4000-8000-00000000004b"
     UNGOV_AGENT = "c3d4e5f6a7b807291"
     UNGOV_TOOL = "toolu_03PaTestUngov"
 
@@ -1040,7 +1040,7 @@ class ReportTest(CliTestCase):
 class PreEraReportTest(CliTestCase):
     """T11: report shows a pre-PA3 row for accounts with pre-era history."""
 
-    SID2 = "44444444-0000-4000-8000-000000000065"
+    SID2 = "44444444-0000-4000-8000-000000000066"
     AGENT2 = "d4e5f6a7b8c907381"
     TOOL2 = "toolu_04PaTestReport"
 
@@ -1091,7 +1091,7 @@ class Line3Test(CliTestCase):
         with open(cfg_path, "w", encoding="utf-8", newline="\n") as fh:
             json.dump({"fit": {"n_min": 1}}, fh)
         account = "acct@example.com"
-        sid = "22222222-0000-4000-8000-00000000002e"
+        sid = "22222222-0000-4000-8000-00000000002f"
         now = time.time()
         resets_at = int(now) + 3 * 3600
         resets_7d = int(now) + 5 * 86400
@@ -1141,7 +1141,7 @@ class Line3Test(CliTestCase):
 class UnionReportTest(CliTestCase):
     """report unions extra_roots; a NULL-account row there takes the root's configured account."""
 
-    WSL_SID = "66666666-0000-4000-8000-000000000099"
+    WSL_SID = "66666666-0000-4000-8000-00000000009a"
 
     def setUp(self):
         super(UnionReportTest, self).setUp()
@@ -1883,8 +1883,8 @@ class ProjectShareTest(CliTestCase):
         now = time.time()
         resets_at = int(now) + 3 * 3600
         t1, t2 = now - 1800, now - 600
-        sids = {"Z:/Test/A": ("aaaaaaaa-0000-4000-8000-000000000105", 3.0),
-                "Z:/Test/B": ("bbbbbbbb-0000-4000-8000-000000000118", 1.0)}
+        sids = {"Z:/Test/A": ("aaaaaaaa-0000-4000-8000-000000000106", 3.0),
+                "Z:/Test/B": ("bbbbbbbb-0000-4000-8000-000000000119", 1.0)}
         conn = ledger_cli.open_db()
         try:
             db.set_meta(conn, "created", _iso(now - 7200))  # era before fixture sessions

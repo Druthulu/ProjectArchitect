@@ -89,6 +89,7 @@ STATUSLINE_DEFAULTS = {
         "alerts": True, "task_block": True, "task_helpers": False,
         "task_project": True,
         "pace_used": True, "project_five_hour": True, "project_multiplier": True,  # fix-14
+        "external": True,  # 3.3: the External line (external coders' tokens and cash)
     },
     "fewer_numbers": False,  # fix-14: preset in sl_config, explicit show keys still win
 }
@@ -641,7 +642,10 @@ def _gather(payload, cfg):
             usage_api_windows = ua_cache.get("windows")
     except Exception:
         pass
+    # 3.3: the external coders' totals the launcher writes (tools/pa_ext.py); bad or missing -> None
+    ext = _read_json(os.path.join(project, ".run", "mod", sid, "ext.json"), None) if sid else None
     return {
+        "ext": ext if isinstance(ext, dict) else None,
         "sid": sid, "project": project, "paths": pj, "pa_json": pa_json,
         "phase_plan": phase_plan, "summary": summary, "running": running,
         "status": status if isinstance(status, dict) else None, "account": account,
@@ -803,26 +807,30 @@ def _work_path(sid):
 
 def session_work(conn, sid):
     """3.28.7 T20: the tokens that entered the session's contexts (main session and every subagent), each once,
-    minus the duplicated agent seeds.
+    minus the duplicated agent seeds. 3.30: and the external (or local) coders the session started, each in its own
+    session (``agent_runs.parent_source = 'ext'``, ``parent_run_id`` the session), as the type ``ext-coder``.
 
     Per request: uncached input + cache writes (a write holds the previous request's output, so output is not
     added again), plus each run's last output (never re-written).  Seeds: a type's smallest ``agent_runs.seed_ctx``
     (else its runs' first-request ctx) counts once; each further run of the type subtracts it.  Runs with no
     type share the ``""`` type; the main session (``run_id == sid``) has no seed.
     """
+    ext = "SELECT session_id FROM agent_runs WHERE parent_run_id = ? AND parent_source = 'ext'"
     runs = {}
     for run_id, fresh, out, ctx in conn.execute(
             "SELECT run_id, COALESCE(input, 0) + COALESCE(cache_write, 0), COALESCE(output, 0), COALESCE(ctx, 0) "
-            "FROM turns WHERE session_id = ? AND kind = 'api' ORDER BY run_id, ts, msg_id", (sid,)):
+            "FROM turns WHERE (session_id = ? OR session_id IN (%s)) AND kind = 'api' ORDER BY run_id, ts, msg_id"
+            % ext, (sid, sid)):
         run = runs.get(run_id)
         if run is None:
             run = runs[run_id] = {"fresh": 0, "seed": int(ctx), "type": ""}
         run["fresh"] += int(fresh)
         run["last_out"] = int(out)
-    for run_id, agent_type, seed in conn.execute(
-            "SELECT run_id, agent_type, seed_ctx FROM agent_runs WHERE session_id = ?", (sid,)):
+    for run_id, agent_type, seed, source in conn.execute(
+            "SELECT run_id, agent_type, seed_ctx, parent_source FROM agent_runs WHERE session_id = ? "
+            "OR (parent_run_id = ? AND parent_source = 'ext')", (sid, sid)):
         if run_id in runs:
-            runs[run_id]["type"] = agent_type or ""
+            runs[run_id]["type"] = "ext-coder" if source == "ext" else (agent_type or "")
             if seed:
                 runs[run_id]["seed"] = int(seed)
     seeds = {}
@@ -1638,6 +1646,43 @@ def _line_session(payload, ctx, cfg, sl, now):
     return _join(_fit_fold(segments, sl["max_width"], colors, fold_idx, fold_seg), colors)
 
 
+EXT_LIVE_STALE_S = 180   # a running external coder's tally beats every 30 s: an older one is a dead launcher's
+
+
+def _line_external(ext, cfg, now=None):
+    """3.3: ``External · 2.1M tokens · $0.04 spent · $49.97 left [· LEAK: <ids>]``.
+
+    ``ext``: the launcher's ``<root>/.run/mod/<sid>/ext.json``; ``cfg``: the merged statusline
+    config (:func:`sl_config`). The finished runs' totals plus each running coder's tally so far
+    (``live``, 3.30), so the line shows from the first external start; ``""`` without the file or
+    with neither."""
+    if not isinstance(ext, dict):
+        return ""
+    now = time.time() if now is None else now
+    live = [v for v in (ext.get("live") if isinstance(ext.get("live"), dict) else {}).values()
+            if isinstance(v, dict) and now - (_num(v.get("at"), 0) or 0) < EXT_LIVE_STALE_S]
+    if not _num(ext.get("runs"), 0) and not live:
+        return ""
+    if not cfg["show"].get("external", True):
+        return ""
+    colors = cfg["colors"]
+    usd = (_num(ext.get("usd"), 0.0) or 0.0) + sum(_num(v.get("usd"), 0.0) or 0.0 for v in live)
+    tokens = (_num(ext.get("tokens"), 0) or 0) + sum(_num(v.get("tokens"), 0) or 0 for v in live)
+    segments = [_seg("External", DIM, colors),
+                _seg("%s tokens" % fmt_tokens(tokens), None, colors),
+                _seg("%s spent" % fmt_money(usd, 3 if usd < 0.10 else 2), None, colors)]
+    keys = ext.get("key")
+    if isinstance(keys, dict) and keys:
+        left = [_num(k.get("limit_remaining"), None) if isinstance(k, dict) else None
+                for k in keys.values()]
+        text = "no cap" if any(v is None for v in left) else "%s left" % fmt_money(sum(left))
+        segments.append(_seg(text, None, colors))
+    leaked = ext.get("leaked")
+    if isinstance(leaked, list) and leaked:
+        segments.append(_seg("LEAK: %s" % ", ".join(_text(i) for i in leaked), BOLD_RED, colors))
+    return _join(segments, colors)
+
+
 # --------------------------------------------------------------------------- line 4
 
 def _line3(payload, ctx, cfg, sl, now):
@@ -2059,8 +2104,11 @@ def _shell_lines(ctx, now, max_w, colors):
     """3.28.1 T15: one line per background shell of an expert or a coder (the mod's
     ``.run/mod/<sid>/shells.json``, pa-watch's record from the Bash call to its completion
     notice): ``◐ shell <name> · running 9m 05s · coder waiting``; one that ended badly
-    ``✗ shell <name> · ended exit <n> · coder waiting`` until its agent reports. The
-    spinner's frame comes from the clock, one step per redraw second."""
+    ``✗ shell <name> · ended exit <n> · coder waiting`` until its agent reports. A
+    ``pa_ext.py run`` shell (``external <label>``) is the coder it runs (3.30):
+    ``◐ pa-coder <label> · <model> · running … · <ctx> tokens``, the model and (3.30.3) the
+    context, as Claude Code shows a subagent's, from its facts file. The spinner's frame
+    comes from the clock, one step per redraw second."""
     sid, project = ctx.get("sid") or "", ctx.get("project") or ""
     if not sid or not project:
         return []
@@ -2078,13 +2126,23 @@ def _shell_lines(ctx, now, max_w, colors):
             if not role:
                 continue
             name = _text(s.get("name")) or "shell"
+            label = name[len("external "):] if name.startswith("external ") else ""
+            tail = " · %s waiting" % role
+            if label and " " not in label:
+                facts = _read_json(os.path.join(project, ".run", "mod", sid, "agents", "ext-%s.json" % label), None)
+                facts = facts if isinstance(facts, dict) else {}
+                model, tokens = _text(facts.get("model")), _num(facts.get("ctx"), 0) or 0
+                who = "pa-coder %s%s" % (label, " · " + model if model else "")
+                tail = " · %s tokens" % fmt_tokens(tokens) if tokens > 0 else ""   # none before its first request
+            else:
+                who = "shell " + name
             if isinstance(s.get("exit"), (int, float)):
-                text = "  ✗ shell %s · ended exit %d · %s waiting" % (name, int(s["exit"]), role)
+                text = "  ✗ %s · ended exit %d%s" % (who, int(s["exit"]), tail)
                 color = RED
             else:
                 secs = max(0, int(now - _num(s.get("at"), 0) / 1000.0))
-                text = "  %s shell %s · running %dm %02ds · %s waiting" % (
-                    SHELL_SPINNER[int(now) % 4], name, secs // 60, secs % 60, role)
+                text = "  %s %s · running %dm %02ds%s" % (
+                    SHELL_SPINNER[int(now) % 4], who, secs // 60, secs % 60, tail)
                 color = DIM
             if max_w > 0 and len(text) > max_w:
                 text = text[:max_w - 1] + "…"
@@ -2225,6 +2283,10 @@ def render(payload, cfg=None, user_show=None):
     # Session → Project → Account → alerts
     if sl["lines"] >= 3:
         line = _line_session(payload, ctx, cfg, sl, now)
+        if line:
+            lines.append(line)
+    if governed and sl["lines"] >= 7:      # 3.3: external coders' tokens and cash, after Session
+        line = _line_external(ctx.get("ext"), sl)
         if line:
             lines.append(line)
     if sl["lines"] >= 4:

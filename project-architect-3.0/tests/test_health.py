@@ -318,6 +318,34 @@ class HealthFixtureTest(unittest.TestCase):
         finally:
             git(self.clone, "checkout", "--", PKG + "/VERSION")
 
+    def test_08b_two_part_release_is_newer_everywhere(self):
+        """3.30 (3.3 T12): a two-part version above 3.29.9 reads newer in every installed comparator, and here."""
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import pa3_update
+        from pa import statusline
+        from pa.hooks import session_start
+        for key in (health._vkey, pa3_update._version_key, statusline._version_key, session_start._version_key):
+            self.assertGreater(key("3.30"), key("3.29.9"), key)
+        self.bump("3.30")
+        self.assertEqual(health.newer_release(self.pa3, self.clone), "3.30")
+
+    def test_08c_a_fix_above_a_two_part_release_is_newer_everywhere(self):
+        """3.30.1: a three-part fix reads newer than the two-part 3.30 in every installed comparator, and here."""
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tools"))
+        import pa3_update
+        from pa import statusline
+        from pa.hooks import session_start
+        for key in (health._vkey, pa3_update._version_key, statusline._version_key, session_start._version_key):
+            self.assertGreater(key("3.30.1"), key("3.30"), key)
+            self.assertGreater(key("3.30.2"), key("3.30.1"), key)
+            self.assertGreater(key("3.30.3"), key("3.30.2"), key)
+            self.assertGreater(key("3.30.4"), key("3.30.3"), key)
+            self.assertGreater(key("3.30.5"), key("3.30.4"), key)
+            self.assertGreater(key("3.30.6"), key("3.30.5"), key)
+            self.assertGreater(key("3.30.7"), key("3.30.6"), key)
+        self.bump("3.30.1")
+        self.assertEqual(health.newer_release(self.pa3, self.clone), "3.30.1")
+
     def test_09_newer_fix_ask_offers_auto_installs(self):
         self.bump("3.24.1")
         self.assertEqual(health.newer_release(self.pa3, self.clone), "3.24.1")

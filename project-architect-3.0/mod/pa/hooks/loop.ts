@@ -319,9 +319,22 @@ export function releaseHold(s: LoopState, r: { hold: HoldName; note: string }, t
   return { ok: true, state: popHold(s, r.hold), note: r.note }
 }
 
-/** A `plan_edit` now is a decision on the stop (applied at once), not a change queued for the boundary. */
+/** A `plan_edit` now is a decision on the stop (applied at once), not a change queued for the boundary. 3.30.1: the
+ * developer's stop too (`stopped`, a pause included): no expert works then, and a reorder must land before it goes on. */
 export function editIsDecision(s: LoopState): boolean {
-  return s.holds.includes('review') || s.holds.includes('question')
+  return s.holds.includes('review') || s.holds.includes('question') || s.holds.includes('stopped')
+}
+
+/** 3.30.1: the plan statuses that set a held or cut-off task back: it is not resumed but set aside (Terrain T9: `blocked`). */
+export const SET_BACK: readonly string[] = ['queued', 'blocked', 'superseded', 'done']
+
+/** 3.30.1: the tasks set aside with their progress (loop.json `setAside`), id → the attempt cut short; {} when none. */
+export function setAsideOf(s: LoopState): Record<string, { attempt: number }> {
+  const v = s.setAside
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) {
+    return {}
+  }
+  return Object.fromEntries(Object.entries(v).filter(([, x]) => typeof x === 'object' && x !== null && Number.isFinite(x.attempt)))
 }
 
 /**
@@ -775,11 +788,80 @@ export function startCheckState(text: string | null, sid: string, startAt: numbe
   }
   return now - startAt >= START_CHECK_WAIT_MS ? 'timeout' : 'pending'
 }
+/** 3.30.2: this start's update check got no answer from PA3's source in time (its fetch failed or timed out). */
+export function startCheckOffline(text: string | null, sid: string, startAt: number): boolean {
+  let doc: unknown = null
+  try {
+    doc = text === null ? null : JSON.parse(text)
+  } catch {
+    doc = null
+  }
+  const o = typeof doc === 'object' && doc !== null ? (doc as Record<string, unknown>) : {}
+  const at = typeof o['at'] === 'number' ? o['at'] * 1000 : 0
+  return o['session'] === sid && at >= startAt - START_CHECK_SKEW_MS && o['state'] === 'offline'
+}
+/** 3.30.2: said once when this start's update check timed out, so the statusline's vanished line is no mystery. */
+export const OFFLINE_NOTICE = '‹pa› The update check at this start got no answer from PA3\'s source in time, so no update ' +
+  'was looked for. PA3 checks again at the next start; to check now, the developer can run `tools/pa3_update.py` in a ' +
+  'terminal before starting Claude Code. Tell the developer in one line.'
 /** 3.29.1 T9: a task paused on the developer's request, found at a session start once the update check let work go on. */
 export const pausedNotice = (id: string): string =>
   `‹pa› ${id} was paused on the developer's request before the last session ended, and it has not resumed. Ask them in ` +
   'one line, such as "The session was paused on your request. Ready to resume?"; on their yes, in any words, call ' +
   'release({hold: "stopped"}).'
+/** 3.30.1: a paused task's expert handed back (`handoff`): held, never restarted on its own. */
+export const pausedHandbackNotice = (id: string): string =>
+  `‹pa› ${id}'s expert handed back while ${id} is paused on the developer's request: it is held, not restarted. Tell ` +
+  'the developer in one line; when they want it to go on, in any words, call release({hold: "stopped"}).'
+/** 3.3 T7: Claude's line, with the session's first developer message, in a project that has not set up external
+ * coders: '' when pa.json's `external` sets a `coder`, `remind: false` or `use: false` (or pa.json is unreadable). */
+export function externalReminder(paJsonText: string | null): string {
+  let doc: unknown = null
+  try {
+    doc = paJsonText === null ? null : JSON.parse(paJsonText)
+  } catch {
+    return ''
+  }
+  if (typeof doc !== 'object' || doc === null || Array.isArray(doc)) {
+    return ''
+  }
+  const x = (doc as Record<string, unknown>)['external']
+  const ext = typeof x === 'object' && x !== null && !Array.isArray(x) ? (x as Record<string, unknown>) : {}
+  const coder = ext['coder']
+  if ((coder !== undefined && coder !== null && coder !== '') || ext['remind'] === false || ext['use'] === false) {
+    return ''
+  }
+  return 'PA3: external coders are available (OpenRouter or local models do the coding; experts and you stay on Claude), ' +
+    'and this project has not set them up. Ask the developer once in this reply whether they want them. A yes: load the ' +
+    'pa-external-agents skill. To stop this reminder, set pa.json external.remind to false (PY tools/pa_ext.py set --remind off).'
+}
+/** 3.3 T7: the external-coder setup's machine-level result (`<home>/` + this: `{at (s), ok, text}`), and the project's
+ * note of the last one passed to Claude (`{at}`). */
+export const EXT_STATUS = '.claude/pa3-ext/status.json'
+export const EXT_SEEN = '.run/mod/ext-seen.json'
+const EXT_FRESH_S = 24 * 3_600
+/** A status or seen file's `at` (s); 0 when it does not parse. */
+export function extAt(text: string | null): number {
+  try {
+    const o = (text === null ? null : JSON.parse(text)) as Record<string, unknown> | null
+    return typeof o === 'object' && o !== null && typeof o['at'] === 'number' && Number.isFinite(o['at']) ? o['at'] : 0
+  } catch {
+    return 0
+  }
+}
+/** 3.3 T7: Claude's line on the setup's result, once per project: null unless the status parses, is under 24 h old and
+ * newer than the project's seen note. */
+export function setupNotice(statusText: string | null, seenText: string | null, nowS: number): string | null {
+  const at = extAt(statusText)
+  if (at <= 0 || nowS - at >= EXT_FRESH_S || at <= extAt(seenText)) {
+    return null
+  }
+  const o = JSON.parse(statusText ?? '') as Record<string, unknown>
+  const text = typeof o['text'] === 'string' ? o['text'].trim().replace(/\.+$/, '') : ''
+  return `PA3: the developer ran the external-coder setup: ${text}. If it failed, explain why and the fix from the ` +
+    'pa-external-agents skill\'s troubleshooting table. If it saved, load that skill, lay out the config, run PY ' +
+    'tools/pa_ext.py check, and ask how and when they want external coders used in this project.'
+}
 /** 3.29 T6: the one-time `.run/` cleanup's marker: offered once per project, at its first start on 3.29. */
 export const RUN_REVIEW_MARKER = '.run/mod/run-review.json'
 /** PA3's own `.run/` entries, never older work. */
@@ -813,6 +895,28 @@ export const runReviewNotice = (go: boolean): string => go
     'is done.' + CONTINUE_ASK
   : '‹pa› The developer put off the one-time `.run/` cleanup; do nothing about it unless they ask, it is not asked again. ' +
     'The update\'s after-restart work is done.' + CONTINUE_ASK
+/** 3.30: the one-time cookbook banking of the lessons the 3.2 close stopped promoting: offered once per project with
+ * the mod's picker when its task summaries mark lessons for the cookbook (`tools/task_log.py gotchas`). */
+export const BANK_MARKER = '.run/mod/bank-backlog.json'
+/** 3.30: a task summary's lessons marked for the cookbook, counted as tools/task_log.py's _TAG_RE finds them. */
+export const generalizableCount = (text: string): number =>
+  text.split(/\r?\n/).filter(l => /^\s*(?:-\s*)?(?:[A-Za-z][A-Za-z ]*:\s*)?generalizable:\s*\S/.test(l)).length
+export const BANK_OPTIONS: readonly string[] = ['Add the banking task (Recommended)', 'Not now']
+export const bankQuestion = (all: number, current: number): string =>
+  'PA3 3.30 brings back cookbook banking: each expert now banks what a coder learned before it starts the next one ' +
+  `(the step was lost in PA3 3.2). This project's task summaries mark ${String(all)} lesson${all === 1 ? '' : 's'} ` +
+  `for the cookbook (${String(current)} in the current phase), and some were never banked. A one-time task can bank ` +
+  "the missing ones by this project's own cookbook guidelines. Add it to the plan?"
+/** 3.30: the one-time banking task as bare plan_edit.py args, placed after `after` (the running or last done task). */
+export const bankTask = (after: string): string =>
+  'add-task --title "Bank the waiting cookbook lessons (one time, PA3 3.30)" --done-when "every lesson a task summary ' +
+  'marks generalizable is banked in the cookbook or ruled out, by the project cookbook guidelines" --coder none' +
+  (after === '' ? '' : ` --after ${after}`)
+export const bankNotice = (go: boolean, after = ''): string => go
+  ? '‹pa› The developer chose the one-time cookbook banking in the mod\'s picker. Add the task now with plan_edit, ' +
+    `command \`${bankTask(after)}\`, why "PA3 3.30: bank the lessons the 3.2 close stopped promoting"; it runs at the ` +
+    'next task boundary. Tell the developer in one line.'
+  : '‹pa› The developer put off the one-time cookbook banking; do nothing about it unless they ask, it is not asked again.'
 /** loop.json `release`: the check's release, asked once per version (`asked` the picker's request id); `step` asked →
  * install (the developer's yes) → running (pa3_update.py started) → done, or later (not now, or no answer). */
 export type Release = { version: string; kind: string; asked: string; step: 'asked' | 'install' | 'running' | 'later' | 'done' }
@@ -969,17 +1073,35 @@ export function keepSummary(s: LoopState, t: LoopTask, contract: string | null):
   return summary === '' ? s : { ...s, summaries: { ...summariesOf(s), [t.id]: { title: t.title, summary } } }
 }
 
+/** 3.30: an expert's `EXT-HEALTH:` proposals in its report (what later external coders need, from a finished one's
+ * HEALTH lines), each without the prefix; [] when none. */
+export function extHealthOf(contract: string): string[] {
+  return contract.split(/\r?\n/).map(l => l.trim()).filter(l => /^EXT-HEALTH:/i.test(l))
+    .map(l => l.replace(/^EXT-HEALTH:\s*/i, '')).filter(l => l !== '')
+}
+
+/** 3.30: the notice that takes an expert's EXT-HEALTH proposals to Claude, for the developer's word. */
+export const extHealthNotice = (task: string, proposals: readonly string[]): string =>
+  [`‹pa› ${task}'s expert proposes changes for later external coders. Tell the developer each in plain words with its ` +
+    'evidence and apply only the ones they approve (the pa-external-agents skill, "Learning from each run"):',
+  ...proposals.map(p => `- ${p}`)].join('\n')
+
 // The phase close (3.23 T6b): the close question, the chain's steps in order (chainStep names the next), the recap.
 // T13b: the notice carries each finished task's summary; Claude's card says how to report it. 3.25 T2: the yes carries
 // Claude's report as release's note (the mod writes it to RECAP.md); `gen`, the generation a generation-end close ends.
-export const closeNotice = (phase: string, sums: Record<string, TaskSummary> = {}, gen = ''): string => {
+// 3.30: `ext`, the external coder runs since the last external review (`pa_ext.py runs --count`): after the close, the
+// auditor reviews them.
+export const closeNotice = (phase: string, sums: Record<string, TaskSummary> = {}, gen = '', ext = 0): string => {
   const lines = Object.entries(sums).map(([id, x]) => `${id} ${x.title}: ${x.summary.replace(/\s*\r?\n\s*/g, ' ')}`)
   return `‹pa› Plan end: phase ${phase} has no task left.` +
     (lines.length === 0 ? ' No task left a summary.' : ` Each task's summary:\n${lines.join('\n')}\n`) +
     ' Report the phase to the developer, then ask "Phase ' + phase + ': every task is done. Is the milestone met: does' +
     ' what the phase built run?" with the answers "Yes, close the phase (recommended)" and "Not yet: <what is missing>",' +
     ' and wait. What is missing goes through plan_edit; on yes, call release({hold: "close", note: "<your report>"}).' +
-    (gen === '' ? '' : ` This close also ends Generation ${gen}, so the report covers the whole generation.`)
+    (gen === '' ? '' : ` This close also ends Generation ${gen}, so the report covers the whole generation.`) +
+    (ext > 0 ? ` ${String(ext)} external coder run${ext === 1 ? '' : 's'} finished since the last external review: once` +
+      ' the close is released, start the auditor in the background with `EXTERNAL REVIEW · PHASE ' + phase + '` and bring' +
+      ' its proposals to the developer (the pa-external-agents skill, "Learning from each run").' : '')
 }
 // 3.23 T13d.c4: the archived line, one feed record (3.25 T2: the mod's own; no recap turn).
 // The generation end parks the loop in `held(generation)` (T13b.c3); its sentence says the next one is the developer's.

@@ -631,6 +631,16 @@ class TestInstalledAt(ProjectCase):
         text = pj.pa_json_text(env)
         self.assertIn('"2020-01-01T00:00:00Z"', text)
 
+    def test_force_keeps_external(self):
+        """3.3 T6: the --force rewrite carries the project's external block."""
+        self.install()
+        doc = json.loads(read(self.path(".claude", "pa.json")))
+        ext = {"use": True, "coder": "openrouter-deepseek/deepseek", "lanes": {"openrouter-deepseek": 4}}
+        doc["external"] = ext
+        write(self.path(".claude", "pa.json"), json.dumps(doc))
+        self.install("--force")
+        self.assertEqual(json.loads(read(self.path(".claude", "pa.json")))["external"], ext)
+
 
 class TestTier(ProjectCase):
     """pa.json tier: existing value > interview answer > "max5"; one interview feeds both texts."""
@@ -678,6 +688,7 @@ class TestMod(ProjectCase):
     MOD = (".claude/agents/pa-claude.md", ".claude/agents/pa-thinker.md")   # 3.22 T8g: was claude.md (T8f), partner.md;
     # 3.25 T6a: pa-thinker was thinker and deep-thinker
     PLANNING = ".claude/skills/pa-planning/SKILL.md"                   # 3.23 T2: mod on only
+    EXTERNAL = ".claude/skills/pa-external-agents/SKILL.md"           # 3.3 T9
 
     def _pa(self):
         return json.loads(read(self.path(".claude", "pa.json")))
@@ -700,6 +711,17 @@ class TestMod(ProjectCase):
         planning = read(self.path(*self.PLANNING.split("/")))
         self.assertNotIn("{{PY}}", planning)
         self.assertIn("tools/plan_edit.py lint", planning)
+        self.exists(self.EXTERNAL, out)                                  # 3.3 T9
+        self.assertIn(self.EXTERNAL, rec)
+        external = read(self.path(*self.EXTERNAL.split("/")))
+        self.assertNotIn("{{PY}}", external)
+        self.assertIn("tools/pa_ext.py set", external)
+
+    def test_external_skill_survives_a_second_run(self):
+        """3.3 T9: the pa-external-agents skill is not taken for a legacy copy (detect.SKILL_DESC) and pruned."""
+        self.install()
+        out = self.install()
+        self.exists(self.EXTERNAL, out)
 
     def test_mod_on_thinker_at_pro(self):
         self.set_tier("pro")

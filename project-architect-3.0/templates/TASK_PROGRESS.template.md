@@ -6,7 +6,8 @@
      then the run returns `handoff`. Verbose on
      purpose: the respawned agent has no memory of this run. The respawned run reads this file,
      then archives it at once to logs/T<n>.progress<k>.md (git mv) before continuing, so its
-     own handoff never overwrites it (3.1: attempt 2 once overwrote attempt 1). -->
+     own handoff never overwrites it (3.1: attempt 2 once overwrote attempt 1). An expert also keeps
+     these sections current in logs/T<n>.progress.md after each coder report, for a relaunch after a crash. -->
 
 Task: T<n> <title>
 Attempt: <k>   Agent: <agent file>   Ctx at handoff: <n>k   Commit: <sha>

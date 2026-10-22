@@ -442,5 +442,60 @@ class TestGotchasScope(unittest.TestCase):
         self.assertIn("--phase", p.out)
 
 
+class TestAside(unittest.TestCase):
+    """3.30.1: aside parks a set-back task's progress in logs/ and --restore brings it back."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="pa3-tl-aside-")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        self.cur = os.path.join(self.root, "phase-ends", "current")
+        write(os.path.join(self.root, ".claude", "pa.json"), json.dumps({"python": "python"}) + "\n")
+        os.makedirs(os.path.join(self.cur, "logs"), exist_ok=True)
+        for args in (["init", "-q"], ["config", "user.email", "t@t"], ["config", "user.name", "t"]):
+            subprocess.run(["git"] + args, cwd=self.root, check=True, capture_output=True)
+
+    def tool(self, *args):
+        env = dict(os.environ, PA_PROJECT_ROOT=self.root)
+        p = subprocess.run([sys.executable, "-X", "utf8", os.path.join(TOOLS, "task_log.py")] + list(args),
+                           cwd=self.root, env=env, capture_output=True, text=True, encoding="utf-8")
+        p.out = (p.stdout or "") + (p.stderr or "")
+        return p
+
+    def git(self, *args):
+        return subprocess.run(["git"] + list(args), cwd=self.root, check=True, capture_output=True,
+                              text=True).stdout
+
+    def test_a_tracked_note_and_patch_are_moved_with_git_and_restored(self):
+        write(os.path.join(self.cur, "TASK_PROGRESS.md"), "# TASK_PROGRESS — T11 attempt 6\n")
+        write(os.path.join(self.cur, "TASK_PROGRESS.patch"), "diff\n")
+        self.git("add", "-A")
+        self.git("commit", "-q", "-m", "pause")
+        p = self.tool("aside", "T11")
+        self.assertEqual(p.returncode, 0, p.out)
+        self.assertIn("aside: phase-ends/current/logs/T11.aside.md, phase-ends/current/logs/T11.aside.patch", p.out)
+        self.assertFalse(os.path.exists(os.path.join(self.cur, "TASK_PROGRESS.md")))
+        self.assertEqual(read(os.path.join(self.cur, "logs", "T11.aside.md")), "# TASK_PROGRESS — T11 attempt 6\n")
+        self.assertIn("R", self.git("status", "--short", "--", "phase-ends"))   # a staged rename
+        p = self.tool("aside", "T11", "--restore")
+        self.assertIn("restored: phase-ends/current/TASK_PROGRESS.md", p.out)
+        self.assertEqual(read(os.path.join(self.cur, "TASK_PROGRESS.patch")), "diff\n")
+        self.assertFalse(os.path.exists(os.path.join(self.cur, "logs", "T11.aside.md")))
+
+    def test_an_untracked_note_is_renamed_and_none_is_said_when_there_is_none(self):
+        self.assertIn("none: no TASK_PROGRESS.md", self.tool("aside", "T3").out)
+        write(os.path.join(self.cur, "TASK_PROGRESS.md"), "# TASK_PROGRESS: recovery digest for T3 (attempt 1)\n")
+        self.assertIn("aside: phase-ends/current/logs/T3.aside.md", self.tool("aside", "T3").out)
+        self.assertTrue(os.path.isfile(os.path.join(self.cur, "logs", "T3.aside.md")))
+        self.assertIn("none: no phase-ends/current/logs/T9.aside.md", self.tool("aside", "T9", "--restore").out)
+
+    def test_restore_keeps_the_parked_note_when_another_task_progress_is_there(self):
+        write(os.path.join(self.cur, "logs", "T11.aside.md"), "parked\n")
+        write(os.path.join(self.cur, "TASK_PROGRESS.md"), "another task's\n")
+        p = self.tool("aside", "T11", "--restore")
+        self.assertIn("kept: phase-ends/current/logs/T11.aside.md (a TASK_PROGRESS.md is there)", p.out)
+        self.assertEqual(read(os.path.join(self.cur, "TASK_PROGRESS.md")), "another task's\n")
+        self.assertEqual(read(os.path.join(self.cur, "logs", "T11.aside.md")), "parked\n")
+
+
 if __name__ == "__main__":
     unittest.main()

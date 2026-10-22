@@ -6,7 +6,7 @@ import type { On } from 'claude-code'
 
 import { GIT_WRITE_MS, gitWrite, lastAssistantText, resolveBash, subagentTranscript } from './autopilot'
 import { stamp } from './journal'
-import { CONTINUE_TEXT, START_CHECK } from './loop'
+import { CONTINUE_TEXT, OFFLINE_NOTICE, RELOAD_NOTICE, START_CHECK } from './loop'
 import { tailOf } from './trim'
 
 const ROOT = '/r'
@@ -16,7 +16,7 @@ const BASE = `${ROOT}/.run/mod`
 const LOOP = `${BASE}/loop.json`
 const PLAN = 'phase-ends/current/PHASE_PLAN.md'
 const BASH = 'C:/Git/bin/bash.exe'
-const PA = JSON.stringify({ mod: 'on', warmer: 'off', upgrade: 'ask', python: 'py', bash: BASH })
+const PA = JSON.stringify({ mod: 'on', warmer: 'off', upgrade: 'ask', python: 'py', bash: BASH, external: { remind: false } }) // 3.3 T7: no reminder
 const START = { cwd: ROOT, surface: null, isInteractive: false } as const
 const ISTART = { cwd: ROOT, surface: null, isInteractive: true } as const
 const JDIR = `${ROOT}/.claude-state/journal`
@@ -283,6 +283,25 @@ describe('autopilot loop', () => {
     expect(ran(w, 'tools/plan_edit.py set-status').length).toBe(1)
     expect(ran(w, 'tools/status.py wait question').length).toBe(0)
     expect(w.files.get(entries(w, 'T1-end')[0] ?? '')).not.toContain('(commit ')
+  })
+
+  test('3.30: a report\'s EXT-HEALTH proposals go to Claude in one notice; the done routes as usual', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {})
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.turn.complete(complete('E1', 'done: 2 of 9 cracked.\n' +
+      'EXT-HEALTH: project: Bash(mipsel-linux-gnu-objdump:*) (cG05: objdump denied 3 times)\n' +
+      'EXT-HEALTH: model openrouter-minimax/minimax: use each item\'s full budget (cG05: 6 walls in 1-3 min)'))
+    await clock.advance(60_000)
+    await clock.advance(4_000)
+    expect(ran(w, 'tools/plan_edit.py set-status').length).toBe(1)
+    const n = notices(w).map(x => x.input.text).filter(t => t.includes('EXT-HEALTH') || t.includes('later external coders'))
+    expect(n).toEqual([
+      '‹pa› T1\'s expert proposes changes for later external coders. Tell the developer each in plain words with its ' +
+      'evidence and apply only the ones they approve (the pa-external-agents skill, "Learning from each run"):\n' +
+      '- project: Bash(mipsel-linux-gnu-objdump:*) (cG05: objdump denied 3 times)\n' +
+      '- model openrouter-minimax/minimax: use each item\'s full budget (cG05: 6 walls in 1-3 min)'])
   })
 
   test('a done\'s commit comes from git: rev-list <startSha>..HEAD, in T1/end', async ($, on) => {
@@ -717,6 +736,28 @@ const releaseReq = (w: W, ms: number, input: Record<string, string>, caller = 'P
 }
 const showStatus = (status: string) => (argv: string[]): { exitCode: number; stdout: string; stderr: string } =>
   argv.slice(1).join(' ').startsWith('tools/plan_edit.py show') ? ok(`${JSON.stringify({ ...T1, status })}\n`) : defaultAnswer(argv)
+type Ans = (argv: string[]) => { exitCode: number; stdout: string; stderr: string }
+/** 3.30.1: the plan's next pick is T2 (the task the developer put first); everything else `inner`. */
+const pickT2 = (inner: Ans): Ans => argv => (argv.slice(1).join(' ').startsWith('tools/plan_edit.py next')
+  ? ok(`${JSON.stringify({ kind: 'task', task: { ...T1, id: 'T2', title: 'bank the lessons' }, promoted: null })}\n`) : inner(argv))
+/** 3.30.1: loop.json's `setAside` record (null when absent). */
+const asideOf = (w: W): unknown => (JSON.parse(w.files.get(LOOP) ?? '{}') as { setAside?: unknown }).setAside ?? null
+/** 3.30.1: a plan whose `set-status T1 queued` takes (show reads it back), next picks T2, and task_log parks T1's progress. */
+const reorderPlan = (w: W): { status: string } => {
+  const plan = { status: 'next' }
+  w.answer = pickT2(argv => {
+    const a = argv.slice(1).join(' ')
+    if (a.startsWith('tools/plan_edit.py set-status T1 queued')) {
+      plan.status = 'queued'
+      return ok('T1: next -> queued\n')
+    }
+    if (a.startsWith('tools/plan_edit.py show')) {
+      return ok(`${JSON.stringify({ ...T1, status: plan.status })}\n`)
+    }
+    return a.startsWith('tools/task_log.py aside') ? ok('aside: phase-ends/current/logs/T1.aside.md\n') : defaultAnswer(argv)
+  })
+  return plan
+}
 
 describe('stops and releases (T5b)', () => {
   test('review stop: a notice in the router inbox, delivered to Claude; its review toast at Claude\'s presentation', async ($, on) => {
@@ -908,6 +949,95 @@ describe('stops and releases (T5b)', () => {
     expect(w.files.get(entries(w, 'mod-hold').pop() ?? '')).toContain('E1 resumed with the note')
   // 3.23 T13d.c3: a confirmation that only says done is not sent to the partner
     expect(notices(w).map(n => n.input.text)).not.toContain('released: question')
+  })
+
+  test('release question of a task the plan has since superseded: not resumed; the loop goes on from the plan (3.30)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const lf = JSON.parse(held('question', NOW - 10 * 60_000)) as { task: { agentId: string } }
+    lf.task.agentId = 'E9' // the old expert, resumable: the 3.3 trial resumed it attempt after attempt
+    const w = world(on, { [LOOP]: JSON.stringify(lf) })
+    w.list = [{ id: 'E9', status: 'idle', type: 'pa-expert' }]
+    w.answer = showStatus('superseded')
+    releaseReq(w, NOW, { hold: 'question', note: 'T1 is superseded' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(w.sends).not.toContain('NOTE: T1 is superseded')
+    expect(ran(w, 'tools/status.py set').filter(r => r.includes('relaunch'))).toEqual([])
+    expect(entries(w, 'mod-hold').some(p => (w.files.get(p) ?? '').includes(
+      'T1 question released: the plan has it superseded, so it is not resumed; the loop goes on from the plan.'))).toBe(true)
+    expect(notices(w).map(n => n.input.text)).toContain('released: question (T1 is superseded in the plan; the loop goes on from the plan)')
+    // the boundary picks from the plan (the fake picks T1 again): a fresh task, not attempt 2 of the old one
+    expect(ran(w, 'tools/plan_edit.py next').length > 0).toBe(true)
+    expect([loopOf(w).task?.agentId, loopOf(w).task?.kind, loopOf(w).task?.attempt]).toEqual(['E1', 'task', 1])
+  })
+
+  test('release stopped of a task the plan has set back to queued: dropped too (3.30)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running({ holds: ['stopped'] }) })
+    setStatus(w, 'E1', 'killed')
+    w.answer = pickT2(showStatus('queued'))
+    stoppedReq(w, NOW, { hold: 'stopped', note: 'Go on.' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect([w.sends, ran(w, 'tools/status.py set').filter(r => r.includes('relaunch'))]).toEqual([[], []])
+    expect(loopOf(w).holds).not.toContain('stopped')
+    expect(notices(w).map(n => n.input.text)).toContain('released: stopped (T1 is queued in the plan; the loop goes on from the plan)')
+    expect(asideOf(w)).toEqual({ T1: { attempt: 1 } }) // 3.30.1: kept for its next start
+  })
+
+  test('3.30.1: during a stop a plan edit applies at once, after what was queued; the release sets the task aside (bfm T11)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const queued = [{ command: 'add-task --title "Bank" --after T1', why: 'the picker', at: NOW - 60_000, caller: 'P1' }]
+    const w = world(on, { [LOOP]: running({ holds: ['stopped'], queuedEdits: queued }) })
+    setStatus(w, 'E1', 'killed')
+    const plan = reorderPlan(w)
+    const id = `${String(NOW)}-1-plan_edit`
+    w.files.set(`${INBOX}/${id}.json`, JSON.stringify({ id, kind: 'plan_edit', caller: 'P1',
+      input: { command: 'set-status T1 queued', why: 'run the bank first' }, at: NOW }))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(w.runs.filter(r => r[1] === 'tools/plan_edit.py' && r[2] !== 'show').map(r => r[2])).toEqual(['add-task', 'set-status'])
+    expect([loop2(w).queuedEdits, plan.status]).toEqual([[], 'queued'])
+    expect(toCaller(w).some(t => t.startsWith('queued:'))).toBe(false)
+    stoppedReq(w, NOW + 2_000, { hold: 'stopped' })
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(w.sends).toEqual([])
+    expect(ran(w, 'tools/task_log.py aside T1').length).toBe(1)
+    expect(commits(w).some(c => c.join(' ').includes('T1 set aside: its progress kept as logs/T1.aside.md'))).toBe(true)
+    expect(asideOf(w)).toEqual({ T1: { attempt: 1 } })
+    expect(entries(w, 'mod-hold').some(p => (w.files.get(p) ?? '').includes('T1 stopped released: the plan has it queued, so it is ' +
+      'not resumed; the loop goes on from the plan (its progress is kept as logs/T1.aside.md for its next start).'))).toBe(true)
+    expect(w.spawns.at(-1)?.description.startsWith('T2')).toBe(true)
+  })
+
+  test('3.30.1: release question of a task the plan has blocked: set aside too (TerrainDiffusion T9)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: held('question', NOW - 10 * 60_000) })
+    w.answer = pickT2(showStatus('blocked'))
+    releaseReq(w, NOW, { hold: 'question', note: 'T9 waits for the walk' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(w.sends).not.toContain('NOTE: T9 waits for the walk')
+    expect(notices(w).map(n => n.input.text)).toContain('released: question (T1 is blocked in the plan; the loop goes on from the plan)')
+    expect(asideOf(w)).toEqual({ T1: { attempt: 1 } })
+    expect(w.spawns.at(-1)?.description.startsWith('T2')).toBe(true)
+  })
+
+  test('3.30.1: a set-aside task comes back from the plan as a relaunch with its parked progress, its attempts counted on', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: loopAt({ setAside: { T1: { attempt: 6 } } }) })
+    w.answer = argv => (argv.slice(1).join(' ').startsWith('tools/task_log.py aside T1 --restore')
+      ? ok('restored: phase-ends/current/TASK_PROGRESS.md\n') : defaultAnswer(argv))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(ran(w, 'tools/status.py set').at(-1)).toEqual(['py', 'tools/status.py', 'set', '--task', 'T1', '--agent', 'pa-expert',
+      '--coder', 'opus55', '--kind', 'relaunch', '--attempt', '7', '--title', 'add function', '--session', 'S1'])
+    expect(experts(w)[0]?.prompt).toContain('PROGRESS: phase-ends/current/TASK_PROGRESS.md')
+    expect([loopOf(w).task?.kind, loopOf(w).task?.attempt, asideOf(w)]).toEqual(['relaunch', 7, {}])
   })
 
   test('release question outside the TTL: respawned with the brief plus NOTE', async ($, on) => {
@@ -2471,6 +2601,38 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     expect(notices(w).some(n => n.input.text.includes('put off the one-time'))).toBe(true)
   })
 
+  test('3.30: lessons marked for the cookbook get the one-time banking picker once; yes tells Claude the exact task', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, {
+      [`${ROOT}/phase-ends/current/tasks/T1.md`]: '# T1\n- generalizable: a pin falls to an in-place update\nGotchas: generalizable: x\n',
+      [`${ROOT}/phase-ends/phase-3.39/tasks/T7.md`]: '- generalizable: an older one\n- harness: not counted\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, ['Add the banking task (Recommended)'])
+    const offers = (): string[] => asked.map(a => a.q).filter(t => t.includes('brings back cookbook banking'))
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toHaveLength(1)
+    expect(offers()[0]).toContain('mark 3 lessons for the cookbook (2 in the current phase)')
+    expect(w.files.has(`${ROOT}/.run/mod/bank-backlog.json`)).toBe(true)
+    const n = notices(w).map(x => x.input.text).filter(t => t.includes('one-time cookbook banking'))
+    expect(n).toHaveLength(1)
+    expect(n[0]).toContain('command `add-task --title "Bank the waiting cookbook lessons (one time, PA3 3.30)"')
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toHaveLength(1)   // once per project
+  })
+
+  test('3.30: no lesson marked for the cookbook: no banking picker, and the marker says it was checked', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${ROOT}/phase-ends/current/tasks/T1.md`]: '- harness: only this\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, [])
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(asked.filter(a => a.q.includes('cookbook banking'))).toEqual([])
+    expect(w.files.get(`${ROOT}/.run/mod/bank-backlog.json`)).toContain('"asked":""')
+  })
+
   test('3.29 T6: a .run/ holding only PA3\'s own entries gets no offer', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [`${ROOT}/.run/status.json`]: '{}\n', [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
@@ -2653,6 +2815,76 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     expect(done[0]?.input.text).not.toContain('To load it')
     expect(ran(w, 'tools/pa3_update.py').length).toBe(0)
   })
+
+  // 3.30.2: the build the install stamps in the mod's own code (build.ts; a test's PA_MOD_BUILD) says what this process
+  // runs; VERSION may already name the release the start hook's background install is putting in place.
+  test('3.30.2: VERSION rewritten before this start read it: the old build claims nothing loaded; the end asks the restart', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.30.2 is installed and loaded. Ready to continue work.**'
+    const RUNNING = '{"version":"3.30.2","kind":"hotfix","state":"running"}'
+    const w = world(on, { [RELM]: RUNNING, [MARKER]: marker({ state: 'running' }), '/.claude/pa3/VERSION': 'version: 3.30.2\ngit: bbbb2222\n',
+      [STAMP]: fresh }, { PA_MOD_BUILD: '{"version":"3.30.1","git":"aaaa1111"}' })
+    await $.session.start(START) // bfm 21:14: the hook's install wrote VERSION a second before this start read it
+    await clock.advance(10_000)
+    expect([notices(w).filter(n => n.input.text.includes(LOADED)).length, w.files.get(RELM)]).toEqual([0, RUNNING])
+    w.files.set(MARKER, marker({ at: (NOW + 11_000) / 1000, from: { phase: '3.30.1', git: 'aaaa1111' }, to: { phase: '3.30.2', git: 'bbbb2222' } }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await clock.advance(10_000)
+    const done = notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 updated from 3.30.1'))
+    expect(done.length).toBe(1)
+    expect(done[0]?.input.text).toContain('To load it: /exit, then claude --continue')
+    expect(done[0]?.input.text).not.toContain('already runs')
+    expect(notices(w).filter(n => n.input.text === RELOAD_NOTICE).length).toBe(1)
+  })
+
+  test('3.30.2: a start whose own build is the installed one says loaded, once', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.30.2 is installed and loaded. Ready to continue work.**'
+    const w = world(on, { [RELM]: '{"version":"3.30.2","kind":"hotfix","state":"install"}', '/.claude/pa3/VERSION': 'version: 3.30.2\ngit: bbbb2222\n',
+      [STAMP]: fresh }, { PA_MOD_BUILD: '{"version":"3.30.2","git":"bbbb2222"}' })
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect([notices(w).filter(n => n.input.text.includes(LOADED)).length, w.files.get(RELM)]).toEqual([1, '{}\n'])
+  })
+
+  test('3.30.2: a rebuild of the same version is new code too: its end asks the restart', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [MARKER]: marker({ state: 'running' }), '/.claude/pa3/VERSION': 'version: 3.30.2\ngit: bbbb2222\n', [STAMP]: fresh },
+      { PA_MOD_BUILD: '{"version":"3.30.2","git":"aaaa1111"}' })
+    await $.session.start(START)
+    await clock.advance(10_000)
+    w.files.set(MARKER, marker({ at: (NOW + 11_000) / 1000, from: { phase: '3.30.2', git: 'aaaa1111' }, to: { phase: '3.30.2', git: 'bbbb2222' } }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await clock.advance(10_000)
+    const done = notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 updated from 3.30.2'))
+    expect(done.length).toBe(1)
+    expect(done[0]?.input.text).toContain('To load it: /exit, then claude --continue')
+  })
+
+  test('3.30.3: a run that ended before this start: the start loaded it, so its restart: needed asks nothing', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [MARKER]: marker({ at: (NOW - 60_000) / 1000, from: { phase: '3.30.2', git: 'aaaa1111' }, to: { phase: '3.30.3', git: 'bbbb2222' } }),
+      [`${BASE}/update.log`]: 'pa3_update: 1/3: git pull\n      restart: needed\npa3_update: done\n',
+      '/.claude/pa3/VERSION': 'version: 3.30.3\ngit: bbbb2222\n', [STAMP]: fresh }, { PA_MOD_BUILD: '{"version":"3.30.3","git":"bbbb2222"}' })
+    await $.session.start(START) // TerrainDiffusion: its update was run by hand, then Claude Code started
+    await clock.advance(10_000)
+    const done = notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 updated from 3.30.2'))
+    expect(done.length).toBe(1)
+    expect(done[0]?.input.text).toContain('**Project Architect 3.30.3 is installed and loaded. Ready to continue work.**')
+    expect(done[0]?.input.text).not.toContain('restart: needed')
+    expect(done[0]?.input.text).not.toContain('To load it')
+  })
+
+  test('3.30.2: a start whose update check got no answer says so, once', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${ROOT}/${START_CHECK}`]: JSON.stringify({ session: 'S1', at: NOW / 1000, update: false, state: 'offline' }) })
+    await $.session.start(START)
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(notices(w).filter(n => n.input.text === OFFLINE_NOTICE).length).toBe(1)
+    expect(w.spawns.length).toBe(1) // still an answer: work goes on
+  })
 })
 
 // T6b: the phase close. The plan names phase 1.1 of generation 1; 3.25 T2: the mod closes it, no agent.
@@ -2700,6 +2932,20 @@ describe('the phase close (T6b)', () => {
       ' and wait. What is missing goes through plan_edit; on yes, call release({hold: "close", note: "<your report>"}).', toast: 'input' }])
     expect(toastCauses(w)).toEqual([])
     expect(w.spawns.length).toBe(0)
+  })
+
+  test('3.30: plan end with external coder runs since the last review: the close notice asks for the auditor\'s review', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${ROOT}/${PLAN}`]: PE_PLAN, [`${ROOT}/GENERATION_PLAN.md`]: genPlan('- 1.2 Next | status: open\n') })
+    w.answer = closeAnswer(a => (a === 'tools/pa_ext.py runs --count' ? ok('3\n') : undefined))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(ran(w, 'tools/pa_ext.py runs --count').length).toBe(1)
+    const n = notices(w).filter(x => x.input.text.includes('has no task left'))
+    expect(n.length).toBe(1)
+    expect(n[0]?.input.text).toContain(' 3 external coder runs finished since the last external review: once the close is' +
+      ' released, start the auditor in the background with `EXTERNAL REVIEW · PHASE 1.1`')
   })
 
   test('held(close): a plan_edit that adds a task lands at once, inbox-consume runs, close pops and the task runs', async ($, on) => {
@@ -3118,6 +3364,64 @@ describe('a stopped loop agent (T11-fix2)', () => {
     await clock.advance(2_000)
     expect([loop2(w).holds, loop2(w).task?.recovery?.phase, w.sends]).toEqual([[], 'sent', [CONTINUE_TEXT]])
     expect(notices(w).map(n => n.input.text).some(t => t.includes('stopped (Ctrl+C'))).toBe(false)
+  })
+
+  test('3.30.1: paused and found cut off after a quick restart (heartbeat fresh, no takeover): held, never recovered (bfm T11)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const doc = JSON.parse(running()) as { task: Record<string, unknown> }
+    doc.task['paused'] = { at: NOW - 60_000 }
+    const w = world(on, { [LOOP]: JSON.stringify(doc) })
+    setStatus(w, 'E1', 'killed')
+    await $.session.start(START)
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(2_000)
+    }
+    const task = (loop2(w).task ?? {}) as { stopped?: { status?: string } | null; recovery?: unknown }
+    expect([loop2(w).holds.includes('stopped'), task.stopped?.status, task.recovery ?? null, w.sends]).toEqual([true, 'paused', null, []])
+    expect(entries(w, 'mod-hold').some(p => (w.files.get(p) ?? '').includes(
+      'T1 was paused on the developer\'s request: not resumed after the restart; Claude asks.'))).toBe(true)
+    expect(notices(w).filter(n => n.input.text.includes('paused on the developer\'s request'))).toHaveLength(1)
+  })
+
+  test('3.30.1: a recovery lands the queue first; a task the plan now has queued is set aside, never resumed (bfm T11)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const queued = [{ command: 'set-status T1 queued', why: 'run the bank first', at: NOW - 30_000, caller: 'P1' }]
+    const w = world(on, { [LOOP]: running({ queuedEdits: queued }) })
+    setStatus(w, 'E1', 'killed')
+    const plan = reorderPlan(w)
+    await $.session.start(START)
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect([w.sends, loop2(w).queuedEdits, plan.status, asideOf(w)]).toEqual([[], [], 'queued', { T1: { attempt: 1 } }])
+    expect(entries(w, 'mod-hold').some(p => (w.files.get(p) ?? '').includes(
+      'T1 recovery: the plan has it queued, so it is not resumed; the loop goes on from the plan'))).toBe(true)
+    expect(notices(w).some(n => n.input.text.includes('it is set aside, not resumed'))).toBe(true)
+    expect(w.spawns.at(-1)?.description.startsWith('T2')).toBe(true)
+  })
+
+  test('3.30.1: a paused task\'s handoff is held, never respawned; the release respawns it with PROGRESS', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const doc = JSON.parse(running()) as { task: Record<string, unknown> }
+    doc.task['paused'] = { at: NOW - 60_000 }
+    const w = world(on, { [LOOP]: JSON.stringify(doc) })
+    setStatus(w, 'E1', 'running')
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.turn.complete(complete('E1', 'Staying paused as asked.\n\nSTATUS: handoff\nLOG: logs/T1.md'))
+    await clock.advance(60_000)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    const task = (loop2(w).task ?? {}) as { stopped?: { status?: string } | null; agentId?: string }
+    expect([w.spawns.length, loop2(w).holds.includes('stopped'), task.stopped?.status, task.agentId]).toEqual([0, true, 'paused', ''])
+    expect(notices(w).filter(n => n.input.text.includes('handed back while T1 is paused'))).toHaveLength(1)
+    expect(notices(w).some(n => n.input.text.includes('before the last session ended'))).toBe(false)
+    stoppedReq(w, NOW + 66_000, { hold: 'stopped', note: 'Go on.' })
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(w.sends).toEqual([])
+    expect(experts(w)[0]?.prompt).toContain('PROGRESS: phase-ends/current/TASK_PROGRESS.md')
+    expect([loop2(w).task?.kind, loop2(w).task?.attempt]).toEqual(['relaunch', 2])
   })
 
   test('killed with a pending contract: routed', async ($, on) => {

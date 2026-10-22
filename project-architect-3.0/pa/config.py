@@ -129,6 +129,7 @@ DEFAULTS = {
             "alerts": True, "task_block": True, "task_helpers": False,
             "task_project": True,
             "pace_used": True, "project_five_hour": True, "project_multiplier": True,  # fix-14
+            "external": True,  # 3.3: the External line (external coders' tokens and cash)
         },
         "fewer_numbers": False,  # fix-14: preset of fewer figures; explicit show keys win
     },

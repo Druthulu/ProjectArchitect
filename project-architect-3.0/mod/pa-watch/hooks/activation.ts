@@ -6,13 +6,14 @@ export const VERSION_FLOOR = '2.1.292'
 
 export type Decision = { active: boolean; reason: string }
 
-/** `[major, minor, patch]` of a version's leading `x.y.z`, or null when it does not start with one. */
+/** `[major, minor, patch]` of a version's leading `x.y.z`, or `x.y` as `[x, y, 0]` (3.3 T7: VERSION 3.30), or null
+ * when it does not start with one. */
 export function parseVersion(version: string): [number, number, number] | null {
-  const m = /^\s*(\d+)\.(\d+)\.(\d+)/.exec(version)
+  const m = /^\s*(\d+)\.(\d+)(?:\.(\d+))?/.exec(version)
   if (m === null) {
     return null
   }
-  return [Number(m[1]), Number(m[2]), Number(m[3])]
+  return [Number(m[1]), Number(m[2]), Number(m[3] ?? 0)]
 }
 
 /** Numeric compare of `version` against `floor`; null when either does not parse. */

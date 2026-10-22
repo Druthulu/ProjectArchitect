@@ -272,6 +272,8 @@ class RootWindowsTest(unittest.TestCase):
 
     def test_installed_files_are_byte_identical(self):
         for rel, src in install.package_files(PKG):
+            if rel == install.BUILD_REL:                        # 3.30.2: stamped with this copy's release (RootModTest)
+                continue
             dst = os.path.join(self.pa3, rel.replace("/", os.sep))
             if os.path.isfile(dst):                             # concurrent writes aside
                 with open(src, "rb") as a, open(dst, "rb") as b:
@@ -282,11 +284,11 @@ class RootWindowsTest(unittest.TestCase):
             text = fh.read()
         from pa import __version__
         self.assertIn("version: %s" % __version__, text)
-        self.assertEqual(text.splitlines()[0], "version: 3.29.9")  # I11
+        self.assertEqual(text.splitlines()[0], "version: 3.30.7")  # I11
         self.assertRegex(text, r"git: [0-9a-f]{6,40}")
 
     def test_version_parse_forms_and_fallback(self):
-        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.29.9``."""
+        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.30.7``."""
         import pa
         self.assertEqual(pa.parse_version("3.11\n"), "3.11")
         self.assertEqual(pa.parse_version("version: 3.12\ngit: abc\n"), "3.12")
@@ -309,8 +311,8 @@ class RootWindowsTest(unittest.TestCase):
                                   text=True, check=True).stdout.strip()
         self.assertEqual(ver("3.12\n"), "3.12")
         self.assertEqual(ver("version: 3.15.3\ngit: abc\n"), "3.15.3")
-        self.assertEqual(ver(None), "3.29.9")
-        self.assertEqual(ver("garbage: x\n"), "3.29.9")
+        self.assertEqual(ver(None), "3.30.7")
+        self.assertEqual(ver("garbage: x\n"), "3.30.7")
 
     def test_ledger_has_every_table(self):
         conn = db.connect(os.path.join(self.ledger, "ledger.sqlite"), create=False)
@@ -514,6 +516,19 @@ class RootModTest(unittest.TestCase):
     def test_version_is_written_last(self):
         self.assertIn("VERSION", self.writes)
         self.assertLess(self.writes.index(install.MANIFEST), self.writes.index("VERSION"), self.writes)
+
+    def test_the_mod_build_is_stamped_and_hashed_as_installed(self):
+        """3.30.2: the installed build.ts names VERSION's release and commit (the running mod knows its own code);
+        MANIFEST.json hashes it as installed, so the root's health check passes."""
+        rel = "mod/pa/hooks/build.ts"
+        with open(os.path.join(self.pa3, "VERSION"), "r", encoding="utf-8") as fh:
+            fields = dict((k.strip(), v.strip()) for k, _, v in (ln.partition(":") for ln in fh.read().splitlines()) if v)
+        with open(os.path.join(self.pa3, rel), "rb") as fh:
+            data = fh.read()
+        self.assertIn("version: '%s', git: '%s'" % (fields["version"], fields.get("git", "")), data.decode("utf-8"))
+        self.assertEqual(self.manifest["files"][rel], hashlib.sha256(data).hexdigest())
+        with open(os.path.join(PKG, rel), "r", encoding="utf-8") as fh:
+            self.assertIn("{ version: '', git: '' }", fh.read())   # the package's own copy stays the checkout's
 
     def test_registration_keys(self):
         self.assertEqual(self.merged["extraKnownMarketplaces"]["pa3"],

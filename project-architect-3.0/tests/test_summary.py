@@ -11,6 +11,7 @@ import sqlite3
 import sys
 import time
 import unittest
+from unittest import mock
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -472,7 +473,12 @@ class EraFilterTest(unittest.TestCase):
 
     def test_accounts_block_period_excludes_pre_era(self):
         """Period cost_used excludes pre-era even when the turn's ts is in-period."""
-        result = summary.accounts_block(self.conn, cfg=_CFG)
+        # 3.30: the period is pinned to the fixture's (from 2026-09-21; now 2026-10-01): on the real clock it moved on
+        # at 2026-10-21, and both turns fell out of it.
+        pin = summary.period_start
+        with mock.patch.object(summary, "period_start",
+                               lambda cfg=None, now=None, account=None: pin(cfg, 1790812800, account)):
+            result = summary.accounts_block(self.conn, cfg=_CFG)
         acct = result.get(ACCT_A)
         period = acct["period"]
         # msg-pre2 ($50) has ts in-period but session s-pre2 is pre-era -> excluded
@@ -1051,6 +1057,38 @@ class ExtraRootRebuildTest(unittest.TestCase):
         doc = summary.rebuild(self.conn, self._cfg(os.path.join(self.tmp, "missing")))
         self.assertNotIn("windows", doc["meta"]["computed_at"])
         self.assertEqual(doc["accounts"], {})
+
+
+class ExternalCashOutTest(unittest.TestCase):
+    """3.3 T8: an external coder's ext:<config> turns are cash, out of the plan figures."""
+
+    EXT = "ext:openrouter-deepseek"
+
+    def setUp(self):
+        conn = _make_db()
+        conn.execute("CREATE TABLE IF NOT EXISTS accounts(email TEXT PRIMARY KEY, label TEXT)")
+        conn.execute("INSERT INTO accounts(email) VALUES(?)", (ACCT_A,))
+        for sid, acct, kind, cost in (("s-claude", ACCT_A, "main", 5.0), ("s-ext", self.EXT, "ext", 2.0)):
+            conn.execute("INSERT INTO sessions(session_id, account, kind, project, cwd, started, ended)"
+                         " VALUES(?, ?, ?, ?, ?, ?, ?)",
+                         (sid, acct, kind, PROJECT, PROJECT, WINDOW_START, _iso(NOW)))
+            conn.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd, kind)"
+                         " VALUES(?, ?, ?, ?, ?, ?, 'api')",
+                         ("m-" + sid, sid, acct, WINDOW_START, "claude-opus-4-6", cost))
+            conn.execute("INSERT INTO utilization(ts, account, session_id, window, pct, resets_at)"
+                         " VALUES(?, ?, ?, 'five_hour', 10, ?)", (WINDOW_START, acct, sid, NOW + 3600))
+        conn.commit()
+        self.conn = conn
+        self.addCleanup(conn.close)
+
+    def test_accounts_and_project_count_only_claude(self):
+        accts = summary.accounts_block(self.conn, cfg=_CFG)
+        self.assertEqual(sorted(accts), [ACCT_A])
+        self.assertAlmostEqual(accts[ACCT_A]["lifetime"]["cost_used"], 5.0, places=2)
+        projects = summary.projects_block(self.conn, cfg=_CFG, accounts=accts)
+        entry = projects[summary._project_key(PROJECT)]
+        self.assertNotIn(self.EXT, entry["by_account"])
+        self.assertAlmostEqual(entry["lifetime"]["cost_used"], 5.0, places=2)
 
 
 if __name__ == "__main__":

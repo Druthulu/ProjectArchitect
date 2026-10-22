@@ -856,8 +856,8 @@ def pa_json_text(env):
     text = re.sub(r'("tier"\s*:\s*)"[^"]*"',
                   lambda m: m.group(1) + json.dumps(tier), text, count=1)
     # 3.10.6 T3: the reconciled ``preset`` and the user's ``ladder`` survive a forced rewrite
-    # (place keeps a differing pa.json unless --force)
-    for key in ("ladder", "preset"):
+    # (place keeps a differing pa.json unless --force); 3.3 T6: and the project's ``external`` block
+    for key in ("ladder", "preset", "external"):
         if key in existing and ('"%s"' % key) not in text:
             text = re.sub(r'("tier"\s*:\s*"[^"]*")',
                           lambda m, k=key: m.group(1) + ',\n  "%s": %s' % (k, json.dumps(existing[k])),
@@ -1088,6 +1088,11 @@ def copy_files(env):
         ptext = fill_py(fh.read())
     prel = ".claude/skills/pa-planning/SKILL.md"
     pairs.append((prel, place(env, prel, text=ptext, upgrade=up)))
+    external = os.path.join(pkg, "skills", "pa-external-agents", "SKILL.template.md")   # 3.3 T9: external coders
+    with open(external, "r", encoding="utf-8", newline="") as fh:
+        etext = fill_py(fh.read())
+    erel = ".claude/skills/pa-external-agents/SKILL.md"
+    pairs.append((erel, place(env, erel, text=etext, upgrade=up)))
     pairs += copy_dir(env, os.path.join(pkg, "commands"), ".claude/commands",
                       transform=fill_py, only=".md", upgrade=up)
     pairs += copy_dir(env, os.path.join(pkg, "tools"), "tools", recurse=True, upgrade=up)

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { auditorBrief, curatorBrief, EXPERT_RETURN, expertBrief, fixBrief, type PlanTask, readsPath } from './brief'
+import { auditorBrief, coderLine, curatorBrief, EXPERT_RETURN, expertBrief, fixBrief, type PlanTask, readsPath } from './brief'
 
 // As `plan_edit.py show --task T1 --json` printed it for templates/PHASE_PLAN.template.md (3.23 T4), plus reads.
 const T1: PlanTask = {
@@ -37,7 +37,7 @@ describe('expert brief', () => {
   test('absent fields', async () => {
     const b = expertBrief({ ...T1, coder: null, effort: null, files: [], verify: null, title: null })
     expect(b).toContain('TASK: T1\n')
-    expect(b).toContain('HOW: none named\nLOGS TO READ: none\nCODER: none\nEFFORT: medium\nDONE WHEN: …\n')
+    expect(b).toContain('HOW: none named\nLOGS TO READ: none\nCODER: opus55\nEFFORT: medium\nDONE WHEN: …\n')
     expect(readsPath('phase-ends/phase-2.2/tasks/T1.md')).toBe('phase-ends/phase-2.2/tasks/T1.md')
   })
 
@@ -46,6 +46,21 @@ describe('expert brief', () => {
     expect(b).toContain(`RETURN: ${EXPERT_RETURN}\nCARD (PY tools/card.py slice expert; the card's expert sections, already read):\n## Paths <!-- roles: expert -->\n- src/`)
     expect(b.endsWith('- src/')).toBe(true)
     expect(expertBrief(T1, { card: ' \n' })).toBe(expertBrief(T1))
+  })
+
+  test('3.3 T7: the CODER line: the task coder, else pa.json external, else opus55; external ones say how they run', async () => {
+    const EXT = { coder: 'openrouter/deepseek', lanes: { openrouter: 2 }, max_coders: 3, escalate: ['opus55', 'fable'] }
+    const run = 'external: brief it in a file and run it with tools/pa_ext.py'
+    expect(coderLine('local/qwen', null)).toBe(`local/qwen (${run}; up to 4 at once; on blocked or no report: in-house)`)
+    expect(coderLine(null, EXT)).toBe(`openrouter/deepseek (${run}; up to 2 at once; on blocked or no report: opus55 then fable)`)
+    expect(coderLine('local/qwen', EXT)).toBe(`local/qwen (${run}; up to 3 at once; on blocked or no report: opus55 then fable)`)
+    expect(coderLine(null, { ...EXT, use: false })).toBe('opus55')
+    expect(coderLine(null, null)).toBe('opus55')
+    expect(coderLine(null, {})).toBe('opus55')
+    expect(coderLine('in-house', EXT)).toBe('opus55')
+    expect(coderLine('none', EXT)).toBe('none')
+    expect(coderLine('opus55', EXT)).toBe('opus55')
+    expect(expertBrief({ ...T1, coder: null }, { external: EXT })).toContain(`\nCODER: openrouter/deepseek (${run}; up to 2 at once;`)
   })
 
   test('a review task adds the review NOTE', async () => {

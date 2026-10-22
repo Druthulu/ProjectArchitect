@@ -16,7 +16,8 @@ from pa.install import managed                              # noqa: E402
 from pa.install import project as pj                        # noqa: E402
 
 RECORD = ".claude/pa3-managed.json"
-GROUPS = (".claude/agents/", ".claude/skills/project-architect/", ".claude/skills/pa-planning/", ".claude/commands/",
+GROUPS = (".claude/agents/", ".claude/skills/project-architect/", ".claude/skills/pa-planning/",
+          ".claude/skills/pa-external-agents/", ".claude/commands/",   # 3.3 T9: the external-coder skill
           "tools/", "templates/", "docs/project-architect.md")      # 3.11 T25: the doc
 
 

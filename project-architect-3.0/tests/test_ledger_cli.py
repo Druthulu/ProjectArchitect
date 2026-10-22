@@ -834,5 +834,51 @@ class ModCommandsTest(unittest.TestCase):
                                  "--body", "b")[0], 2)
 
 
+class ExternalCashRowTest(unittest.TestCase):
+    """3.3 T8: an external coder's ext:<config> turns show as their own row marked cash."""
+
+    EXT = "ext:openrouter-deepseek"
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pa3-ledger-ext-")
+        self._old_env = os.environ.get("PA_LEDGER_DIR")
+        os.environ["PA_LEDGER_DIR"] = self.dir
+        conn = db.connect(paths.db_path())
+        db.init_schema(conn)
+        for sid, acct, cost in (("s_c", ACCT_A, 3.0), ("s_x", self.EXT, 0.5)):
+            db.upsert_session(conn, {"session_id": sid, "account": acct, "cwd": CWD,
+                                      "started": "2026-09-01T09:00:00Z"})
+            db.upsert_turn(conn, {"msg_id": sid + "_m0", "run_id": sid, "session_id": sid,
+                                   "account": acct, "ts": "2026-09-01T10:00:00Z",
+                                   "model": "claude-fable-5-1", "cost_usd": cost, "kind": "api"})
+        db.close(conn)
+
+    def tearDown(self):
+        if self._old_env is None:
+            os.environ.pop("PA_LEDGER_DIR", None)
+        else:
+            os.environ["PA_LEDGER_DIR"] = self._old_env
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_report_marks_the_ext_row_cash(self):
+        rc, text, errs = run_cli("report", "--since", "2026-09-01", "--json")
+        self.assertEqual(rc, 0, errs)
+        accounts = {a["account"]: a for a in json.loads(text)["accounts"]}
+        self.assertFalse(accounts[ACCT_A]["cash"])
+        self.assertAlmostEqual(accounts[ACCT_A]["cost_used"], 3.0)
+        self.assertTrue(accounts[self.EXT]["cash"])
+        rc, text, errs = run_cli("report", "--since", "2026-09-01")
+        self.assertIn(self.EXT + " (cash)", text)
+
+    def test_minimal_summary_leaves_ext_out(self):
+        conn = db.connect(paths.db_path())
+        try:
+            doc = ledger_cli.minimal_summary(conn, {})
+        finally:
+            db.close(conn)
+        self.assertIn(ACCT_A, doc["accounts"])
+        self.assertNotIn(self.EXT, doc["accounts"])
+
+
 if __name__ == "__main__":
     unittest.main()

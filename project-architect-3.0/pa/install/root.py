@@ -436,13 +436,29 @@ def _sha256(path):
         return hashlib.sha256(fh.read()).hexdigest()
 
 
-def manifest_text(files, ver):
+def manifest_text(files, ver, stamped=None):
     """``MANIFEST.json``: ``{"format": 1, "version": <the VERSION text it goes with>, "files": {rel: sha256}}``.
 
-    Written before VERSION, so a half copy reads as manifest ``version`` != VERSION (T6's health check)."""
+    Written before VERSION, so a half copy reads as manifest ``version`` != VERSION (T6's health check). A ``stamped``
+    file (rel -> the bytes installed in its place) is hashed as installed."""
+    import hashlib
+    stamped = stamped or {}
     doc = {"format": 1, "version": ver,
-           "files": dict((rel, _sha256(src)) for rel, src in sorted(files))}
+           "files": dict((rel, hashlib.sha256(stamped[rel]).hexdigest() if rel in stamped else _sha256(src))
+                         for rel, src in sorted(files))}
     return json.dumps(doc, indent=1, sort_keys=True) + "\n"
+
+
+BUILD_REL = "mod/pa/hooks/build.ts"
+
+
+def build_text(ver):
+    """3.30.2: the installed ``mod/pa/hooks/build.ts``: the release and commit this copy is (from its VERSION text), so
+    the running mod knows the code it loaded, whatever VERSION says later (the start hook's install can rewrite it)."""
+    fields = dict((k.strip(), v.strip()) for k, _, v in (ln.partition(":") for ln in ver.splitlines()) if v)
+    return ("// Stamped by the root install (pa/install/root.py, 3.30.2): the release this installed mod is.\n"
+            "export const BUILD: { version: string; git: string } = { version: %s, git: %s }\n"
+            % (json.dumps(fields.get("version", "")).replace('"', "'"), json.dumps(fields.get("git", "")).replace('"', "'")))
 
 
 def _git_tree(path, spec):
@@ -492,6 +508,14 @@ def _same_bytes(src, dst):
         return False
 
 
+def _same_data(data, dst):
+    try:
+        with open(dst, "rb") as fh:
+            return fh.read() == data
+    except OSError:
+        return False
+
+
 def copy_package(env, opts):
     """R2: copy ``pa/`` + the entry scripts into ``<pa3-dir>``, byte-compare, VERSION.
 
@@ -510,16 +534,19 @@ def copy_package(env, opts):
 
     files = package_files(pkg)
     missing = [n for n in ENTRY_SCRIPTS if not os.path.isfile(os.path.join(pkg, n))]
-    todo = [(rel, src) for rel, src in files
-            if not _same_bytes(src, os.path.join(env.pa3_dir, rel))]
-
     ver = version_text(pkg,
                        clone_path=clone_path if (clone_path and not no_clone) else None,
                        clone_head=clone_head if (clone_path and not no_clone) else None)
+    # 3.30.2: the installed mod's build.ts is stamped with this copy's release and commit
+    stamped = {BUILD_REL: build_text(ver).encode("utf-8")} if any(rel == BUILD_REL for rel, _src in files) else {}
+    todo = [(rel, src) for rel, src in files
+            if not (_same_data(stamped[rel], os.path.join(env.pa3_dir, rel)) if rel in stamped
+                    else _same_bytes(src, os.path.join(env.pa3_dir, rel)))]
+
     ver_path = os.path.join(env.pa3_dir, "VERSION")
     ver_stale = fsutil.read_text(ver_path, "") != ver
     stale = _mod_stale(env.pa3_dir, set(rel for rel, _src in files))
-    man = manifest_text(files, ver)
+    man = manifest_text(files, ver, stamped)
     man_path = os.path.join(env.pa3_dir, MANIFEST)
     man_stale = fsutil.read_text(man_path, "") != man
 
@@ -545,8 +572,12 @@ def copy_package(env, opts):
             for rel, src in todo:
                 dst = os.path.join(env.pa3_dir, rel.replace("/", os.sep))
                 os.makedirs(os.path.dirname(dst), exist_ok=True)
-                shutil.copyfile(src, dst)
-                if not _same_bytes(src, dst):
+                if rel in stamped:
+                    with open(dst, "wb") as fh:
+                        fh.write(stamped[rel])
+                else:
+                    shutil.copyfile(src, dst)
+                if not (_same_data(stamped[rel], dst) if rel in stamped else _same_bytes(src, dst)):
                     raise OSError("byte compare failed for %s" % rel)
                 result["copied"] += 1
             for rel in stale:                                       # PRUNE_DIRS only: no longer shipped

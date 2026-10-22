@@ -33,6 +33,24 @@ export type ExpertOpts = {
   trialCoder?: boolean
   /** 3.24 T7b: `PY tools/card.py slice expert`'s output, carried after the fields; absent or '': none. */
   card?: string
+  /** 3.3 T7: pa.json's `external` object; absent or null: none. */
+  external?: External | null
+}
+
+/** 3.3 T7: pa.json `external` (the external coders' defaults). */
+export type External = { use?: boolean; coder?: string; lanes?: Record<string, number>; max_coders?: number; escalate?: string[] }
+
+/** 3.3 T7: the brief's CODER line: the task's coder, else pa.json's external coder (unless `use: false`), else opus55
+ * (`in-house` is opus55); a `<config>/<alias>` coder is external and names how it runs, its lanes and its escalation. */
+export function coderLine(coder: string | null, external: External | null): string {
+  const pick = coder ?? (external !== null && external.use !== false && external.coder !== undefined && external.coder !== '' ? external.coder : 'opus55')
+  const c = pick === 'in-house' ? 'opus55' : pick
+  if (!c.includes('/')) {
+    return c
+  }
+  const lane = external?.lanes?.[c.split('/')[0] ?? ''] ?? external?.max_coders ?? 4
+  const esc = (external?.escalate ?? ['in-house']).join(' then ')
+  return `${c} (external: brief it in a file and run it with tools/pa_ext.py; up to ${String(lane)} at once; on blocked or no report: ${esc})`
 }
 
 export const EXPERT_RETURN = 'your report: one plain first word, done, question, blocked, review or handoff, then free text'
@@ -80,7 +98,7 @@ export function expertBrief(task: PlanTask, opts: ExpertOpts = {}): string {
     ['PLAN', planCommands(task.id)],
     ['HOW', task.files.length === 0 ? 'none named' : task.files.join(', ')],
     ['LOGS TO READ', task.reads.length === 0 ? 'none' : task.reads.map(readsPath).join(', ')],
-    ['CODER', task.coder ?? 'none'],
+    ['CODER', coderLine(task.coder, opts.external ?? null)],
     ['EFFORT', task.effort ?? 'medium'],
     ['PROGRESS', opts.progress],
     ['NOTE', notes.join(' · ')],

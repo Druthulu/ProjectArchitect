@@ -289,6 +289,9 @@ export type LoopState = {
   summaries?: Record<string, { title: string; summary: string }>
   /** 3.24 T10b: every session that owned the open phase, in order (the close's recalc reads them all); reset at the close. */
   phaseSids?: string[]
+  /** 3.30.1: tasks the plan set back while held or cut off, by id: the attempt cut short. Their next start is a relaunch
+   * with the progress parked at `logs/<T>.aside.md` (task_log.py aside). Cleared at the close. */
+  setAside?: Record<string, { attempt: number }>
 }
 
 /** 3.28.1 T15: a background shell (Bash `run_in_background`) an agent started (`.run/mod/<sid>/shells.json`): Claude

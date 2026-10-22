@@ -60,6 +60,15 @@ PRICES = [
     ("haiku-5-5",  85, "2026-10-07",  0.10, 0.125, 0.20, 0.01, 0.50, "new", "1m"),   # <= 100k prompt
     ("haiku-4-5",  90, "2026-09-01",  1.0,  1.25,  2.0, 0.10,  5.0, "old", None),
     ("haiku",     100, "2026-09-01",  1.0,  1.25,  2.0, 0.10,  5.0, "old", None),
+    # 3.3: external coders (cash). Caching is implicit, so both write rates equal the input rate;
+    # no Claude tokenizer.
+    # DeepInfra fp8, the developer's pinned host for DeepSeek, 2026-10-20.
+    ("deepseek-v4.1-flash", 200, "2026-10-20", 0.098, 0.098, 0.098, 0.00294, 0.294, None, "1m"),
+    # Z.AI fp8 (first party), the developer's pinned host for GLM, 2026-10-20 (StreamLake was saturated, Near AI
+    # answered in 17-23 s).
+    ("glm-5.3-flash", 201, "2026-10-20", 0.15, 0.15, 0.15, 0.03, 0.50, None, "1m"),
+    # Alibaba, Qwen3.8 Flash's only host on OpenRouter, 2026-10-20.
+    ("qwen3.8-flash", 202, "2026-10-20", 0.15, 0.15, 0.15, 0.016, 0.47, None, "1m"),
 ]
 
 # 3.22: rates ($/MTok) of a request whose prompt exceeds the threshold (pricing page 2026-10-07,

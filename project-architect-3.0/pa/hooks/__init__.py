@@ -3,6 +3,7 @@
 Public (this module):
     EVENTS, BUDGET_MS
     now_iso(), sid_of(inp), agent_of(inp), role_of(inp, cfg), pinned_for(inp, cfg)
+    ext_child(), ext_parent()
     find_project_root(cwd), project_config(root), governed(inp) -> root | None
     project_cutoff(root, cfg=None), session_pre_install(root, cfg, started)
     open_db(), close_db(conn)
@@ -34,15 +35,17 @@ import time
 
 EVENTS = ("session_start", "user_prompt_submit", "pre_tool_use", "post_tool_use",
           "subagent_start", "subagent_stop", "stop", "stop_failure", "notification",
-          "model_switch", "session_end")
+          "model_switch", "session_end", "permission_request")
 
 # Watchdog budgets: comfortably under each hook's settings.json timeout (design
 # A.3) so a wedged call exits 0 on its own instead of being killed by the harness.
+# 3.30.1: permission_request (only in an external coder, 180 s timeout) waits on
+# its judge (150 s); a wedge exits with no decision, which refuses the call.
 BUDGET_MS = {
     "session_start": 12000, "user_prompt_submit": 4000, "pre_tool_use": 4000,
     "post_tool_use": 4000, "subagent_start": 4000, "subagent_stop": 18000,
     "stop": 8000, "stop_failure": 4000, "notification": 4000, "model_switch": 4000,
-    "session_end": 18000,
+    "session_end": 18000, "permission_request": 170000,
 }
 
 _PROJECT_ROOTS = {}
@@ -70,9 +73,24 @@ def role_of(inp, cfg=None):
     return config.role_from_agent_type((inp or {}).get("agent_type"), cfg)
 
 
+def ext_child():
+    """3.3: ``PA_EXT`` (``<config>/<alias>``) when this is an external coder's own
+    headless process (tools/pa_ext.py); "" in every other session.  In child mode
+    the hooks only guard and record."""
+    return str(os.environ.get("PA_EXT") or "").strip()
+
+
+def ext_parent():
+    """3.3: the main session that started this external coder (``PA_EXT_PARENT``), or ""."""
+    return str(os.environ.get("PA_EXT_PARENT") or "").strip()
+
+
 def pinned_for(inp, cfg=None, tagged=False):
     from .. import config
 
+    ext_model = str(os.environ.get("PA_EXT_MODEL") or "").strip()
+    if ext_model and ext_child():       # 3.3: an external coder is pinned to its own model
+        return ext_model
     return config.pinned_model_for((inp or {}).get("agent_type"), cfg, tagged=tagged)
 
 

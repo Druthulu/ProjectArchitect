@@ -12,12 +12,15 @@ is booked as one ``turns`` row with ``kind='residual'`` instead of being hidden.
 Then: finish the small deferred locks (``state/pending_locks.jsonl``), drain the
 spool, rebuild ``summary.json``, checkpoint the WAL and drop the session from
 ``running.json``.
+
+3.3: an external coder (``PA_EXT`` set) books no residual (Claude Code prices an unknown model
+its own way) and patches no ``killed_at``.
 """
 
 import os
 
 from .. import log, running
-from . import (close_db, drain_spool, governed, now_iso, open_db, read_offset,
+from . import (close_db, drain_spool, ext_child, governed, now_iso, open_db, read_offset,
                sid_of, status_patch, waiting_clear, write_offset)
 
 
@@ -36,7 +39,8 @@ def run(inp, cfg):
         _finish_pending(conn, cfg)
         drain_spool(conn, sid, cfg)
         _refresh_children(conn, cfg, sid)
-        if fresh and harness is not None:      # T30: keyed on a fresh cost-state, not on source
+        # T30: keyed on a fresh cost-state, not on source; 3.3: never in an external coder
+        if fresh and harness is not None and not ext_child():
             _reconcile(conn, sid, path)        # T13l: after every child's turns are booked
         _rebuild(conn, cfg)
         from .. import db
@@ -47,7 +51,7 @@ def run(inp, cfg):
 
     running.remove_session(sid)
     waiting_clear(sid)
-    root = governed(inp)
+    root = None if ext_child() else governed(inp)
     if root:
         # keep run_id/task/attempt/expert_agent_type: the harness kills every subagent with the
         # process (T7.1) -- a later SubagentStart/spawn overwrites the run as today.

@@ -515,7 +515,8 @@ class StatuslineShowTest(unittest.TestCase):
                     "project_vanilla", "account_vanilla",
                     "alerts", "task_block", "task_helpers",
                     "task_project",
-                    "pace_used", "project_five_hour", "project_multiplier"}  # fix-14
+                    "pace_used", "project_five_hour", "project_multiplier",  # fix-14
+                    "external"}                                              # 3.3 T8
         self.assertEqual(set(show.keys()), expected)
 
     def test_pace_thresholds_defaults(self):

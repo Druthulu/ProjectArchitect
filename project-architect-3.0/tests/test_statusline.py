@@ -1198,8 +1198,13 @@ class AccountPeriodApiOnlyTest(LedgerCase):
                                    "ts": "2026-09-21T10:35:00Z", "model": "claude-sonnet-5",
                                    "cost_usd": 100.0, "kind": "residual"})
             conn.commit()
-            # 3.11 T9: a period needs the account's own renewal day (was the default 21)
-            block = summary.accounts_block(conn, cfg={"accounts": {email: {"renewal_day": 21}}})
+            # 3.11 T9: a period needs the account's own renewal day (was the default 21). 3.30: the period is pinned
+            # to the fixture's (from 2026-09-21; now 2026-10-01): on the real clock it moved on at 2026-10-21.
+            from unittest import mock
+            pin = summary.period_start
+            with mock.patch.object(summary, "period_start",
+                                   lambda cfg=None, now=None, account=None: pin(cfg, 1790812800, account)):
+                block = summary.accounts_block(conn, cfg={"accounts": {email: {"renewal_day": 21}}})
             acct = block.get(email) or {}
             period_cost = (acct.get("period") or {}).get("cost_used", 0.0)
             lifetime_cost = (acct.get("lifetime") or {}).get("cost_used", 0.0)
@@ -2265,6 +2270,29 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertRegex(shells[0], r"shell bake_rest\.sh · running 9m 0[4-6]s · coder waiting$")
         self.assertEqual(shells[1], "  ✗ shell make · ended exit 2 · coder waiting")
 
+    def test_an_external_coder_shell_shows_as_the_coder(self):
+        """3.30: a `pa_ext.py run` shell (`external <label>`) is drawn as pa-coder with its model (facts file);
+        3.30.3: its context in place of the waiting expert, an ended one's last."""
+        self.make_project(plan=self.PLAN_SIX, status={
+            "task": "T3", "phase": "36", "started": "2026-09-12T20:58:00Z"})
+        at = (time.time() - 286) * 1000
+        write_json(os.path.join(self.project, ".run", "mod", self.sid, "shells.json"), {
+            "E1": [{"id": "b1", "name": "external T3.cG05", "at": at, "type": "pa-expert"},
+                   {"id": "b2", "name": "external T3.cG06", "at": at, "type": "pa-expert", "exit": 1},
+                   {"id": "b3", "name": "external T3.cG07", "at": at, "type": "pa-expert", "exit": 1}]})
+        write_json(os.path.join(self.project, ".run", "mod", self.sid, "agents", "ext-T3.cG05.json"),
+                   {"model": "MiniMax M3.1 Flash (free)", "type": "ext-coder", "line": "Created c0.c", "ctx": 48210})
+        write_json(os.path.join(self.project, ".run", "mod", self.sid, "agents", "ext-T3.cG07.json"),
+                   {"model": "MiniMax M3.1 Flash (free)", "type": "ext-coder", "ctx": 352000})
+        lines = [ln for ln in self.lines() if "pa-coder" in ln]
+        self.assertEqual(len(lines), 3, self.lines())
+        self.assertRegex(lines[0], r"^  . pa-coder T3\.cG05 · MiniMax M3\.1 Flash \(free\) · running 4m 4[5-7]s · "
+                                   r"48k tokens$")
+        self.assertEqual(lines[1], "  ✗ pa-coder T3.cG06 · ended exit 1")   # no facts: no model, no context
+        self.assertEqual(lines[2], "  ✗ pa-coder T3.cG07 · MiniMax M3.1 Flash (free) · ended exit 1 · 352k tokens")
+        self.assertFalse(any(" shell " in ln for ln in self.lines()))
+        self.assertFalse(any("waiting" in ln for ln in lines))
+
     def test_other_session_shows_the_loop_task(self):
         """3.24 T9: the mod's status.json mirror shows phase and task in any session (was
         T28.c4's "runs in another session" beside line)."""
@@ -3238,6 +3266,26 @@ class SessionWorkTest(LedgerCase):
         last = 70 + 400 + 100 + 300 + 900        # each run's last output only
         self.assertEqual(work, fresh + last - 2 * 16005)   # three coders: two duplicate seeds; one expert: none
 
+    def test_external_coders_count_as_the_sessions_own_type(self):
+        """3.30: the counter takes in the external coders the session started (their own sessions, linked by
+        parent_run_id with parent_source ext), their duplicate seeds subtracted as the type ext-coder; another
+        session's external coder never counts."""
+        from pa import db
+        conn = self.make_ledger()
+        try:
+            for i, (xsid, parent, inp, cw, out, ctx) in enumerate(
+                    (("x1", self.sid, 30000, 0, 800, 30000), ("x2", self.sid, 31000, 0, 900, 31000),
+                     ("x3", "someone-else", 99000, 0, 9, 99000))):
+                db.upsert(conn, "turns", {"msg_id": "x%d" % i, "run_id": xsid, "session_id": xsid, "ts": "1",
+                                          "input": inp, "cache_write": cw, "output": out, "ctx": ctx, "kind": "api"})
+                db.upsert(conn, "agent_runs", {"run_id": xsid, "session_id": xsid, "parent_run_id": parent,
+                                               "parent_source": "ext", "agent_type": "pa-coder"})
+            work = statusline.session_work(conn, self.sid)
+        finally:
+            db.close(conn)
+        before = (1010 + 200 + 16005 + 3000 + 17005 + 18005 + 21000) + (70 + 400 + 100 + 300 + 900) - 2 * 16005
+        self.assertEqual(work, before + (30000 + 800) + (31000 + 900) - 30000)   # x2's seed duplicates x1's
+
     def test_mod_on_shows_work_over_infinity(self):
         self.make_ledger().close()
         self.make_project(pa_json={"project": "demo", "phase_ends_dir": "phase-ends", "mod": "on"})
@@ -3253,3 +3301,74 @@ class SessionWorkTest(LedgerCase):
         self.make_project(pa_json={"project": "demo", "phase_ends_dir": "phase-ends", "mod": "off"})
         self.assertIn("472k/1M", self.model_line())
         self.assertNotIn("/∞", self.model_line())
+
+
+class ExternalLineTest(LedgerCase):
+    """3.3 T8: the External line from the launcher's `.run/mod/<sid>/ext.json`, after Session."""
+
+    EXT = {"runs": 2, "tokens": 2100000, "usd": 0.04,
+           "models": {"deepseek/deepseek-v4": {"tokens": 2100000, "usd": 0.04}},
+           "key": {"openrouter-deepseek": {"usage_first": 0.0, "usage": 0.03,
+                                           "limit_remaining": 49.97, "at": 1}},
+           "leaked": []}
+
+    def ext(self, doc):
+        write_json(os.path.join(self.project, ".run", "mod", self.sid, "ext.json"), doc)
+
+    def external(self, cfg=None):
+        return [l for l in self.lines(cfg) if l.startswith("External")]
+
+    def test_absent_file_or_no_runs_no_line(self):
+        self.make_project()
+        self.assertEqual(self.external(), [])
+        self.ext(dict(self.EXT, runs=0))
+        self.assertEqual(self.external(), [])
+
+    def test_running_coders_show_before_the_first_run_ends(self):
+        """3.30: each running coder's live tally counts at once (a free model: $0); a stale one is a dead launcher's."""
+        self.make_project()
+        now = int(time.time())
+        doc = {"live": {"T11.cG05": {"tokens": 1200000, "usd": 0.0, "at": now},
+                        "T11.cG06": {"tokens": 300000, "usd": 0.0, "at": now - 600}}}
+        self.ext(doc)
+        self.assertEqual(self.external(), ["External · 1.2M tokens · $0.000 spent"])
+        self.ext(dict(self.EXT, live={"T5.c3": {"tokens": 400000, "usd": 0.01, "at": now}}))
+        self.assertEqual(self.external(), ["External · 2.5M tokens · $0.050 spent · $49.97 left"])
+        self.ext({"live": {"T11.cG06": {"tokens": 300000, "usd": 0.0, "at": now - 600}}})
+        self.assertEqual(self.external(), [])
+
+    def test_tokens_spent_and_left(self):
+        self.make_project()
+        self.ext(self.EXT)
+        self.assertEqual(self.external(), ["External · 2.1M tokens · $0.040 spent · $49.97 left"])
+        self.ext(dict(self.EXT, usd=1.5, key={}))
+        self.assertEqual(self.external(), ["External · 2.1M tokens · $1.50 spent"])
+
+    def test_no_cap(self):
+        self.make_project()
+        key = dict(self.EXT["key"], other={"limit_remaining": None})
+        self.ext(dict(self.EXT, key=key))
+        self.assertEqual(self.external(), ["External · 2.1M tokens · $0.040 spent · no cap"])
+
+    def test_leak_in_the_alert_color(self):
+        self.make_project()
+        self.ext(dict(self.EXT, leaked=["a1b2"]))
+        self.assertTrue(self.external()[0].endswith(" · LEAK: a1b2"))
+        colored = statusline.render(self.payload, config.defaults())
+        self.assertIn(statusline.BOLD_RED + "LEAK: a1b2" + statusline.RESET, colored)
+
+    def test_show_external_off(self):
+        self.make_project()
+        self.ext(self.EXT)
+        cfg = plain_cfg()
+        cfg["statusline"]["show"]["external"] = False
+        self.assertEqual(self.external(cfg), [])
+
+    def test_line_cap_and_ungoverned(self):
+        self.ext(self.EXT)
+        self.assertEqual(self.external(), [])        # no pa.json: not governed
+        self.make_project()
+        cfg = plain_cfg()
+        cfg["statusline"]["lines"] = 6
+        self.assertEqual(self.external(cfg), [])
+        self.assertEqual(len(self.external()), 1)

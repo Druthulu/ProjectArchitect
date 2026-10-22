@@ -37,6 +37,12 @@ describe('activation (copy of the router\'s)', () => {
     expect(decide(ON, undefined, 'dev').active).toBe(false)
     expect(versionAtLeast('2.1.300-dev.20260920', '2.1.292')).toBe(true)
     expect(versionAtLeast('x', '2.1.292')).toBe(null)
+    // 3.3 T7: a two-part version (VERSION 3.30) reads as x.y.0.
+    expect(versionAtLeast('3.30', '3.30')).toBe(true)
+    expect(versionAtLeast('3.29.9', '3.30')).toBe(false)
+    expect(versionAtLeast('3.30', '3.29.9')).toBe(true)
+    expect(versionAtLeast('3.30.1', '3.30')).toBe(true)
+    expect(versionAtLeast('3', '3.30')).toBe(null)
     expect(versionOf({ version: '2.1.293-dev.20261001.t1.sha1', base: '2.1.293-dev' })).toBe('2.1.293-dev')
     expect(versionOf({ version: '2.1.293' })).toBe('2.1.293')
   })

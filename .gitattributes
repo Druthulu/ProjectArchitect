@@ -9,7 +9,9 @@
 # batch file even on a checkout with core.autocrlf=false.
 project-architect-3.0/install.cmd text eol=crlf
 project-architect-3.0/setup-project.cmd text eol=crlf
+project-architect-3.0/setup-external.cmd text eol=crlf
 project-architect-3.0/install.sh text eol=lf
+project-architect-3.0/setup-external.sh text eol=lf
 # 3.9 T6: WSL runs these over /mnt/z; a CRLF checkout breaks bash (`set: -: invalid option`)
 tools/*.sh text eol=lf
 project-architect-3.0/tools/*.sh text eol=lf

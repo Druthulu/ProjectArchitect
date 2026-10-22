@@ -5,8 +5,37 @@ import {
   agentFor, effortFor, effortHint, bandLine, closeNotice, plannerIdOf, defaultLoop, keepSummary, summariesOf, editIsDecision, FORWARD_TTL_MS, NO_CONTRACT_QUIET_MS, OWNER_STALE_MS, ownsLoop, parseLoop, popHold, pushHold, queuedTo, releaseHold, routeStatus,
   runEnded, RUN_QUIET_MS, serializeLoop, silenceReleases, takesOver, taskPosIn, taskPosOf, topHold, waitSpec, windowResumes, planCounts, projectName, sessionTitle,
   quietReply, nextPhaseOf, recalcSessions, withPhaseSid, archiveOf, curateQuestion, firstRunLine,
-  markerOf, modFilesKey, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
+  markerOf, modFilesKey, externalReminder, setupNotice, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
+  extHealthOf, extHealthNotice, generalizableCount, bankQuestion, bankTask, bankNotice, startCheckOffline, startCheckState,
 } from './loop'
+
+describe('the one-time cookbook banking (3.30)', () => {
+  test('marks counted as task_log.py counts them: a list item or a labelled line; not other kinds, not empty', () => {
+    expect(generalizableCount('- generalizable: a\n  generalizable: b\nGotchas: generalizable: c\n- harness: d\n- generalizable:\n')).toBe(3)
+    expect(generalizableCount('')).toBe(0)
+  })
+  test('the picker, the task after the running one, and the notice', () => {
+    expect(bankQuestion(1, 0)).toContain('mark 1 lesson for the cookbook (0 in the current phase)')
+    expect(bankTask('T11')).toBe('add-task --title "Bank the waiting cookbook lessons (one time, PA3 3.30)" --done-when ' +
+      '"every lesson a task summary marks generalizable is banked in the cookbook or ruled out, by the project cookbook ' +
+      'guidelines" --coder none --after T11')
+    expect(bankTask('')).not.toContain('--after')
+    expect(bankNotice(true, 'T11')).toContain(`command \`${bankTask('T11')}\``)
+    expect(bankNotice(false)).toContain('put off the one-time cookbook banking')
+  })
+})
+
+describe('external coder health (3.30)', () => {
+  test('EXT-HEALTH lines anywhere in a report, prefix dropped, any case; none is []', () => {
+    expect(extHealthOf('done: ok\n  EXT-HEALTH: project: Bash(objdump:*)\nother\r\next-health: model a/b: x\nEXT-HEALTH:  \n')).toEqual(
+      ['project: Bash(objdump:*)', 'model a/b: x'])
+    expect(extHealthOf('done: nothing to change')).toEqual([])
+  })
+  test('the notice names the task and lists each proposal', () => {
+    expect(extHealthNotice('T11', ['project: a', 'model c/d: b']).split('\n').slice(1)).toEqual(['- project: a', '- model c/d: b'])
+    expect(extHealthNotice('T11', ['x'])).toContain('‹pa› T11\'s expert proposes changes for later external coders.')
+  })
+})
 
 const TASK: LoopTask = {
   id: 'T4', title: 'pure modules', agent: 'expert-opus55', coder: 'opus55', effort: 'medium', attempt: 1, kind: 'task',
@@ -63,6 +92,8 @@ describe('holds', () => {
     expect(editIsDecision(with_({ holds: ['question', 'talk'] }))).toBe(true)
     expect(editIsDecision(with_({ holds: ['talk'] }))).toBe(false)
     expect(editIsDecision(defaultLoop())).toBe(false)
+    expect(editIsDecision(with_({ holds: ['stopped', 'talk'] }))).toBe(true) // 3.30.1: the developer's stop
+    expect(editIsDecision(with_({ holds: ['session'] }))).toBe(false)
   })
 
   test('silence ends talk only, after 15 min, unless Claude asked', async () => {
@@ -239,6 +270,12 @@ describe('plan-end summaries (3.23 T13b)', () => {
     expect(closeNotice('3.23')).toContain('No task left a summary.')
     // 3.25 T2: a generation end adds one sentence
     expect(closeNotice('3.23', {}, '3').endsWith('note: "<your report>"}). This close also ends Generation 3, so the report covers the whole generation.')).toBe(true)
+    // 3.30: external coder runs since the last review add the auditor's external review; none adds nothing
+    expect(closeNotice('3.40', {}, '', 4).endsWith(' 4 external coder runs finished since the last external review: once the' +
+      ' close is released, start the auditor in the background with `EXTERNAL REVIEW · PHASE 3.40` and bring its proposals' +
+      ' to the developer (the pa-external-agents skill, "Learning from each run").')).toBe(true)
+    expect(closeNotice('3.40', {}, '', 1)).toContain(' 1 external coder run finished')
+    expect(closeNotice('3.40', {}, '', 0)).toBe(closeNotice('3.40'))
   })
 })
 
@@ -403,5 +440,45 @@ describe('the planner an approval records (3.24 T17b)', () => {
     expect(plannerIdOf(list, 'P1')).toBe('L2')
     expect(plannerIdOf(list, 'Q1')).toBe('Q1')
     expect(plannerIdOf([], 'P1')).toBe('P1')
+  })
+})
+
+describe('external coders (3.3 T7)', () => {
+  test('externalReminder: absent, the line; coder set, remind: false, use: false or bad JSON, none', async () => {
+    const line = externalReminder('{"mod":"on"}')
+    expect(line.startsWith('PA3: external coders are available (OpenRouter or local models do the coding;')).toBe(true)
+    expect(line.endsWith('(PY tools/pa_ext.py set --remind off).')).toBe(true)
+    expect(externalReminder('{"mod":"on","external":{"use":true}}')).toBe(line)
+    expect(externalReminder('{"external":{"coder":"deepseek"}}')).toBe('')
+    expect(externalReminder('{"external":{"remind":false}}')).toBe('')
+    expect(externalReminder('{"external":{"use":false}}')).toBe('')
+    expect(externalReminder('{not json')).toBe('')
+    expect(externalReminder(null)).toBe('')
+  })
+
+  test('setupNotice: a new status under 24 h, the line; old, already seen or bad JSON, null', async () => {
+    const st = (at: number, text = 'saved: OpenRouter, deepseek.'): string => JSON.stringify({ at, ok: true, text })
+    const now = 1_000_000
+    expect(setupNotice(st(now - 60), null, now)).toBe('PA3: the developer ran the external-coder setup: saved: OpenRouter, ' +
+      'deepseek. If it failed, explain why and the fix from the pa-external-agents skill\'s troubleshooting table. If it ' +
+      'saved, load that skill, lay out the config, run PY tools/pa_ext.py check, and ask how and when they want external ' +
+      'coders used in this project.')
+    expect(setupNotice(st(now - 25 * 3_600), null, now)).toBe(null)
+    expect(setupNotice(st(now - 60), JSON.stringify({ at: now - 60 }), now)).toBe(null)
+    expect(setupNotice(st(now - 60), JSON.stringify({ at: now - 600 }), now)).not.toBe(null)
+    expect(setupNotice('{bad', null, now)).toBe(null)
+    expect(setupNotice(null, null, now)).toBe(null)
+    expect(setupNotice(st(now - 60), '{bad', now)).not.toBe(null)
+  })
+})
+
+describe('the start check (3.30.2)', () => {
+  test('startCheckOffline: the start note says its fetch got no answer; still an answer for the gate', () => {
+    const t = (o: Record<string, unknown>): string => JSON.stringify({ session: 'S1', at: 100, update: false, ...o })
+    expect(startCheckOffline(t({ state: 'offline' }), 'S1', 100_000)).toBe(true)
+    expect(startCheckOffline(t({ state: 'done' }), 'S1', 100_000)).toBe(false)
+    expect(startCheckOffline(t({ state: 'offline', session: 'S0' }), 'S1', 100_000)).toBe(false)
+    expect(startCheckOffline(null, 'S1', 100_000)).toBe(false)
+    expect(startCheckState(t({ state: 'offline' }), 'S1', 100_000, 100_000)).toBe('done')
   })
 })

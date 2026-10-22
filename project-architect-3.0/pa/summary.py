@@ -322,6 +322,8 @@ def accounts_block(conn, cfg=None, readers=None):
     for (acct,) in conn.execute("SELECT DISTINCT account FROM utilization"):
         if acct and acct not in emails:
             emails.append(acct)
+    # 3.3: an external coder's ext:<config> is OpenRouter cash, never a subscription account
+    emails = [e for e in emails if not str(e).startswith("ext:")]
     era_iso = era_start(conn, cfg)
     for email in emails:
         pstart = period_start(cfg, account=email)

@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 3.29.9" src="https://img.shields.io/badge/version-3.29.9-3b82f6">
+  <img alt="version 3.30.7" src="https://img.shields.io/badge/version-3.30.7-3b82f6">
   <img alt="for Claude Code" src="https://img.shields.io/badge/for-Claude%20Code-d97757">
   <img alt="Windows, WSL, Linux, macOS" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20WSL%20%7C%20Linux%20%7C%20macOS-64748b">
 </p>
@@ -26,6 +26,8 @@ words.
   out of your context.
 - **Models that fit your plan.** Max 20x, Max 5x or Pro: PA3 reads which from your login and picks its models to
   match.
+- **Cheaper coders when you want them.** A task's coding can run on DeepSeek or GLM through OpenRouter, on your own
+  key, while planning and judgment stay on Claude.
 
 ## See it
 
@@ -107,8 +109,9 @@ same way. [The whole story, with the measurements](https://github.com/Druthulu/P
 The [wiki](https://github.com/Druthulu/ProjectArchitect/wiki) has the rest: the
 [statusline and the savings](https://github.com/Druthulu/ProjectArchitect/wiki/Statusline-and-savings),
 [the bench](https://github.com/Druthulu/ProjectArchitect/wiki/Bench) that measures the agents themselves (results in
-[`bench/results/`](bench/results/)), [why PA3 stays serial](https://github.com/Druthulu/ProjectArchitect/wiki/Speedups),
-and the [FAQ](https://github.com/Druthulu/ProjectArchitect/wiki/FAQ). What changed in each release:
+[`bench/results/`](bench/results/)), [external coders](https://github.com/Druthulu/ProjectArchitect/wiki/External-coders),
+[why PA3 stays serial](https://github.com/Druthulu/ProjectArchitect/wiki/Speedups), and the
+[FAQ](https://github.com/Druthulu/ProjectArchitect/wiki/FAQ). What changed in each release:
 [CHANGES.md](project-architect-3.0/CHANGES.md).
 
 ## License

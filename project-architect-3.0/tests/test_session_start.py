@@ -64,7 +64,7 @@ class UnstopTest(unittest.TestCase):
         self.root = _setup_project(self.tmpdir)
 
         # transcript layout: session_dir strips .jsonl; subagents_dir appends /subagents
-        self.sid = "aaaa1111-0000-4000-8000-000000000103"
+        self.sid = "aaaa1111-0000-4000-8000-000000000104"
         self.base = os.path.join(self.tmpdir, "transcripts")
         self.transcript_path = os.path.join(self.base, self.sid + ".jsonl")
         os.makedirs(os.path.dirname(self.transcript_path), exist_ok=True)
@@ -519,7 +519,7 @@ class LadderReconcileTest(unittest.TestCase):
         """run() at a main-session startup with the account on max5; network and offers patched."""
         self._stamp("max5")
         from pa.hooks import session_start as ss
-        inp = {"session_id": "dddd1111-0000-4000-8000-000000000156", "source": "startup",
+        inp = {"session_id": "dddd1111-0000-4000-8000-000000000157", "source": "startup",
                "cwd": self.root}
         with mock.patch.object(ss.accounts, "auth_status",
                                return_value={"email": self.EMAIL, "source": "auth"}),                 mock.patch.object(ss.accounts, "restamp_tier"),                 mock.patch.object(ss, "_offer_parts", return_value=None),                 mock.patch.object(ss, "_update_check", return_value=None),                 mock.patch.object(ss, "_record_behind", return_value=None),                 mock.patch.dict(os.environ, {"PA_MOD_OFF": ""}):
@@ -1104,6 +1104,8 @@ class UpdateCheckTest(unittest.TestCase):
         with open(stamp_path, encoding="utf-8") as fh:
             stamp = json.loads(fh.read())
         self.assertEqual(stamp["status"], "offline")
+        from pa.hooks import session_start as ss
+        self.assertTrue(ss._CHECK["offline"])    # 3.30.2: the start-check note says `offline`; the mod tells Claude
 
 
 @unittest.skipUnless(_GIT, "git not on PATH")

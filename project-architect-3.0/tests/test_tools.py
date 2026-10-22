@@ -272,12 +272,30 @@ class TestPlanEdit(ToolCase):
         self.ok(self.tool("plan_edit.py", "lint"), "OK")
         j = json.loads(self.ok(self.tool("plan_edit.py", "show", "--task", "T1", "--json")))
         self.assertEqual((j["status"], j["agent"], j["coder"], j["effort"]),
-                         ("queued", "pa-expert", "opus55", "medium"))   # 3.25 T6a: was expert-opus55
+                         ("queued", "pa-expert", None, "medium"))   # 3.3 T6: coder was "opus55"; 3.25 T6a: was expert-opus55
         self.assertEqual((j["files"], j["verify"], j["deps"]), ([], None, []))
         self.ok(self.tool("plan_edit.py", "set-status", "T1", "next"), "T1: queued -> next")
         self.assertIn("- T1 | next | title: x | done-when: y\n", read(self.plan))
         self.ok(self.tool("plan_edit.py", "lint"), "OK")
         self.ok(self.tool("plan_edit.py", "next", "--brief"), "T1 | next | pa-expert")
+
+    def test_external_and_in_house_coders(self):
+        # 3.3 T6: coder takes in-house and <config>/<alias> (the syntax only); a bad name is refused
+        head = "# Phase 9 -- ext\nMilestone: it works.\n\n## Triage\n- (none)\n\n## Tasks\n"
+        write(self.plan, head + "- T1 | title: x | coder: openrouter-deepseek/deepseek | done-when: y\n"
+                                "- T2 | title: x | coder: in-house | done-when: y\n\n## Changes\n")
+        self.ok(self.tool("plan_edit.py", "lint"), "OK")
+        j = json.loads(self.ok(self.tool("plan_edit.py", "show", "--task", "T1", "--json")))
+        self.assertEqual(j["coder"], "openrouter-deepseek/deepseek")
+        self.ok(self.tool("plan_edit.py", "add-task", "--title", "z", "--done-when", "d",
+                          "--coder", "openrouter-deepseek/deepseek", "--by", "planner"), "T3 added")
+        p = self.tool("plan_edit.py", "add-task", "--title", "z", "--done-when", "d",
+                      "--coder", "Bad/Name!", "--by", "planner")
+        self.assertEqual(p.returncode, 1, p.out)
+        write(self.plan, head + "- T1 | title: x | coder: Bad/Name! | done-when: y\n\n## Changes\n")
+        p = self.tool("plan_edit.py", "lint")
+        self.assertNotEqual(p.returncode, 0, p.out)
+        self.assertIn("coder 'Bad/Name!'", p.out)
 
     def test_set_status_done_on_a_scratch_plan_without_tasks_dir(self):
         scratch = os.path.join(self.root, ".run", "plan_brief.md")
@@ -323,7 +341,7 @@ class TestPlanEdit(ToolCase):
                       "done", "--coder", "sonnet", "--by", "planner")
         self.assertEqual(p.returncode, 1, p.out)
         self.assertEqual(p.out.strip().splitlines(),
-                         ["refused: coder 'sonnet' is retired: use opus55 or none"])
+                         ["refused: coder 'sonnet' is retired: use opus55, in-house, none or <config>/<alias>"])
         self.assertEqual(read(self.plan), before)
         out = self.ok(self.tool("plan_edit.py", "add-task", "--after", "T1",
                                 "--title", "mask docs", "--done-when",

@@ -17,12 +17,16 @@ context, and D38 keeps ledger data out of it.
 3.24 T6: in a ``mod: on`` project the main session's start runs the mod's health check and its
 healing (pa/health.py) and, under ``upgrade: auto``, starts the offered update itself
 (``tools/pa3_update.py`` detached, after the I48 checks); the lines say what broke and what was done.
+
+3.3: an external coder's own process (``PA_EXT`` set, :func:`pa.hooks.ext_child`) only records:
+the session (kind ``ext``, account ``ext:<config>``) and its run under the parent session; no
+accounts row, no toast and none of the main session's duties.
 """
 
 import os
 
 from .. import accounts, log, paths, running, summary
-from . import (agent_of, close_db, disk_ok, effort_of, find_project_root,
+from . import (agent_of, close_db, disk_ok, effort_of, ext_child, ext_parent, find_project_root,
                governed, now_iso, open_db, pinned_for, project_config, role_of,
                session_kind, sid_of, spool_event, status_patch, status_read,
                toast)
@@ -41,6 +45,14 @@ def run(inp, cfg):
 
     if not disk_ok(cfg):
         log.log("disk_low", session=sid, hook="session_start")
+
+    if ext_child():                    # 3.3: an external coder only records, then nothing else runs
+        conn = open_db()
+        try:
+            _record(conn, inp, cfg, sid, source, status, email)
+        finally:
+            close_db(conn)
+        return None
 
     conn = open_db()
     try:
@@ -136,9 +148,10 @@ def run(inp, cfg):
             log.log("record_behind_failed", session_id=sid, error=str(exc)[:200])
     if mod_root:
         # 3.29.1 T8: the mod starts no work at a session start until this note says the check has answered
+        # 3.30.2: `offline` when its fetch got no answer: still an answer, and the mod tells Claude once
         try:
             from .. import health
-            _start_checked(mod_root, sid, health.run_running(mod_root))
+            _start_checked(mod_root, sid, health.run_running(mod_root), state="offline" if _CHECK["offline"] else "done")
         except Exception as exc:
             log.log("start_check_failed", session_id=sid, error=str(exc)[:200])
     if source == "startup" and not agent_of(inp):
@@ -182,13 +195,14 @@ def _record(conn, inp, cfg, sid, source, status, email):
 
     cwd = inp.get("cwd") or ""
     agent_type = inp.get("agent_type")
-    kind = session_kind(agent_type, cfg, governed(inp))
+    child = ext_child()
+    kind = "ext" if child else session_kind(agent_type, cfg, governed(inp))
     role = role_of(inp, cfg)
     machine = paths.machine_tag()
     now = now_iso()
 
     first_sight = False
-    if email:
+    if email and not child:            # 3.3: an external coder's ext:<config> is no account
         seen = conn.execute("SELECT email FROM accounts WHERE email=?", (email,)).fetchone()
         first_sight = seen is None
         row = accounts.account_row(status, now)
@@ -236,8 +250,9 @@ def _record(conn, inp, cfg, sid, source, status, email):
     db.upsert_session(conn, session_row)
 
     db.upsert_agent_run(conn, {
-        "run_id": sid, "session_id": sid, "parent_run_id": None, "parent_source": "main",
-        "kind": kind, "agent_type": agent_type, "spawn_depth": 0,
+        "run_id": sid, "session_id": sid, "parent_run_id": (ext_parent() or None) if child else None,
+        "parent_source": "ext" if child else "main",
+        "kind": role if child else kind, "agent_type": agent_type, "spawn_depth": 0,
         "model_pinned": pinned_for(inp, cfg), "model_seen": inp.get("model"),
         "effort": effort_of(inp), "started": now, "status": "running",
         "transcript_path": inp.get("transcript_path"),
@@ -896,12 +911,16 @@ def _check_due(inp):
     return bool(health.mod_on(find_project_root((inp or {}).get("cwd"))))
 
 
+_CHECK = {"offline": False}  # 3.30.2: this start's fetch got no answer (the start-check note says so; the mod tells Claude)
+
+
 def _update_check(inp, cfg):
     """Check for PA3 updates from the package clone (main session; see ``_check_due``).
 
     Every check fetches the clone and rewrites the update.json stamp (the doctor row reads it).
     3.28 T5: the once-a-day freshness gate is gone.
     """
+    _CHECK["offline"] = False
     if not _check_due(inp):
         return None
 
@@ -926,9 +945,11 @@ def _update_check(inp, cfg):
             capture_output=True, timeout=timeout_s)
         if result.returncode != 0:
             _write_stamp(stamp_path, {"checked_at": now, "status": "offline"})
+            _CHECK["offline"] = True
             return None
     except (OSError, subprocess.SubprocessError):
         _write_stamp(stamp_path, {"checked_at": now, "status": "offline"})
+        _CHECK["offline"] = True
         return None
 
     # installed hash, package tree and version from VERSION git:/tree:/version: lines

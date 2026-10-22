@@ -66,16 +66,19 @@ with open(Path(log) / f"{sid}.json", "w", encoding="utf-8") as fh:
     fh.write(json.dumps({"arm": arm, "id": tid, "attempt": attempt, "start": t0, "end": time.time(), "hidden": hidden_seen,
                          "prompt": bool(prompt), "stdin": prompt, "argv": sys.argv[1:],
                          "api_key": "ANTHROPIC_API_KEY" in os.environ,
+                         "anthropic": sorted(k for k in os.environ if k.upper().startswith("ANTHROPIC_")),
+                         "config_dir": os.environ.get("CLAUDE_CONFIG_DIR"),
                          "hooks_off": os.environ.get("PA_HOOKS_OFF"), "ledger": os.environ.get("PA_LEDGER_DIR"),
                          "pa_json": (clone / ".claude" / "pa.json").exists()}) + "\n")
 denials = [{"tool_name": "Bash", "tool_use_id": "t1", "tool_input": {}}] if os.environ.get("FAKE_DENY") == tid else []
-print(json.dumps({"type": "result", "subtype": "success", "is_error": False, "result": answer,
+print(json.dumps({"type": "result", "subtype": "success", "is_error": bool(os.environ.get("FAKE_ERROR")),
+                  "result": os.environ.get("FAKE_ERROR") or answer,
                   "session_id": sid, "num_turns": 5,
                   "total_cost_usd": 0.07 if tid.endswith(".c") else 0.05,
                   "permission_denials": denials,
                   "usage": {"input_tokens": 10, "output_tokens": 20, "cache_read_input_tokens": 30,
                             "cache_creation_input_tokens": 40},
-                  "modelUsage": {"claude-opus-5-5": {"costUSD": 0.05}}}))
+                  "modelUsage": json.loads(os.environ.get("FAKE_MU") or '{"claude-opus-5-5": {"costUSD": 0.05}}')}))
 '''
 
 
@@ -130,6 +133,14 @@ class BenchRun(unittest.TestCase):
     def doc(self):
         return json.loads(self.out.read_text(encoding="utf-8"))
 
+    def test_tasks_filter_runs_only_those(self):
+        """3.3 T10b: run --tasks keeps only the named ids of the suite."""
+        self.pct(10.0)
+        os.environ["FAKE_PASS"] = "1"
+        rc, text = self.run_bench("pa-coder", "--tasks", "c01,c11")
+        self.assertEqual(rc, 0, text)
+        self.assertEqual(sorted(t["id"] for t in self.doc()["arms"][0]["tasks"]), ["c01", "c11"])
+
     def test_under_cap_runs_all_arms_and_writes_ledger(self):
         self.pct(10.0)
         os.environ["FAKE_PASS"] = "1"
@@ -148,7 +159,7 @@ class BenchRun(unittest.TestCase):
         self.assertEqual((t["turns"], t["turns_source"], t["cache_write"]), (2, "transcript", 40))
         self.assertEqual((coder["model"], coder["effort"], coder["w5h_before"]), ("claude-opus-5-5", "medium", 10.0))
         self.assertEqual(doc["claude_code"], "2.1.282")
-        self.assertEqual(doc["harness_version"], "3.29.9")        # I11: the package VERSION
+        self.assertEqual(doc["harness_version"], "3.30.7")        # I11: the package VERSION
         self.assertIn("coder pa-coder claude-opus-5-5/medium pass 4/4", text)   # 3.25 T6a: was coder-opus55
         readme = (SCRATCH / "README.md").read_text(encoding="utf-8")
         self.assertIn("| canary | max20 | coder | pa-coder |", readme)   # 3.10.6 T6: preset column
@@ -316,6 +327,14 @@ class BenchRun(unittest.TestCase):
         line = next(ln for ln in text.splitlines() if ln.startswith("expert "))
         self.assertTrue(line.endswith(f" ${cost:.2f}"), line)
 
+    def test_claim_work_never_shares_a_folder(self):
+        """3.3 T10b: two runs started in the same second get <id> and <id>-2."""
+        base = SCRATCH / "claim"
+        a = bench._claim_work(base, "20261021T030014Z-max")
+        b = bench._claim_work(base, "20261021T030014Z-max")
+        self.assertEqual((a.name, b.name), ("20261021T030014Z-max", "20261021T030014Z-max-2"))
+        self.assertTrue(a.is_dir() and b.is_dir())
+
     def test_scored_task_agent_kind_and_mu(self):
         """T24: a coder task with score_cmd is graded by grade_scored; score 0.5 < 1.0 -> failed, kind agent at run
         time; the arm summary carries the mean score."""
@@ -337,6 +356,52 @@ class BenchRun(unittest.TestCase):
                          (False, 0.5, "agent", "score 0.50 < 1.0"))
         self.assertIsNone(bench._unrun(task)["score"])
         self.assertEqual(bench._arm_summary({"tasks": [rec]})[0], "pass 0/1 (t1 0/1) · score μ0.50")
+
+    def test_run_timeout_overrides_the_tasks(self):
+        """3.3 T10b: ctx["timeout"] (`run --timeout`) wins over the task's own timeout."""
+        root = SCRATCH / "fx-timeout"
+        (root / "repo").mkdir(parents=True)
+        (root / "repo" / "a.txt").write_text("x\n", encoding="utf-8")
+        (root / "settings").mkdir()
+        shutil.copyfile(BENCH / "settings" / "allow.json", root / "settings" / "allow.json")
+        task = {"id": "m01", "tier": 1, "suites": ["max"], "prompt": "p", "timeout": 600, "expect": {}}
+        work = SCRATCH / "work" / "direct-timeout"
+        (work / "coder").mkdir(parents=True)
+        ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None, "timeout": 1}
+        meta = {"path": PKG / "agents" / "pa-coder.md", "agent": "pa-coder", "effort": "medium",
+                "file_model": "claude-opus-5-5"}
+        os.environ["FAKE_SLEEP"] = "5"
+        try:
+            rec = bench.run_task(ctx, "coder", task, meta)
+        finally:
+            os.environ["FAKE_SLEEP"] = "0.1"
+        self.assertEqual((rec["passed"], rec["failure_kind"], rec["audit_note"]), (False, "harness", "timeout after 1 s"))
+
+    def test_no_model_answered_is_harness(self):
+        """3.3 T10b: an error result with no modelUsage (a provider's 429) is the harness's, ungraded."""
+        root = SCRATCH / "fx-max-429"
+        (root / "repo").mkdir(parents=True)
+        (root / "repo" / "a.txt").write_text("x\n", encoding="utf-8")
+        (root / "settings").mkdir()
+        shutil.copyfile(BENCH / "settings" / "allow.json", root / "settings" / "allow.json")
+        (root / "score.py").write_text("print('score: 0.0')\n", encoding="utf-8")
+        task = {"id": "m01", "tier": 1, "suites": ["max"], "prompt": "p", "timeout": 60,
+                "expect": {"score_cmd": [sys.executable, "{fixtures}/score.py", "{clone}"], "pass_score": 1.0}}
+        work = SCRATCH / "work" / "direct-429"
+        (work / "coder").mkdir(parents=True)
+        ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None}
+        meta = {"path": PKG / "agents" / "pa-coder.md", "agent": "pa-coder", "effort": "medium",
+                "file_model": "claude-opus-5-5"}
+        os.environ.update(FAKE_ERROR="API Error: Request rejected (429) · Provider returned error", FAKE_MU="{}")
+        try:
+            rec = bench.run_task(ctx, "coder", task, meta)
+        finally:
+            for k in ("FAKE_ERROR", "FAKE_MU"):
+                os.environ.pop(k, None)
+        self.assertEqual((rec["passed"], rec["score"], rec["failure_kind"]), (False, None, "harness"))
+        self.assertTrue(rec["audit_note"].startswith("no model answered: API Error: Request rejected (429)"),
+                        rec["audit_note"])
+        self.assertTrue((work / "coder" / "m01.out.json").exists())
 
     def test_scored_failure_keeps_agent_kind_despite_denials(self):
         """3.11 T26: a denial no longer turns a measured scored failure into harness; with no score it does."""
@@ -361,6 +426,166 @@ class BenchRun(unittest.TestCase):
         rec = bench.run_task(ctx, "coder", task, meta)
         self.assertEqual((rec["passed"], rec["score"], rec["failure_kind"]), (False, None, "harness"))
         self.assertEqual(rec["audit_note"], "1 permission denial(s): Bash")
+
+    EXT_DS = "deepseek/deepseek-v4.1-flash-1017"
+
+    def ext_config(self):
+        """3.3 T10b: a fake pa_ext config folder openrouter-deepseek (alias deepseek) under a scratch home."""
+        import pa_ext
+        home = SCRATCH / "home"
+        os.environ.update(HOME=str(home), USERPROFILE=str(home))   # restored by setUp's patch.dict
+        folder = str(home / ".claude" / "pa3-ext" / "openrouter-deepseek")
+        pa_ext._write_settings(folder, "http://127.0.0.1:9/api", "sk-fake-0123")
+        pa_ext._write_meta(folder, "openrouter-deepseek", "http://127.0.0.1:9/api",
+                           {"deepseek": {"id": self.EXT_DS, "name": "DeepSeek V4.1 Flash"}})
+        return folder
+
+    def no_poll(self):
+        def boom():
+            raise AssertionError("window polled on an external run")
+        self._patch(mock.patch.object(bench, "window_pct", boom))
+
+    def test_external_help_is_appended_only_when_on(self):
+        """3.3 T10b: ctx["ext_help"] (`run --ext-help on`) appends pa_ext.HELP_TEXT; the task's cli stays last."""
+        import pa_ext
+        folder = self.ext_config()
+        root = SCRATCH / "fx-help"
+        (root / "repo").mkdir(parents=True)
+        (root / "repo" / "a.txt").write_text("x\n", encoding="utf-8")
+        (root / "settings").mkdir()
+        shutil.copyfile(BENCH / "settings" / "allow.json", root / "settings" / "allow.json")
+        meta = {"path": PKG / "agents" / "pa-coder.md", "agent": "pa-coder", "effort": "medium",
+                "file_model": "claude-opus-5-5"}
+        os.environ["FAKE_MU"] = json.dumps({self.EXT_DS: {"inputTokens": 10, "outputTokens": 1}})
+        for on in (False, True):
+            work = SCRATCH / "work" / ("help-%s" % on)
+            (work / "coder").mkdir(parents=True)
+            ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None,
+                   "ext": ("openrouter-deepseek/deepseek", folder, self.EXT_DS), "ext_help": on}
+            task = {"id": "m0%d" % (2 + on), "tier": 1, "suites": ["max"], "prompt": "p", "timeout": 60, "cli": ["--x"]}
+            bench.run_task(ctx, "coder", task, meta)
+            argv = next(c for c in self.calls() if c["id"] == task["id"])["argv"]   # calls() is in uuid order
+            self.assertEqual(argv[-1], "--x")
+            if on:
+                f = Path(argv[argv.index("--append-system-prompt-file") + 1])
+                self.assertEqual(f.read_text(encoding="utf-8"), pa_ext.HELP_TEXT + "\n")
+            else:
+                self.assertNotIn("--append-system-prompt-file", argv)
+
+    def test_external_attempt_argv_env_cost_turns_leak(self):
+        """3.3 T10b: pa_ext's child: explicit allow list, config folder env, pa.prices cost, transcript there, LEAK."""
+        import pa_ext
+        from pa import prices
+        folder = self.ext_config()
+        root = SCRATCH / "fx-max"
+        (root / "repo").mkdir(parents=True)
+        (root / "repo" / "a.txt").write_text("x\n", encoding="utf-8")
+        (root / "settings").mkdir()
+        shutil.copyfile(BENCH / "settings" / "allow.json", root / "settings" / "allow.json")
+        task = {"id": "m01", "tier": 1, "suites": ["max"], "prompt": "p", "timeout": 60, "cli": ["--x"]}
+        work = SCRATCH / "work" / "direct"
+        (work / "coder").mkdir(parents=True)
+        ctx = {"fixtures": root, "work": work, "claude": shutil.which("claude"), "model": None,
+               "ext": ("openrouter-deepseek/deepseek", folder, self.EXT_DS)}
+        meta = {"path": PKG / "agents" / "pa-coder.md", "agent": "pa-coder", "effort": "medium",
+                "file_model": "claude-opus-5-5"}
+        mu = {self.EXT_DS: {"inputTokens": 1000, "outputTokens": 200, "cacheReadInputTokens": 3000,
+                            "cacheCreationInputTokens": 0, "costUSD": 9.0},
+              "claude-haiku-5-5": {"inputTokens": 100, "outputTokens": 10, "costUSD": 9.0}}
+        os.environ["FAKE_MU"] = json.dumps(mu)
+        rec = bench.run_task(ctx, "coder", task, meta)
+        (call,) = self.calls()
+        argv = call["argv"]
+        self.assertNotIn("--permission-mode", argv)
+        flag = lambda f: argv[argv.index(f) + 1]   # noqa: E731
+        self.assertEqual((flag("--setting-sources"), flag("--model"), flag("--effort"), flag("--agent")),
+                         ("user", self.EXT_DS, "medium", "pa-coder"))
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertEqual(argv[-1], "--x")
+        allow = json.loads((BENCH / "settings" / "allow.json").read_text(encoding="utf-8"))["permissions"]["allow"]
+        self.assertEqual(flag("--allowedTools"), ",".join(pa_ext.BASE_ALLOW + allow))
+        self.assertTrue(flag("--disallowedTools").startswith("Agent"))
+        run_dir = work / "coder" / "m01.ext"
+        self.assertEqual(Path(flag("--agents")), run_dir / "agents.json")
+        self.assertIn("pa-coder", json.loads((run_dir / "agents.json").read_text(encoding="utf-8")))
+        sets = json.loads((run_dir / "settings.json").read_text(encoding="utf-8"))
+        self.assertEqual((sets["env"]["ANTHROPIC_MODEL"], sets["env"]["CLAUDE_CODE_SUBPROCESS_ENV_SCRUB"], sets["hooks"]),
+                         (self.EXT_DS, "1", {}))
+        self.assertEqual(call["config_dir"], folder)
+        self.assertEqual(call["anthropic"], [])   # setUp's ANTHROPIC_API_KEY is stripped
+        want = sum(prices.cost_of(u, m, ttl_default="5m", ctx=0)[0] for m, u in mu.items())
+        self.assertGreater(want, 0)
+        self.assertAlmostEqual(rec["cost_usd"], want)
+        self.assertNotEqual(rec["cost_usd"], 0.05)   # never total_cost_usd
+        self.assertEqual((rec["turns"], rec["turns_source"]), (2, "transcript"))
+        self.assertTrue(list(Path(folder).glob(f"projects/*/{rec['session_id']}.jsonl")))
+        self.assertEqual(rec["leak"], ["claude-haiku-5-5"])
+        self.assertIn("LEAK: requests ran on claude-haiku-5-5", rec["detail"])
+        self.assertNotIn("!= file", rec["detail"])
+
+    def test_external_timeout_is_priced_from_its_transcript(self):
+        """3.3 A/B: a timed-out external attempt stays a harness timeout, and takes its session, turns, tokens and
+        pa.prices cash from the transcript under bench's --session-id (each message id's last write counts)."""
+        from pa import prices
+        folder = self.ext_config()
+        root = SCRATCH / "fx-cut"
+        (root / "repo").mkdir(parents=True)
+        (root / "repo" / "a.txt").write_text("x\n", encoding="utf-8")
+        (root / "settings").mkdir()
+        shutil.copyfile(BENCH / "settings" / "allow.json", root / "settings" / "allow.json")
+        work = SCRATCH / "work" / "cut"
+        (work / "coder").mkdir(parents=True)
+        claude = shutil.which("claude")
+        ctx = {"fixtures": root, "work": work, "claude": claude, "model": None, "timeout": 5,
+               "ext": ("openrouter-deepseek/deepseek", folder, self.EXT_DS)}
+        meta = {"path": PKG / "agents" / "pa-coder.md", "agent": "pa-coder", "effort": "max",
+                "file_model": "claude-opus-5-5"}
+        u1 = {"input_tokens": 100, "output_tokens": 5, "cache_read_input_tokens": 0}
+        u2 = {"input_tokens": 50, "output_tokens": 40, "cache_read_input_tokens": 900}
+        real = subprocess.run
+
+        def run(cmd, *a, **kw):   # the child writes its transcript, then the cap cuts it
+            if cmd[0] != claude:
+                return real(cmd, *a, **kw)
+            proj = Path(folder) / "projects" / "cut"
+            proj.mkdir(parents=True, exist_ok=True)
+            with open(proj / f"{cmd[cmd.index('--session-id') + 1]}.jsonl", "w", encoding="utf-8") as fh:
+                for mid, u in (("m1", u1), ("m2", dict(u2, output_tokens=1)), ("m2", u2)):
+                    fh.write(json.dumps({"type": "assistant",
+                                         "message": {"id": mid, "model": self.EXT_DS, "usage": u}}) + "\n")
+            raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
+
+        self._patch(mock.patch.object(bench.subprocess, "run", run))
+        task = {"id": "m09", "tier": 4, "suites": ["max"], "prompt": "p", "timeout": 60}
+        rec = bench.run_task(ctx, "coder", task, meta, 1, 2)
+        self.assertEqual((rec["passed"], rec["failure_kind"], rec["audit_note"]), (False, "harness", "timeout after 5 s"))
+        self.assertEqual((rec["turns"], rec["input"], rec["output"], rec["cache_read"]), (2, 150, 45, 900))
+        self.assertTrue(list(Path(folder).glob(f"projects/cut/{rec['session_id']}.jsonl")))
+        want = sum(prices.cost_of(u, self.EXT_DS, ttl_default="5m", ctx=0)[0] for u in (u1, u2))
+        self.assertGreater(want, 0)
+        self.assertAlmostEqual(rec["cost_usd"], want)
+        self.assertTrue((work / "coder" / "m09.a1.transcript.jsonl").is_file())
+
+    def test_external_run_no_window_and_unknown_target(self):
+        """3.3 T10b: run --external: no window poll, doc external, arm model = model id; unknown target exit 2."""
+        self.ext_config()
+        self.no_poll()
+        rc, text = self.run_bench("pa-coder", "--external", "openrouter-deepseek/nope")
+        self.assertEqual(rc, 2, text)
+        self.assertIn("blocked: unknown model nope in openrouter-deepseek", text)
+        rc, text = self.run_bench("pa-coder", "--external", "nowhere/deepseek")
+        self.assertEqual(rc, 2, text)
+        self.assertIn("blocked: unknown external config nowhere", text)
+        self.assertEqual(self.calls(), [])
+        os.environ["FAKE_MU"] = json.dumps({self.EXT_DS: {"inputTokens": 10, "outputTokens": 1}})
+        rc, text = self.run_bench("pa-coder", "--external", "openrouter-deepseek/deepseek")
+        self.assertEqual(rc, 0, text)
+        self.assertIn("window: not used (external openrouter-deepseek/deepseek)", text)
+        doc = self.doc()
+        self.assertEqual((doc["external"], doc["arms"][0]["model"]), ("openrouter-deepseek/deepseek", self.EXT_DS))
+        self.assertEqual(doc["external_settings"], {"CLAUDE_CODE_MAX_CONTEXT_TOKENS": "1000000",
+                                                    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "65536", "help": "off"})
+        self.assertTrue(all("leak" not in t for t in doc["arms"][0]["tasks"]))
 
     def test_consequence_failure_fails_task(self):
         """T3 (3.9.7): shape passes, the coder's change fails the hidden tests -> passed false."""

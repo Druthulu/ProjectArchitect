@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.29.9: PA 3.2 (the version is the phase that published it).
+Project Architect 3.0, version 3.30.7: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -205,6 +205,25 @@ The task's effort picks the expert's row; the deep row is the thinker spawned wi
 - **Two tiers, one repository.** The tier belongs to the login, not the repository: two accounts or
   two collaborators on different plans sharing a git-tracked `.claude/agents/` rewrite each other's
   lines, each until the next session start on the other tier.
+
+### External coders (optional)
+
+A task's coding can run on DeepSeek or GLM through OpenRouter instead of the coder's Claude row; the
+experts, the retrievers and Claude stay on your plan
+([External coders](https://github.com/Druthulu/ProjectArchitect/wiki/External-coders)). Once per
+machine, and again inside WSL for a project that runs there:
+
+1. Create a key on openrouter.ai with a credit limit. Never paste it into a chat.
+2. In a normal terminal, run `setup-external.cmd` (Windows) or `sh setup-external.sh` (Linux, WSL)
+   from `~/.claude/pa3-src/project-architect-3.0/`. It reads the key with hidden typing, tests each
+   model, saves nothing on a failure, and then lists each model's hosts with the guardrail to add to
+   the key on openrouter.ai (one key per model when their best hosts differ).
+3. On Linux and WSL: `sudo apt-get install -y bubblewrap socat` (the coder's sandbox).
+4. In a project, `python tools/pa_ext.py check` prints each config's state.
+
+Claude then writes the project's choice with `tools/pa_ext.py set` (`--coder <config>/<alias>`,
+`--lanes`, `--escalate`, `--effort`); `set --show` prints it. The key stays in
+`~/.claude/pa3-ext/<config>/settings.json` on that machine.
 
 Then start working: open a bare `claude` in the repo and talk with Claude.
 

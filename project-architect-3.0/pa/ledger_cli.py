@@ -301,7 +301,8 @@ def minimal_summary(conn, cfg):
     try:
         rows = conn.execute(
             "SELECT COALESCE(account,'(unknown)') AS account,"
-            " COALESCE(SUM(cost_usd),0) AS cost FROM turns GROUP BY 1").fetchall()
+            " COALESCE(SUM(cost_usd),0) AS cost FROM turns"
+            " WHERE COALESCE(account,'') NOT LIKE 'ext:%' GROUP BY 1").fetchall()  # 3.3: ext is cash
     except sqlite3.DatabaseError:
         rows = []
     for row in rows:
@@ -2141,6 +2142,8 @@ def cmd_report(args):
         winfo = (win.get("windows") or {}).get(args.window or "", {}) or {}
         entry = {
             "account": acct["account"],
+            # 3.3: an external coder's ext:<config> row is OpenRouter cash, not plan usage
+            "cash": str(acct["account"]).startswith("ext:"),
             "cost_used": acct["cost_used"],
             "saved_measured": acct["saved_measured"],
             "saved_modeled": acct["saved_modeled"],
@@ -2326,7 +2329,8 @@ def cmd_report(args):
         ratio = entry["ratio"]
         headers = ["account", "cost used", "saved meas.", "ratio", "pct/$",
                    "quality", "method", "requests", "avg ctx"]
-        values = [entry["account"], usd(entry["cost_used"]), usd(entry["saved_measured"]),
+        values = [entry["account"] + (" (cash)" if entry.get("cash") else ""),
+                  usd(entry["cost_used"]), usd(entry["saved_measured"]),
                   "-" if ratio is None else "%.2fx" % ratio,
                   "-" if entry["pct_per_dollar"] is None else "%.5f" % entry["pct_per_dollar"],
                   entry["fit_quality"] or "-", entry["fit_method"] or "-",

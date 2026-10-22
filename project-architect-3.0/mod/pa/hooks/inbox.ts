@@ -24,6 +24,7 @@ export type Effect =
   | { do: 'notice'; text: string; to: string }
   | { do: 'stop'; cause: ToastOut['cause'] | null }
   | { do: 'card'; text: string }
+  | { do: 'retrieve'; question: string; label: string; answer: string }
 
 /**
  * Kinds the loop's tick drains itself (autopilot.tsx, marked done in loop.json); the router's drain skips them. T5d2a:
@@ -35,7 +36,8 @@ export const LOOP_KINDS: ReadonlySet<string> = new Set(['release', 'plan_edit', 
 /** A file name's kind is one the loop drains. */
 export const isLoopKind = (name: string): boolean => LOOP_KINDS.has(parseRequestName(name)?.kind ?? '')
 
-export type Handler = (req: Request) => Effect[]
+/** A handler reads the request and the project root (3.3 T7: the `retrieve` answer path is checked against it). */
+export type Handler = (req: Request, root: string) => Effect[]
 
 const KIND = /^[a-z][a-z0-9_]*$/
 
@@ -126,6 +128,29 @@ const noticeFx = (req: Request): Effect[] => {
   return cause === undefined ? fx : [...fx, { do: 'stop', cause }]
 }
 
+/** 3.3 T7: the agent an external coder's lookup spawns, and its prompt: the question, then the answer's shape. */
+export const RETRIEVE_TYPE = 'retriever-code'
+export const retrievePrompt = (question: string): string => `${question}\n\nAnswer in under 40 lines: file:line facts only.`
+/** What a lookup's answer file holds when no answer came. */
+export const noAnswer = (reason: string): string => `no answer: ${reason}`
+
+/** 3.3 T7: an answer path is a `.md` file inside `<root>/.run/mod/`, forward-slash compared, no `..` segment. */
+export function answerInside(answer: string, root: string): boolean {
+  const fwd = (p: string): string => p.replace(/\\/g, '/').replace(/^([a-z]):/, (_m, d: string) => `${d.toUpperCase()}:`)
+  const a = fwd(answer)
+  const r = fwd(root).replace(/\/+$/, '')
+  return r !== '' && a.endsWith('.md') && !a.split('/').includes('..') && a.startsWith(`${r}/.run/mod/`)
+}
+
+/** 3.3 T7: an external coder's lookup (`pa_ext.py ask`, input `{question, label, answer}`); a bad one is logged. */
+const retrieveFx = (req: Request, root: string): Effect[] => {
+  const question = inputText(req.input, 'question')
+  const answer = inputText(req.input, 'answer')
+  return question.trim() === '' || !answerInside(answer, root)
+    ? [{ do: 'log', kind: 'retrieve.bad', data: { id: req.id, answer } }]
+    : [{ do: 'retrieve', question, label: inputText(req.input, 'label'), answer }]
+}
+
 /** kind -> handler; any other kind goes to `noop`. `ask` raises the toast and queues the picker (Claude's ask takes a
  * pending stop's place, T13b); `plan` queues path 0. */
 export const HANDLERS: Readonly<Record<string, Handler>> = {
@@ -140,6 +165,7 @@ export const HANDLERS: Readonly<Record<string, Handler>> = {
   card: req => [...noop(req), ...(inputText(req.input, 'text').trim() === ''
     ? [{ do: 'log', kind: 'card.bad', data: { id: req.id } } as const]
     : [{ do: 'card', text: inputText(req.input, 'text') } as const])],
+  retrieve: (req, root) => [...noop(req), ...retrieveFx(req, root)],
 }
 
 /** A loop notice request: its file name and body, in the format `parseRequest` reads. */
@@ -168,6 +194,6 @@ export function requestFile(ms: number, seq: number, kind: string, caller: strin
   return { name, body: JSON.stringify({ id: name.slice(0, -'.json'.length), kind, caller, input, at: ms }, null, 1) }
 }
 
-export function handle(req: Request): Effect[] {
-  return (HANDLERS[req.kind] ?? noop)(req)
+export function handle(req: Request, root = ''): Effect[] {
+  return (HANDLERS[req.kind] ?? noop)(req, root)
 }

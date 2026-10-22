@@ -6,7 +6,11 @@
   bench.py plan <light|full|canary|max|<agent>>  one line of non-zero arms: 'coder 12 · expert 8 · …'
   bench.py run [light|full|canary|max|<agent>] [--suite light|full|canary|max] [--repeat k] [--model M] [--effort E]
                [--jobs 4] [--force] [--no-stop] [--out JSON] [--work-dir DIR] [--agents-dir DIR] [--no-rubric]
-               [--preset max20|max5|pro] [--hooks-on [--read-guards on|off]]
+               [--preset max20|max5|pro] [--hooks-on [--read-guards on|off]] [--external <config>/<alias>]
+      --external (3.3 T10b): attempts run pa_ext's headless child on the external model (pa_ext.resolve_model; an
+      unknown target: 'blocked: <text>', exit 2): run dir <clone>.ext/ (agents.json, settings.json), CLAUDE_CONFIG_DIR
+      = the config folder (transcripts there), explicit --allowedTools (BASE_ALLOW + the task settings' allow), no
+      window use; cost_usd from pa.prices over modelUsage; a modelUsage id other than the model is a LEAK note.
       --hooks-on (3.27 T6, I28): hooks fire (no PA_HOOKS_OFF), each clone gets .claude/pa.json {"toast": false}, and
       the child's PA_LEDGER_DIR is <work>/_ledger, whose config.json is the machine config's user layer; --read-guards
       off sets guard.whole_read_chars 10**9 and guard.reread_deny false there (the machine config is never written).
@@ -81,6 +85,7 @@ import sys
 import threading
 import time
 import urllib.request
+import uuid
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from pathlib import Path
 
@@ -331,11 +336,12 @@ def _parse_out(stdout):
     return None
 
 
-def _transcript_turns(session_id):
-    """(path, distinct assistant message ids) of the session transcript, or (None, None)."""
+def _transcript_turns(session_id, config_dir=None):
+    """(path, distinct assistant message ids) of the session transcript, or (None, None). config_dir (3.3 T10b):
+    an external child's config folder, else CLAUDE_CONFIG_DIR, else ~/.claude."""
     if not session_id:
         return None, None
-    cfg = Path(os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
+    cfg = Path(config_dir or os.environ.get("CLAUDE_CONFIG_DIR") or Path.home() / ".claude")
     hits = sorted((cfg / "projects").glob(f"*/{session_id}.jsonl"))
     if not hits:
         return None, None
@@ -350,6 +356,32 @@ def _transcript_turns(session_id):
             if rec.get("type") == "assistant" and isinstance(msg, dict) and msg.get("id"):
                 ids.add(msg["id"])
     return hits[0], len(ids)
+
+
+def _cut_usage(rec, sid, ext, base):
+    """3.3 A/B: a timed-out external attempt is billed all the same. Its session, turns, tokens and cash (pa.prices,
+    one usage per message id: its last write) from the transcript the child wrote under bench's --session-id; the
+    transcript is retained beside the clone. No transcript leaves the record as it was."""
+    path, turns = _transcript_turns(sid, ext[1])
+    if path is None:
+        return
+    last = {}
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        for ln in fh:
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            msg = r.get("message") if isinstance(r, dict) else None
+            if r.get("type") == "assistant" and isinstance(msg, dict) and isinstance(msg.get("usage"), dict):
+                last[msg.get("id")] = (msg.get("model") or ext[2], msg["usage"])
+    prices = _pa().prices
+    tok = lambda k: sum(u.get(k) or 0 for _, u in last.values())   # noqa: E731
+    rec.update(session_id=sid, turns=turns, turns_source="transcript", input=tok("input_tokens"),
+               output=tok("output_tokens"), cache_read=tok("cache_read_input_tokens"),
+               cache_write=tok("cache_creation_input_tokens"),
+               cost_usd=sum(prices.cost_of(u, m, ttl_default="5m", ctx=0)[0] for m, u in last.values()))
+    shutil.copyfile(path, base.with_name(base.name + ".transcript.jsonl"))
 
 
 def _unrun(task, attempt=1):
@@ -485,6 +517,34 @@ def _consequence(ctx, task, brief, sfx=""):
     return con
 
 
+def _ext_cmd(ctx, meta, clone, settings, label):
+    """3.3 T10b: (argv, env) of an external attempt, pa_ext's headless child: run dir <clone>.ext/ (outside the clone)
+    with agents.json (the ladder-rendered agent) and settings.json (model pins, SCRUB, the four flags; no hooks).
+    No --permission-mode: SCRUB forces the default mode, so allow = BASE_ALLOW + the task settings' allow."""
+    import pa_ext
+    target, folder, model_id = ctx["ext"]
+    run_dir = clone.with_name(clone.name + ".ext")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    name, desc, tools, effort, prompt = pa_ext.parse_agent(str(meta["path"]))
+    agents_json, settings_json = run_dir / "agents.json", run_dir / "settings.json"
+    agents_json.write_text(json.dumps({name: {"description": desc, "prompt": prompt, "tools": tools}},
+                                      ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    settings_json.write_text(json.dumps(pa_ext.child_settings([], model_id, {}), ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+    perms = (json.loads(settings.read_text(encoding="utf-8")) or {}).get("permissions") or {}
+    allow = list(dict.fromkeys(pa_ext.BASE_ALLOW + list(perms.get("allow") or [])))
+    deny = list(dict.fromkeys(["Agent"] + list(perms.get("deny") or [])))
+    cmd = [ctx["claude"], "-p", "--agent", name, "--agents", str(agents_json), "--model", model_id,
+           "--effort", meta.get("effort") or effort, "--session-id", str(uuid.uuid4()), "--output-format", "json",
+           "--settings", str(settings_json), "--setting-sources", "user", "--permission-prompts", "none",
+           "--strict-mcp-config", "--allowedTools", ",".join(allow), "--disallowedTools", ",".join(deny)]
+    if ctx.get("ext_help"):   # the A/B's arm with pa_ext's coder help appended
+        help_md = run_dir / "append.md"
+        help_md.write_text(pa_ext.HELP_TEXT + "\n", encoding="utf-8")
+        cmd += ["--append-system-prompt-file", str(help_md)]
+    return cmd, pa_ext.child_env(folder, target, model_id, "", label)
+
+
 def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
     """Clone, launch claude, grade; the attempt's results record. repeat 1: <work>/<arm>/<id>/ and <id>.*;
     repeat >= 2 (3.9.7 T5): clone <work>/<arm>/<id>/a<i>/, retained files <id>.a<i>.*."""
@@ -495,23 +555,30 @@ def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
     _clone(root, task, clone, ctx.get("hooks"))
     shutil.copyfile(meta["path"], clone / ".claude" / "agents" / f"{meta['agent']}.md")
     settings = (root / (task.get("settings") or "settings/allow.json")).resolve()
-    cmd = [ctx["claude"], "-p", "--agent", meta["agent"]]
-    if meta["effort"]:
-        cmd += ["--effort", meta["effort"]]
-    cmd += ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--settings", str(settings),
-            "--output-format", "json"]
-    model = meta.get("model") or ctx["model"]   # 3.28 T4d: an inherit arm's pin (or the CLI's --model)
-    if model:
-        cmd += ["--model", model]
+    ext = ctx.get("ext")   # 3.3 T10b: (target, config folder, model id) of an external run, else None
+    if ext:
+        cmd, env = _ext_cmd(ctx, meta, clone, settings, f"{arm}/{task['id']}.a{attempt}")
+    else:
+        cmd = [ctx["claude"], "-p", "--agent", meta["agent"]]
+        if meta["effort"]:
+            cmd += ["--effort", meta["effort"]]
+        cmd += ["--permission-mode", "acceptEdits", "--permission-prompts", "none", "--settings", str(settings),
+                "--output-format", "json"]
+        model = meta.get("model") or ctx["model"]   # 3.28 T4d: an inherit arm's pin (or the CLI's --model)
+        if model:
+            cmd += ["--model", model]
+        env = _env(ctx.get("hooks"))
     cmd += list(task.get("cli", []))
-    env = _env(ctx.get("hooks"))
-    limit = task.get("timeout") or TASK_TIMEOUT   # T24: a task's own timeout (max suite)
+    # T24: a task's own timeout (max suite); 3.3 T10b: `run --timeout` over both (the uncapped rerun)
+    limit = ctx.get("timeout") or task.get("timeout") or TASK_TIMEOUT
     t0 = time.time()
     try:
         r = subprocess.run(cmd, input=task["prompt"], cwd=clone, env=env, capture_output=True, text=True,
                            encoding="utf-8", errors="replace", timeout=limit)
     except subprocess.TimeoutExpired:
         rec.update(passed=False, secs=round(time.time() - t0, 1), detail="timeout")
+        if ext:
+            _cut_usage(rec, cmd[cmd.index("--session-id") + 1], ext, work / arm / f"{task['id']}{sfx}")
         return _harness(rec, f"timeout after {limit} s")
     rec["secs"] = round(time.time() - t0, 1)
     out = _parse_out(r.stdout)
@@ -526,12 +593,24 @@ def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
                denials=len(out.get("permission_denials") or []),
                error=out.get("subtype") if out.get("is_error") else None)
     mu = out.get("modelUsage") or {}
+    if out.get("is_error") and not mu:   # 3.3 T10b: no model answered (a provider's 429 …): never the agent's failure
+        cause = str(out.get("result") or out.get("subtype") or "")[:300]
+        rec.update(passed=False, detail=cause)
+        _retain(clone, work / arm / f"{task['id']}{sfx}", out, None, cause)
+        return _harness(rec, f"no model answered: {cause}")
     notes = []
     if mu:
         rec["model"] = max(sorted(mu), key=lambda k: (mu[k] or {}).get("costUSD") or 0)
-        if _base_model(rec["model"]) != _base_model(meta["file_model"]):
+        if not ext and _base_model(rec["model"]) != _base_model(meta["file_model"]):
             notes.append(f"model {rec['model']} != file {meta['file_model']}")
-    transcript, turns = _transcript_turns(rec["session_id"])
+    if ext:   # 3.3 T10b: cash at pa.prices rates (as pa_ext Show.cost); total_cost_usd means nothing for these models
+        prices = _pa().prices
+        rec["cost_usd"] = sum(prices.cost_of(u or {}, mid, ttl_default="5m", ctx=0)[0] for mid, u in mu.items())
+        leak = sorted(k for k in mu if k != ext[2])
+        if leak:
+            rec["leak"] = leak
+            notes.append(f"LEAK: requests ran on {', '.join(leak)}")
+    transcript, turns = _transcript_turns(rec["session_id"], ext[1] if ext else None)
     if turns is not None:
         rec.update(turns=turns, turns_source="transcript")
     else:
@@ -572,6 +651,18 @@ def run_task(ctx, arm, task, meta, attempt=1, repeat=1):
     elif rec["error"] and not measured:
         _harness(rec, f"claude error {rec['error']}")
     return rec
+
+
+def _claim_work(base, run_id):
+    """The run's own work folder, created here: <run_id>, else <run_id>-2, -3 ... (3.3 T10b: benches started in the
+    same second shared one folder and crashed on each other's clones)."""
+    work, n = base / run_id, 2
+    while True:
+        try:
+            work.mkdir(parents=True)
+            return work
+        except FileExistsError:
+            work, n = base / f"{run_id}-{n}", n + 1
 
 
 def _results_dir(args):
@@ -692,6 +783,15 @@ def cmd_run(args):
         print(f"unknown suite or agent: {args.target}")
         return 2
     suite, arm_list = tgt
+    ext = getattr(args, "external", None)
+    if ext:   # 3.3 T10b: resolved once; attempts go to the external model
+        import pa_ext
+        try:
+            config, alias, folder, model_id, _ = pa_ext.resolve_model(ext)
+        except pa_ext.Blocked as exc:
+            print(f"blocked: {exc}")
+            return 2
+        ext = (f"{config}/{alias}", folder, model_id)
     hooks_on, read_guards = getattr(args, "hooks_on", False), getattr(args, "read_guards", None)
     if read_guards and not hooks_on:
         print("--read-guards needs --hooks-on")
@@ -706,6 +806,9 @@ def cmd_run(args):
     plan, rendered = [], {}
     for arm, name, text in kept:
         tasks = _tasks(root, arm, suite)
+        only = [x.strip() for x in (getattr(args, "tasks", None) or "").split(",") if x.strip()]
+        if only:   # 3.3 T10b: the uncapped rerun and the A/B run chosen tasks only
+            tasks = [t for t in tasks if t["id"] in only]
         if not tasks:
             continue
         path = agents / f"{name}.md"
@@ -732,8 +835,10 @@ def cmd_run(args):
     per_task = _median_cost(rdir, suite) * POINTS_PER_USD
     cap = _window_cap()
     total = sum(len(t) for _, t, _ in plan) * k   # attempts
-    pct = window_pct()
-    if pct is None:
+    pct = None if ext else window_pct()
+    if ext:   # no subscription window: no estimate refusal, no mid-run polls
+        print(f"window: not used (external {ext[0]})")
+    elif pct is None:
         print("window: unknown")
     elif pct + total * per_task > cap and not args.force:
         print(f"window: five-hour {pct:.0f}% + estimate {total * per_task:.1f} > cap {cap:.0f}; "
@@ -747,9 +852,11 @@ def cmd_run(args):
         claude_code = None
     now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
     run_id = now.strftime("%Y%m%dT%H%M%SZ") + "-" + suite
-    work = Path(args.work_dir or Path.home() / "pa3-bench").resolve() / run_id
+    work = _claim_work(Path(args.work_dir or Path.home() / "pa3-bench").resolve(), run_id)
+    run_id = work.name
     ctx = {"fixtures": root, "work": work, "claude": claude, "model": args.model,
-           "hooks": _hooks_ledger(work, read_guards) if hooks_on else None}
+           "hooks": _hooks_ledger(work, read_guards) if hooks_on else None, "ext": ext,
+           "timeout": getattr(args, "timeout", None), "ext_help": getattr(args, "ext_help", "off") == "on"}
     (work / "_agents").mkdir(parents=True, exist_ok=True)
     for _, _, meta in plan:   # the ladder-rendered copy runs; never written into any .claude/agents/
         meta["path"] = work / "_agents" / f"{meta['path'].stem}.md"
@@ -760,11 +867,19 @@ def cmd_run(args):
            "harness_version": pa.__version__, "price_version": pa.prices.PRICES_VERSION,
            "fixture_hash": manifest(root)["hash"], "claude_code": claude_code, "work_dir": str(work),
            "hooks": f"on, read guards {read_guards or 'on'}" if hooks_on else "off", "arms": []}
+    if ext:
+        import pa_ext
+        doc["external"] = ext[0]
+        env = pa_ext.child_settings([], ext[2], {})["env"]   # the settings a result is compared and replicated by
+        doc["external_settings"] = {k: env[k] for k in ("CLAUDE_CODE_MAX_CONTEXT_TOKENS", "CLAUDE_CODE_MAX_OUTPUT_TOKENS")}
+        doc["external_settings"]["help"] = getattr(args, "ext_help", "off")
     state = {"pct": pct, "last": time.monotonic(), "stop": False, "left": total}
     lock = threading.Lock()
 
     def check(force_poll):
         """Re-poll (after an arm, or >= POLL_EVERY_S since the last poll); set stop when over the cap."""
+        if ext:
+            return
         with lock:
             if not force_poll and (args.no_stop or time.monotonic() - state["last"] < POLL_EVERY_S):
                 return
@@ -774,7 +889,7 @@ def cmd_run(args):
                 state["stop"] = True
 
     for arm, tasks, meta in plan:
-        entry = {"role": meta["role"], "agent": meta["agent"], "model": meta["file_model"],
+        entry = {"role": meta["role"], "agent": meta["agent"], "model": ext[2] if ext else meta["file_model"],
                  "effort": meta["effort"], "body_hash": meta["body_hash"], "version": meta["version"],
                  "stopped": 0, "w5h_before": None, "w5h_after": None, "tasks": []}
         doc["arms"].append(entry)
@@ -809,7 +924,7 @@ def cmd_run(args):
         entry["w5h_after"] = state["pct"]
         entry["tasks"] = [done.get((t["id"], i)) or _unrun(t, i) for t in tasks for i in range(1, k + 1)]
         models = [t.pop("model") for t in entry["tasks"] if t.get("model")]
-        if models:
+        if models and not ext:   # an external arm's model is its model id (a leak is in each record)
             entry["model"] = max(sorted(set(models)), key=models.count)
     for a in doc["arms"]:
         for t in a["tasks"]:
@@ -1288,6 +1403,11 @@ def main(argv=None):
     rn.add_argument("--model", metavar="M", help="--model passed to claude")
     rn.add_argument("--effort", metavar="E", help="override the agent file's effort")
     rn.add_argument("--jobs", type=int, default=4, help="tasks in flight after an arm's first (default 4)")
+    rn.add_argument("--timeout", type=int, metavar="SECS",
+                    help="per-attempt timeout over each task's own (3.3 T10b: the uncapped rerun)")
+    rn.add_argument("--tasks", metavar="ID[,ID...]", help="only these task ids of the suite (3.3 T10b)")
+    rn.add_argument("--ext-help", choices=("on", "off"), default="off",
+                    help="an external arm gets pa_ext's coder help appended (3.3 T10b: the A/B)")
     rn.add_argument("--force", action="store_true", help="run even when the window estimate is over the cap")
     rn.add_argument("--no-stop", action="store_true", help="no mid-run window stop")
     rn.add_argument("--out", metavar="JSON", help="results path (default ./bench/results/<date>.json)")
@@ -1301,6 +1421,8 @@ def main(argv=None):
                     help="hooks fire in governed clones, config and ledger in <work>/_ledger (3.27 T6)")
     rn.add_argument("--read-guards", choices=("on", "off"),
                     help="with --hooks-on: the whole-read cap and re-read deny for this run (default: machine config)")
+    rn.add_argument("--external", metavar="CONFIG/ALIAS",
+                    help="attempts run on an external model (pa_ext config folder; no subscription window) (3.3 T10b)")
     rn.set_defaults(func=cmd_run)
     ab = sub.add_parser("ab", help="run two agents of one role on one suite; paired per-task table")
     ab.add_argument("a", metavar="agentA")

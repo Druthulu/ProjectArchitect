@@ -47,6 +47,11 @@ Every expert reads it in a fresh context. Follow the task-line grammar: a task l
 the rest is added when it helps the expert: files and methods, a `verify:` command, the `coder:` tier, `effort:`
 (medium by default), the task summaries to read, dependencies, an `est-ctx`, and `review: yes` when the developer must
 sift results.
+When `.claude/pa.json` has `external.coder` (external coders are set up), give each task that a coder will do a
+recommended `coder:` with a one-line reason in its `note:`, read against the card's `## External coders` section
+when it has one. Monotonous, well-tested work goes to the external coder (`coder: <config>/<alias>`, e.g. "47
+function cracks, byte-match tested: external"). Design and judgment go in-house (`coder: in-house`). The rest follows
+the card's section. The developer changes any of them in the plan view.
 The last task is always the phase cleanup: `- T<n> | title: phase cleanup | done-when: what the project still needs from
 .run/<phase>/ is in its proper place in the repo`. Its expert checks the phase's temp folder and moves what is still
 needed (or asks); the close deletes the folder once this task is done.

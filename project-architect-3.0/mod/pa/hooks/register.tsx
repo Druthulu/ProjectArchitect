@@ -28,20 +28,21 @@ import type { Band, BandRow, FeedDrawn, FeedEdit, FeedRun, Work } from '../types
 
 import { decide, ERROR_FILE, errorText, HEARTBEAT_FILE, heartbeatText, ledgerPath, paSetting, releaseOf, versionOf } from './activation'
 import { armAutopilot, sessionStartPending } from './autopilot'
+import { BUILD } from './build'
 import {
   type BandAgent, bandCells, bandHex, bandIds, bandStepOf, bandView, borderOf, type Card, type CardStyle, cardStyleOf, claudeCard, claudeRows, coderIdOf, finishCardOf,
   loopNoteOf, noteCardOf, numstatOf, parseCard, receivedRow, ROLE_HEX, type Sender,
 } from './card'
 import { parseCoderReturn } from './contract'
 import { clip, eventFile, isStale, PRUNE_DAYS, pruneArgv } from './debug'
-import { forwardRequest, handle, isLoopKind, parseRequest, pendingRequests, requestFile } from './inbox'
+import { forwardRequest, handle, isLoopKind, noAnswer, parseRequest, pendingRequests, requestFile, RETRIEVE_TYPE, retrievePrompt } from './inbox'
 import { dayFilePath, type Entry, indexAgrees, indexPath, JOURNAL_DIR, mergeIndex, parseEntry, parseEntryPath, splitDay, stamp, unindexed } from './journal'
 import { idleNow, runningNow, taskAgents } from './digest'
 import {
   addRecords, beatOf, deathOf, emptyFeed, emptyLife, FEED_BEAT_MS, FEED_DESC, FEED_STALE_MS, FEED_TIMEOUT_MS, feedBlock, feedCommand, feedErrorLine, feedEvents,
   announces, editHead, feedLook, type FeedRecord, feedText, fromLog, missingNs, NUDGE, nudgeName, replyRecord, restartGate, seenBeat, senderOf, shownOf, speakerOf, staleOf, unseenFeed,
 } from './feed'
-import { FIRST_RUN_WAITS, firstRunLine, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, queuedTo, RESTART_LINE, sessionTitle, SHELLS_FILE, shellsOf, shellsOut, statusWord, talkLine } from './loop'
+import { EXT_SEEN, EXT_STATUS, extAt, externalReminder, FIRST_RUN_WAITS, firstRunLine, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, queuedTo, RESTART_LINE, sessionTitle, setupNotice, SHELLS_FILE, shellsOf, shellsOut, statusWord, talkLine } from './loop'
 import {
   answerLine, APPROVED, askBody, decisionLine, dialogCopy, DIALOG_FILE, dialogJson, FALLBACK_OPTIONS, FALLBACK_QUESTION, fallbackLine, installs, isReplan,
   dialogKey, dropAgentDialogs, holdingAgent, learnedFile, PLAN_PANE, planBody, planFilePath, planLogLines, presentHold, slugArgv, slugFile, trialLine,
@@ -115,6 +116,7 @@ let noToastLogged = false
 /** 3.28.8: the developer's latest message with attachments (when, how many) and Claude Code's source lines for them. */
 let imageWait: { at: number; count: number; lines: string[] } | null = null
 let lastBang = '' // 3.29.8: the `!` command whose output row comes next
+let remindedSid = '' // 3.3 T7: the session whose first developer message carried the external-coder reminder
 let presenting = false // the presentation tick's one dialog at a time
 let lastHold = '' // the last deferral logged, so a long wait logs once
 let turnWaitLogged = '' // 3.24 T17j: the your-turn toast's last loop wait logged (turnId + why), once per change
@@ -327,7 +329,8 @@ export const register: Register = (on, options) => {
         return
       }
       // 3.24 T6: the heartbeat pa/health.py checks: this session's mod loaded (the release from the plugin's root, two up).
-      const release = releaseOf(await $.fs.read(`${$.plugin.root}/../../VERSION`).catch(() => null))
+      // 3.30.2: the release this code is, when the install stamped it (VERSION may already name a newer one).
+      const release = BUILD.version !== '' ? BUILD.version : releaseOf(await $.fs.read(`${$.plugin.root}/../../VERSION`).catch(() => null))
       await $.fs.write(`${root}/${HEARTBEAT_FILE}`, heartbeatText(sidNow, release, version, await $.clock.now(), 'pa')).catch(quiet)
       if (debugBase !== '') {
         await $.fs.write(...ev('activation', { why, sid: sidNow, version, decision, route: routeOn, interactive, sdkAsUser })).catch(quiet)
@@ -511,7 +514,7 @@ export const register: Register = (on, options) => {
                 }
                 continue
               }
-              for (const fx of handle(req)) {
+              for (const fx of handle(req, root)) {
                 if (fx.do === 'log' && debugBase !== '') {
                   await $.fs.write(...ev(fx.kind, fx.data)).catch(quiet)
                 } else if (fx.do === 'present' && isReplan(fx.item, await $.fs.exists(`${root}/phase-ends/current/REPLAN.md`),
@@ -592,6 +595,26 @@ export const register: Register = (on, options) => {
                     await $.fs.write(statePath(base, sidNow), serializeState(after))
                   }
                   await log('inbox.card', { id, n: n.v, text: clip(c, 120) })
+                } else if (fx.do === 'retrieve') {
+                  // 3.3 T7: an external coder's lookup (pa_ext.py ask): PA3's retriever in this session, on the
+                  // subscription; prompt.submit writes its hand-back's text to `answer`, then `answer.done`, never to
+                  // Claude. Pending in the state (`pending`, kind `retrieve`, id the answer path) across restarts.
+                  const f = fx
+                  const before = new Set((await $.agent.list().catch(() => [])).map(a => a.id))
+                  const r = await $.agent.spawn({ subagentType: RETRIEVE_TYPE, prompt: retrievePrompt(f.question), description: `Lookup for External coder ${f.label}`.trim() })
+                  const added = r.deny !== undefined ? [] : (await $.agent.list().catch(() => [])).filter(a => !before.has(a.id))
+                  const aid = r.deny !== undefined ? '' : r.agentId ?? (added.filter(a => a.type === RETRIEVE_TYPE).pop() ?? added[added.length - 1])?.id ?? ''
+                  if (aid === '') {
+                    await $.fs.write(f.answer, noAnswer(`the retriever spawn was refused (${clip(r.deny ?? 'no agentId', 200)})`))
+                    await $.fs.write(`${f.answer}.done`, '')
+                  } else {
+                    const after = await update($, stateAtom, s => (s === null ? s
+                      : { ...s, pending: [...s.pending.filter(p => p.id !== f.answer), { id: f.answer, agentId: aid, kind: 'retrieve', at }] }))
+                    if (after !== null) {
+                      await $.fs.write(statePath(base, sidNow), serializeState(after))
+                    }
+                  }
+                  await log('inbox.retrieve', { id, agentId: aid, label: f.label, answer: f.answer })
                 }
               }
             }
@@ -1722,7 +1745,18 @@ export const register: Register = (on, options) => {
           fed = feedBlock(unseen.map(rec => ({ rec, who: speakerOf(rec, pid, senderOf(rec.agent, lt, st0?.children ?? {}, listed)) })), fdir)
           data = { ...data, fed: unseen.length }
         }
-        const sent = [held ?? '', running, fed].filter(p => p !== '').concat(text).join('\n\n')
+        // 3.3 T7: the external-coder reminder, on the session's first developer message; the setup's result, once per
+        // project (its seen note written when it goes).
+        const sidHere = await $.session.id()
+        const remind = remindedSid === sidHere ? '' : externalReminder(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null))
+        remindedSid = sidHere
+        const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')
+        const status = home === '' ? null : await $.fs.read(`${home}/${EXT_STATUS}`).catch(() => null)
+        const setup = setupNotice(status, await $.fs.read(`${root}/${EXT_SEEN}`).catch(() => null), now / 1000)
+        if (setup !== null) {
+          await $.fs.write(`${root}/${EXT_SEEN}`, `${JSON.stringify({ at: extAt(status) })}\n`).catch(quiet)
+        }
+        const sent = [held ?? '', running, fed, remind, setup ?? ''].filter(p => p !== '').concat(text).join('\n\n')
         jseq += 1
         const seq = jseq
         // 3.23 T13d.c10: the developer's message drops the your-turn toast still owed.
@@ -1807,6 +1841,23 @@ export const register: Register = (on, options) => {
           kind = 'handback.loop' // 3.23 T5a: a loop agent's hand-back goes to the autopilot's capture, never filed or forwarded (T6a2: the curator and the auditor too)
         } else if (st !== null && st.forwarded[child] !== undefined) {
           kind = 'handback.dup'
+        } else if (st !== null && st.pending.some(p => p.kind === 'retrieve' && p.agentId === child)) {
+          // 3.3 T7: an external coder's lookup ended: its text to the answer file, then the `.done` marker; no card, no
+          // notice, no Claude turn (turn.start draws none for a retriever: its turn is the stub). A pointer to a report
+          // sent as a message waits for that message.
+          const answer = st.pending.find(p => p.kind === 'retrieve' && p.agentId === child)?.id ?? ''
+          const given = handbackReport(handText)
+          const report = given !== null && isPointer(given) ? lateReport(await $.session.messages({ agentId: child }).catch(() => null)) : given
+          if (report === null && given !== null) {
+            kind = 'handback.retrieve.wait'
+          } else {
+            kind = 'handback.retrieve'
+            const body = report === null || report.trim() === '' ? noAnswer('the retriever ended without text') : report
+            await $.fs.write(answer, body).catch(quiet)
+            await $.fs.write(`${answer}.done`, '').catch(quiet)
+            change = s => ({ ...s, pending: s.pending.filter(p => p.agentId !== child), forwarded: { ...s.forwarded, [child]: now } })
+            data = { ...data, answer, chars: body.length }
+          }
         } else {
           // Filed as the child's end: `thinker/end` for a thinker, else `coder/end`.
           const listed = (await $.agent.list().catch(() => [])).find(a => a.id === child)
@@ -2292,7 +2343,8 @@ export const register: Register = (on, options) => {
 
   // 3.23 T13b: the learning exit. presentPlan's ExitPlanMode with no plan written (only its `filePath` is wanted) is
   // allowed while state's `learning` is set around it; the real exit (flag down) keeps the dialog. No origin guard
-  // (T13b.c2): the kit raises no tool.check beneath the router's own `$.tool.call`, so the check seen is the engine's.
+  // (T13b.c2): the flag is up only around the router's own call. 3.30.2: Claude Code 2.1.307 raises the check for a
+  // mod's own `$.tool.call` too; this hook answers it while the flag is up and passes it on otherwise.
   // 3.24 T13F: the same flag is up around the exit that leaves plan mode after a decision that is not an approval.
   on('tool.check', { tool: 'ExitPlanMode' }, async ($, e, next) =>
     (await read($, stateAtom))?.learning === true

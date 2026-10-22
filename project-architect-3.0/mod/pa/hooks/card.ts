@@ -251,8 +251,11 @@ export const bandRole = (type: string): string => {
 
 /** The band's rows: one per live agent under the roots, its role, name, task (`T<n>`, `T<n> · c<k>` for a coder), step and
  * elapsed time at `now`; 3.28.1 T15: under each agent a row per background shell of its (`shells`, pa-watch's
- * shells.json): `◐ shell` (the spinner's frame from the clock; `✗` once it ended badly), its task, its name, its time. */
-export function bandRows(agents: readonly BandAgent[], roots: readonly BandRoot[], now: number, shells: Record<string, Shell[]> = {}): BandRow[] {
+ * shells.json): `◐ shell` (the spinner's frame from the clock; `✗` once it ended badly), its task, its name, its time.
+ * 3.30: a `pa_ext.py run` shell (`external <label>`) is the coder it runs: `pa-coder`, `T<n> · c<k>` from its label, and
+ * its latest step (`ext`, from its facts file by label; 3.30.3: no model, the statusline's row has it). */
+export function bandRows(agents: readonly BandAgent[], roots: readonly BandRoot[], now: number, shells: Record<string, Shell[]> = {},
+  ext: Record<string, string> = {}): BandRow[] {
   const byId = new Map(agents.map(a => [a.id, a]))
   return bandIds(agents, roots, new Set(Object.keys(shells))).flatMap(({ id, task }) => {
     const a = byId.get(id)
@@ -266,11 +269,21 @@ export function bandRows(agents: readonly BandAgent[], roots: readonly BandRoot[
     return [{
       role, name: a.name || a.type, task: rowTask, step: (a.step ?? '').replace(/\s+/g, ' ').trim(),
       elapsed: elapsedText(now - a.since),
-    }, ...(shells[id] ?? []).map(s => ({
+    }, ...(shells[id] ?? []).map(s => {
+      const label = /^external (\S+)$/.exec(s.name)?.[1]
+      if (label !== undefined) {
+        const [lt = '', lk] = label.split('.')
+        return {
+          role: 'coder', name: s.exit !== undefined ? '✗ pa-coder' : 'pa-coder', task: lk === undefined ? lt : `${lt} · ${lk}`,
+          step: (ext[label] ?? '').replace(/\s+/g, ' ').trim(), elapsed: elapsedText(now - s.at),
+        }
+      }
       // the frame steps once a tick (the autopilot's 2 s), so each of the four shows
-      role: 'shell', name: `${s.exit !== undefined ? '✗' : SPINNER[Math.floor(now / 2000) % SPINNER.length] ?? ''} shell`, task: rowTask,
-      step: s.name, elapsed: elapsedText(now - s.at),
-    }))]
+      return {
+        role: 'shell', name: `${s.exit !== undefined ? '✗' : SPINNER[Math.floor(now / 2000) % SPINNER.length] ?? ''} shell`, task: rowTask,
+        step: s.name, elapsed: elapsedText(now - s.at),
+      }
+    })]
   })
 }
 

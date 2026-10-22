@@ -203,7 +203,14 @@ def auth_status(cfg=None, timeout=3.0, refresh=False):
     ``oauthAccount.emailAddress`` in :func:`claude_json_path` wins (``via:
     claude_json``, no subprocess); the cache and the CLI (absolute path, ``via:
     cli``) serve only when it has none.  A CLI failure logs ``auth_status_fail``.
+    3.3: in an external coder (``PA_EXT=<config>/<alias>``) the account is ``ext:<config>``,
+    ``source: ext``, with no subprocess and no file read.
     """
+    ext = str(os.environ.get("PA_EXT") or "").strip()
+    if ext:
+        return {"email": "ext:" + ext.split("/", 1)[0], "source": "ext", "key": None,
+                "ts": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "via": None, "org_id": None, "org_name": None, "subscription": None}
     key = credentials_key()
     stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     found = _claude_json_email()

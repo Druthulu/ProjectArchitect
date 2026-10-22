@@ -7,10 +7,17 @@ import { pingUsd } from './policy'
 
 const ROOT = '/r'
 const BASE = `${ROOT}/.run/mod`
-const ON = '{"mod":"on","warmer":"off","upgrade":"ask"}'
+const ON = '{"mod":"on","warmer":"off","upgrade":"ask","external":{"remind":false}}' // 3.3 T7: no external-coder reminder
 
 /** The kit hands hooks resolved host paths (`Z:\r\...` on Windows); the map keys are `/r/...`. */
 const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, '')
+/** The engine's core beneath the mod's hooks: it asks. 2.1.307's kit runs a test's hook before the mod's own and raises
+ * the check for the mod's own tool calls too, so this core passes the check down first and lets the mod's own `allow`
+ * through (the router's, around its own calls); everything else it asks for. */
+const coreAsks = async (_$: unknown, e: unknown, next: (e: never) => Promise<unknown>): Promise<never> => {
+  const v = (await next(e as never).catch(() => null)) as { decision?: string } | null
+  return (v?.decision === 'allow' ? v : { decision: 'ask', reason: 'core' }) as never
+}
 
 type World = { files: Map<string, string>; writes: string[]; sid: { now: string } }
 
@@ -221,7 +228,7 @@ const JDIR = `${ROOT}/.claude-state/journal`
 const entries = (w: World, kind: string): string[] =>
   [...w.files.keys()].filter(p => p.startsWith(`${JDIR}/`) && new RegExp(`/\\d{6}-\\d{3}[rw]-${kind}\\.md$`).test(p)).sort()
 const indexOf = (w: World): string => [...w.files.entries()].find(([p]) => /\/INDEX-\d{4}-\d{2}\.md$/.test(p))?.[1] ?? ''
-const PY = '{"mod":"on","warmer":"off","upgrade":"ask","python":"py"}'
+const PY = '{"mod":"on","warmer":"off","upgrade":"ask","python":"py","external":{"remind":false}}'
 const PRICES = JSON.stringify({ model: 'claude-opus-5-5', model_key: 'opus-5-5', price: { read: 0.5, write_5m: 6.25, write_1h: 10, input: 5, output: 25 } })
 const MARK1 = '‹pa reply 1›'
 const SENT = '‹sent›'
@@ -1142,7 +1149,7 @@ describe('router journal, rotation, warming, toast', () => {
       task: { id: 'T3', title: 'add flag', agent: 'expert-opus55', coder: 'opus55', effort: 'medium', attempt: 2, kind: 'task',
         agentId: 'E1', startSha: 'a', spawnedAt: 1, lastCompleteAt: 0, contract: null } })
     world(on, {
-      [`${ROOT}/.claude/pa.json`]: ON.replace('}', ',"python":"py"}'), [qp]: qt, [ap]: at, [`${JDIR}/2026-10-13.md`]: rolledDay('2026-10-13', [r1, r2, r3]),
+      [`${ROOT}/.claude/pa.json`]: ON.replace(/}$/, ',"python":"py"}'), [qp]: qt, [ap]: at, [`${JDIR}/2026-10-13.md`]: rolledDay('2026-10-13', [r1, r2, r3]),
       [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', lastTurnAt: OCT - 1_000, ctx: 1_110 }),
       [`${BASE}/loop.json`]: loop, [`${ROOT}/phase-ends/current/PHASE_PLAN.md`]: '# Phase 4.1 — flags (implements 4)\n',
       [`${ROOT}/.claude-state/memory/MEMORY.md`]: '- [Dev](dev.md) — prefers terse\n- [Repo](repo.md) — monorepo\n',
@@ -1167,7 +1174,7 @@ describe('router journal, rotation, warming, toast', () => {
   test('3.24 T7b-2c: a pending first run (pa.json) puts its one line in the seed', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
     world(on, {
-      [`${ROOT}/.claude/pa.json`]: ON.replace('}', ',"first_run":{"from":"gen3","at":"3.24"}}'),
+      [`${ROOT}/.claude/pa.json`]: ON.replace(/}$/, ',"first_run":{"from":"gen3","at":"3.24"}}'),
       [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', lastTurnAt: OCT - 1_000, ctx: 1_110 }),
     }, { PA_MOD_ROTATE_AT: '1000' })
     const n = net(on)
@@ -1395,24 +1402,25 @@ describe('router plans and asks (T8c)', () => {
     expect((await dot('E2')).decision).toBe('allow')
   })
 
-  test('the learning exit (T13b.c2): the kit raises no tool.check beneath the router\'s own ExitPlanMode calls', async ($, on) => {
+  test('the learning exit (T13b.c2): the router\'s own hook allows it; the real exit, flag down, is the core\'s (the dialog)', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
     const [r1, b1] = inboxReq(OCT - 500, 1, 'plan', { path: '.run/plans/p.md', title: 'Add a flag' })
     const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: P1(), [PLAN_MD]: '# A\n', [r1]: b1 }, {})
     net(on).list = [{ id: 'P1', status: 'idle' }]
+    // 2.1.307: the kit raises the check for the router's own calls too, with this hook first; the router's is beneath it.
     const seen: string[] = []
-    on('tool.check', async ($, e) => {
-      seen.push(String((e as { tool?: string }).tool))
-      return { decision: 'ask', reason: 'core' }
+    on('tool.check', async ($, e, next) => {
+      const v = (await next(e).catch(() => null)) as { decision?: string } | null
+      seen.push(`${String((e as { tool?: string }).tool)}:${v?.decision ?? 'core'}`)
+      return v?.decision === 'allow' ? (v as never) : { decision: 'allow', reason: 'core: the developer approved the dialog' }
     })
     const d = dialog(on, w)
     d.down = true // the mock passes each call to the kit's core first
     await $.session.start(ISTART)
     await clock.advance(1_000)
     await clock.advance(1_000)
-    // The real exit runs with the flag down, so the router's hook would pass a check on: none comes.
     expect(d.checks).toEqual(['learn:true', 'exit:false'])
-    expect(seen).toEqual([])
+    expect(seen.filter(x => x.startsWith('ExitPlanMode'))[0]).toBe('ExitPlanMode:allow') // the learning exit: the router's hook
   })
 
   test('deferred while the prompt box holds a draft', async ($, on) => {
@@ -1857,7 +1865,7 @@ describe('plans via the loop (T6a1)', () => {
     const [r1, b1] = callerReq(OCT - 500, 1, 'plan', 'P1', { path: '.run/plans/p.md', kind: 'phase', title: 'Phase 1.1' })
     const [r2, b2] = callerReq(OCT - 500, 2, 'ask', 'loop', { question: 'Run it now?', options: ['Run it now (Recommended)', 'Pause'] })
     const w = world(on, {
-      [`${ROOT}/.claude/pa.json`]: ON.replace('}', ',"first_run":{"from":"gen3","at":"3.24"}}'), [`${BASE}/S1/state.json`]: P1(),
+      [`${ROOT}/.claude/pa.json`]: ON.replace(/}$/, ',"first_run":{"from":"gen3","at":"3.24"}}'), [`${BASE}/S1/state.json`]: P1(),
       [PLAN_MD]: '# Phase 1.1\n', [r1]: b1, [r2]: b2,
     }, { PA_MOD_TRIAL_APPROVE: '1' })
     const n = net(on)
@@ -2359,14 +2367,14 @@ describe('the feed restart (3.23 T13d.c1c)', () => {
   const EXPIRED = event('[Monitor expired after 30m with 12 events delivered. Re-arm it if still needed.]')
   const STOPPED = event('[Monitor stopped — too much output (events suppressed for 30s)]')
   /** A session (interactive unless `headless`: then `-p` under the trial flag), the Monitor calls the router makes, held
-   * open while `hold` is set until `release` (the test's own hook may not raise a check), and the core beneath that asks. */
+   * open while `hold` is set until `release` (the test's own hook may not raise a check), and the core that asks. */
   const life = async ($: Engine, on: On, headless = false) => {
     const clock = mock.clock(on, { now: 100_000 })
     const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
     const env: Record<string, string> = headless ? { PA_MOD_DEBUG: '1', PA_MOD_SDK_AS_USER: '1' } : { PA_MOD_DEBUG: '1' }
     const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, env)
     net(on).list = [{ id: 'P1', status: 'idle' }]
-    on('tool.check', async () => ({ decision: 'ask', reason: 'core' }))
+    on('tool.check', coreAsks)
     const calls: { command: string; description: string; timeout: number }[] = []
     const gate = { hold: false, release: (): void => undefined }
     on('tool.call', { tool: 'Monitor' }, async ($, e) => {
@@ -2543,5 +2551,123 @@ describe('health records (3.24 T6)', () => {
     const er = rec(w, 'error.json') ?? {}
     expect([er['sid'], er['plugin'], er['hook'], er['at']]).toEqual(['S1', 'pa', 'session.start', 4])
     expect(String(er['error'])).toContain('EACCES')
+  })
+})
+
+describe('external coders (3.3 T7)', () => {
+  const ANS = `${BASE}/ext/T4.c1-1.md`
+  const ASK = { question: 'Where is parseLoop?', label: 'T4.c1', answer: ANS }
+  const retrieveReq = (ms: number, input: unknown): [string, string] =>
+    [`${BASE}/S1/inbox/${String(ms)}-1-retrieve.json`, JSON.stringify({ id: `${String(ms)}-1-retrieve`, kind: 'retrieve', caller: 'pa_ext', input, at: ms })]
+  /** The agents beneath the plugin: a spawn answers R1, or is refused with `deny`. */
+  function lookups(on: On, deny = ''): { spawns: { type: string; prompt: string; description: string }[]; sends: string[]; apiSteps: number } {
+    const n = { spawns: [] as { type: string; prompt: string; description: string }[], sends: [] as string[], apiSteps: 0 }
+    let listed: { id: string; status: 'running'; description: string; type: string }[] = []
+    on('agent.spawn', async ($, e) => {
+      n.spawns.push({ type: e.subagentType ?? '', prompt: e.prompt, description: e.description ?? '' })
+      // The kit's Agent tool answers `{ model }` with no agentId: the router finds the new retriever in the list.
+      listed = deny === '' ? [{ id: 'R1', status: 'running', description: '', type: e.subagentType ?? '' }] : []
+      return deny === '' ? { agentId: 'R1', model: 'haiku' } : { deny }
+    })
+    on('agent.list', async () => ({ value: listed }))
+    on('session.send', async ($, e) => {
+      n.sends.push(e.text)
+      return { isDelivered: true }
+    })
+    on('prompt.submit', async ($, e) => ({ text: e.text, origin: e.origin }))
+    on('turn.start', async ($, e) => ({ turnId: e.turnId }))
+    on('turn.complete', async ($, e) => ({ text: e.answer }))
+    on('turn.step', async function* ($, e) {
+      n.apiSteps += 1
+      yield { kind: 'text' as const, index: 0, text: 'from the api' }
+      return { turnId: e.turnId, index: e.index, answer: 'from the api', toolUses: [], stopReason: 'end_turn' as const, usage: null }
+    })
+    return n
+  }
+  type Pend = { pending: { id: string; agentId: string; kind: string }[]; outbox: unknown[] }
+
+  test('a retrieve spawns retriever-code; its hand-back writes the answer, then .done, with no Claude turn', async ($, on) => {
+    const clock = mock.clock(on, { now: 5_000 })
+    const [path, body] = retrieveReq(4_000, ASK)
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [path]: body }, {})
+    const n = lookups(on)
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    // The kit resolves subagentType against its own agent definitions (none here): RETRIEVE_TYPE is checked in logic.test.ts.
+    expect(n.spawns.map(x => ({ prompt: x.prompt, description: x.description }))).toEqual([{ prompt: 'Where is parseLoop?\n\nAnswer in under 40 lines: file:line facts only.', description: 'Lookup for External coder T4.c1' }])
+    expect((stateOf(w) as unknown as Pend).pending.map(p => [p.id, p.agentId, p.kind])).toEqual([[ANS, 'R1', 'retrieve']])
+    expect(w.files.has(ANS)).toBe(false)
+    const tn = '<task-notification>\n<task-id>R1</task-id>\n<status>completed</status>\n<result>parseLoop: hooks/loop.ts:120</result>\n</task-notification>'
+    await $.prompt.submit({ text: tn, origin: { kind: 'task-notification' }, wait: false })
+    expect(w.files.get(ANS)).toBe('parseLoop: hooks/loop.ts:120')
+    expect(w.files.get(`${ANS}.done`)).toBe('')
+    expect(w.writes.indexOf(ANS)).toBeLessThan(w.writes.indexOf(`${ANS}.done`))
+    const st = stateOf(w) as unknown as Pend
+    expect([st.pending, st.outbox]).toEqual([[], []])
+    // Its turn is the stub; a second delivery (the peer message) writes nothing and reaches no one.
+    await $.turn.start({ text: tn, turnId: 'T1' })
+    expect((await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))).result.answer).toBe(SENT)
+    await $.prompt.submit({ text: handback('R1', 'again'), origin: { kind: 'peer' }, wait: false })
+    await clock.advance(1_000)
+    await clock.advance(1_000)
+    expect(w.writes.filter(p => p === ANS).length).toBe(1)
+    expect([n.sends, n.apiSteps, (stateOf(w) as unknown as Pend).outbox]).toEqual([[], 0, []])
+  })
+
+  test('a refused spawn writes no answer: <reason> and the marker', async ($, on) => {
+    const clock = mock.clock(on, { now: 5_000 })
+    const [path, body] = retrieveReq(4_000, ASK)
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [path]: body }, {})
+    lookups(on, 'no slot')
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    expect(w.files.get(ANS)).toBe('no answer: the retriever spawn was refused (no slot)')
+    expect(w.files.get(`${ANS}.done`)).toBe('')
+    expect((stateOf(w) as unknown as Pend).pending).toEqual([])
+  })
+
+  test('a retriever that ends without text writes no answer', async ($, on) => {
+    const clock = mock.clock(on, { now: 5_000 })
+    const [path, body] = retrieveReq(4_000, ASK)
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [path]: body }, {})
+    lookups(on)
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    await $.prompt.submit({ text: '<task-notification><task-id>R1</task-id><status>failed</status></task-notification>', origin: { kind: 'task-notification' }, wait: false })
+    expect(w.files.get(ANS)).toBe('no answer: the retriever ended without text')
+    expect(w.files.get(`${ANS}.done`)).toBe('')
+  })
+
+  test('a bad answer path is refused: no spawn, no file', async ($, on) => {
+    const clock = mock.clock(on, { now: 5_000 })
+    const [path, body] = retrieveReq(4_000, { ...ASK, answer: `${ROOT}/src/x.md` })
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [path]: body }, { PA_MOD_DEBUG: '1' })
+    const n = lookups(on)
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    expect(n.spawns).toEqual([])
+    expect(debugKinds(w)).toContain('pa.retrieve.bad')
+    expect(w.files.has(`${ROOT}/src/x.md`)).toBe(false)
+  })
+
+  test('the reminder and the setup line go with the first developer message only; the seen note is written', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000_000_000 })
+    const status = JSON.stringify({ at: 999_940, ok: true, text: 'saved: OpenRouter, deepseek' })
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: '{"mod":"on","warmer":"off","upgrade":"ask"}', '/h/.claude/pa3-ext/status.json': status }, { HOME: '/h' })
+    const n = net(on)
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    const first = n.spawns[0] ?? ''
+    expect(first).toContain('\n\nPA3: external coders are available (OpenRouter')
+    expect(first.endsWith('--remind off).\n\nPA3: the developer ran the external-coder setup: saved: OpenRouter, deepseek. ' +
+      'If it failed, explain why and the fix from the pa-external-agents skill\'s troubleshooting table. If it saved, load ' +
+      'that skill, lay out the config, run PY tools/pa_ext.py check, and ask how and when they want external coders used ' +
+      'in this project.\n\nhello')).toBe(true)
+    expect(JSON.parse(w.files.get(`${BASE}/ext-seen.json`) ?? '{}')).toEqual({ at: 999_940 })
+    n.list = [{ id: 'P1', status: 'running' }]
+    await $.prompt.submit({ text: 'more', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect(n.sends.map(s => s.text)).toEqual(['more'])
   })
 })
