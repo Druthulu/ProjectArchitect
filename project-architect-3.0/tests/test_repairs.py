@@ -14,7 +14,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from pa import __version__, accounts, config, db, log, notify, paths, repairs  # noqa: E402
+from pa import __version__, accounts, config, db, log, notify, paths, repairs, summary  # noqa: E402
 
 A = "a@example.com"
 B = "b@example.com"
@@ -429,6 +429,95 @@ class RunnerTest(RepairsCase):
         detail = json.loads(self.conn.execute(
             "SELECT detail_json FROM events WHERE session_id='sess-x' AND kind='account_change'").fetchone()[0])
         self.assertEqual(detail["account_source"], "file")
+
+
+HB = repairs.STEP_HANDBACK_ANSWER
+HB_SID = "sess-hb"
+
+
+def _helper_transcript(path, last_tool="SubagentHandback", report="r" * 1200):
+    """A helper's transcript: a text turn, then its last call (a hand-back by default)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    recs = [{"type": "assistant", "message": {"id": "m1", "role": "assistant",
+                                              "content": [{"type": "text", "text": "Starting."}]}},
+            {"type": "assistant", "message": {"id": "m2", "role": "assistant", "stop_reason": "tool_use",
+                                              "content": [{"type": "tool_use", "id": "t2", "name": last_tool,
+                                                           "input": {"message": report}}]}}]
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        for rec in recs:
+            fh.write(json.dumps(rec) + "\n")
+    return path
+
+
+class _HelperRows(RepairsCase):
+    def helper(self, run_id, sid, path, run_status="completed", parent=None,
+               returned="2026-10-29T01:05:00Z"):
+        """A helper the old ledger voided: no answer read, kept-out = its whole growth."""
+        db.upsert_session(self.conn, {"session_id": sid, "account": A, "started": "2026-10-29T00:00:00Z"})
+        db.upsert_agent_run(self.conn, {"run_id": run_id, "session_id": sid, "kind": "coder",
+                                        "status": run_status, "transcript_path": path})
+        db.upsert_retrieval(self.conn, {
+            "run_id": run_id, "parent_run_id": parent or sid, "agent_type": "pa-coder",
+            "returned_at": returned, "seed_ctx": 20000, "ctx_at_end": 60000, "growth_tokens": 40000,
+            "kept_out_tokens": 40000, "kept_out_mode": "all_growth", "answer_tokens": 0,
+            "status": "completed", "void": 1})
+
+    def retrieval(self, run_id):
+        return tuple(self.conn.execute("SELECT void, answer_tokens, kept_out_tokens, parent_run_id"
+                                       " FROM retrievals WHERE run_id=?", (run_id,)).fetchone())
+
+
+class HandbackAnswerTest(_HelperRows):
+    """3.30.8: helpers voided for a hand-back the ledger could not read get their reports counted,
+    once; rows filed as their own parent move under their session; runs that handed nothing back
+    (cut off on another tool call, or orphaned) stay void."""
+
+    def test_reports_counted_parents_moved_once(self):
+        tdir = os.path.join(self.dir, "transcripts")
+        hb = _helper_transcript(os.path.join(tdir, "agent-ahb.jsonl"))
+        cut = _helper_transcript(os.path.join(tdir, "agent-acut.jsonl"), last_tool="Bash")
+        self.helper("ahb", HB_SID, hb)
+        self.helper("aown", HB_SID, hb, parent="aown")
+        self.helper("aint", HB_SID, hb, run_status="interrupted")     # a recalc's verdict on a hand-back
+        self.helper("acut", HB_SID, cut)
+        self.helper("aorph", HB_SID, hb, run_status="orphaned")
+        self.assertEqual(repairs.detect_handback_answer(self.conn, self.cfg),
+                         {"void": 5, "own_parent": 1})
+
+        res = repairs.run(self.cfg, conn=self.conn)
+        self.assertEqual(res[HB], {"helpers": 3, "parents": 1, "sessions": 1})
+        self.assertEqual(self.retrieval("ahb"), (0, 300, 39700, HB_SID))
+        self.assertEqual(self.retrieval("aown"), (0, 300, 39700, HB_SID))
+        self.assertEqual(self.retrieval("aint")[:2], (0, 300))
+        self.assertEqual(self.retrieval("acut")[:2], (1, 0))
+        self.assertEqual(self.retrieval("aorph")[:2], (1, 0))
+        self.assertEqual(self.conn.execute("SELECT status FROM agent_runs WHERE run_id='aint'").fetchone()[0],
+                         "completed")
+        self.assertIsNotNone(self.conn.execute("SELECT 1 FROM savings WHERE run_id='ahb'").fetchone())
+        self.assertTrue(any("hand-back" in line for line in repairs.pop_notice()))
+
+        # run again with the stamp cleared: the cut-off and orphaned rows stay void, nothing changes
+        self.conn.execute("DELETE FROM meta WHERE key=?", ("repair." + HB,))
+        self.assertEqual(repairs.run(self.cfg, conn=self.conn)[HB],
+                         {"helpers": 0, "parents": 0, "sessions": 0})
+        self.assertEqual(self.retrieval("ahb"), (0, 300, 39700, HB_SID))
+
+
+class RecheckAnswersTest(_HelperRows):
+    """3.30.8: before each summary rebuild the child re-books a helper voided in the last hour
+    whose transcript now shows its hand-back (a transcript lagging SubagentStop); older rows are
+    the repair step's."""
+
+    def test_recent_rows_rebooked_old_rows_left(self):
+        import time
+
+        hb = _helper_transcript(os.path.join(self.dir, "transcripts", "agent-anew.jsonl"))
+        now = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        self.helper("anew", "sess-new", hb, returned=now)
+        self.helper("aold", "sess-old", hb, returned="2026-10-01T00:00:00Z")
+        summary._recheck_answers(self.conn, self.cfg)
+        self.assertEqual(self.retrieval("anew")[:2], (0, 300))
+        self.assertEqual(self.retrieval("aold")[:2], (1, 0))
 
 
 if __name__ == "__main__":

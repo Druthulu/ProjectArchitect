@@ -14,6 +14,7 @@ Public:
     subagent_files(sid_dir), find_agent_transcript(sid_dir, agent_id),
     workflow_id_of(path), agent_id_from_path(path), read_meta(agent_jsonl)
     tool_result_tokens(path, start_offset=0)
+    returned_answer(path, hook_text=None) -> (tokens, ended_at_handback)
 
 Extracted from PA3's own analysis scripts ``session_decompose.py`` and
 ``context_reconcile.py`` (the dev repo's ``tools/analysis``) with one correction that both analyzers now carry:
@@ -651,3 +652,65 @@ def tool_result_tokens(path, start_offset=0):
                 elif t == "tool_use":
                     own_output += est(b.get("input") or {})
     return {"result_tokens": result_tokens, "own_output": own_output, "n_results": n_results}
+
+
+# --------------------------------------------------------------------------- returned answer
+
+HANDBACK_TOOL = "SubagentHandback"
+
+
+def returned_answer(path, hook_text=None):
+    """``(tokens, ended_at_handback)``: chars/4 of what a subagent run handed its caller.
+
+    3.30.8: since CC 2.1.285 a background subagent's run ends at its ``SubagentHandback`` call,
+    so its last turn has no text and SubagentStop's ``last_assistant_message`` comes empty; the
+    report is the call's ``message``.  Counted: every hand-back (a resumed agent hands back once
+    per wake-up) plus the text of the last message after the last one; a run with no hand-back
+    counts its last message's text (a foreground agent's result).  ``hook_text``, which the
+    transcript may not hold yet when the hook fires, wins when it is longer.
+    ``ended_at_handback``: the run's last text or tool call is a hand-back, so its last request
+    stops on ``tool_use`` although the run completed.  Streams; parses assistant lines only.
+    """
+    handed = 0
+    seen = set()
+    texts = []                   # the latest message's text after the latest hand-back
+    cur = None
+    ended = False
+    try:
+        fh = open(path, "rb") if path else None
+    except OSError:
+        fh = None
+    if fh is not None:
+        try:
+            for raw in fh:
+                if b'"assistant"' not in raw:
+                    continue
+                try:
+                    rec = json.loads(raw)
+                except (ValueError, UnicodeDecodeError):
+                    continue
+                if not isinstance(rec, dict) or rec.get("type") != "assistant":
+                    continue
+                msg = rec.get("message") if isinstance(rec.get("message"), dict) else {}
+                mid = msg.get("id")
+                if mid is None or mid != cur:
+                    cur, texts = mid, []
+                for b in blocks(msg):
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get("type") == "text" and str(b.get("text") or "").strip():
+                        texts.append(str(b["text"]))
+                        ended = False
+                    elif b.get("type") == "tool_use":
+                        ended = b.get("name") == HANDBACK_TOOL
+                        if not ended:
+                            continue
+                        texts = []
+                        key = b.get("id") or json.dumps(b.get("input"), sort_keys=True, default=str)
+                        if key not in seen:
+                            seen.add(key)
+                            handed += est(str((b.get("input") or {}).get("message") or ""))
+        finally:
+            fh.close()
+    tokens = handed + est("\n".join(texts))
+    return max(tokens, est(str(hook_text or ""))), ended

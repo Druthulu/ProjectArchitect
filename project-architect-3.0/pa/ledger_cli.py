@@ -546,7 +546,7 @@ def _new_agg():
     return {"n": 0, "cost": 0.0, "first_ts": None, "last_ts": None, "seed_ctx": 0,
             "ctx_at_end": 0, "input": 0, "cache_write_5m": 0, "cache_write_1h": 0,
             "cache_read": 0, "output": 0, "thinking": 0, "model": None,
-            "last_output": 0, "last_thinking": 0, "last_stop": None, "cold": 0, "rewrite": 0}
+            "last_stop": None, "cold": 0, "rewrite": 0}
 
 
 def ingest_turns(conn, path, run_id, session_id, account, ttl_default, dry_run=False,
@@ -570,8 +570,6 @@ def ingest_turns(conn, path, run_id, session_id, account, ttl_default, dry_run=F
             agg[key] += int(row[key] or 0)
         agg["thinking"] += int(row["thinking"] or 0)
         agg["model"] = row["model"] or agg["model"]
-        agg["last_output"] = int(row["output"] or 0)
-        agg["last_thinking"] = int(row["thinking"] or 0)
         agg["last_stop"] = row["stop_reason"]
         agg["cold"] += 1 if row["cold"] else 0
         agg["rewrite"] += 1 if row["rewrite"] else 0
@@ -596,18 +594,15 @@ def _run_row(run_id, session_id, agg, path, **extra):
     return row
 
 
-def _answer_tokens(agg):
-    """Visible answer of a run = last request's output minus its thinking."""
-    return max(0, int(agg["last_output"] or 0) - int(agg["last_thinking"] or 0))
-
-
-def _status_from_stop(agg):
+def _status_from_stop(agg, handback=False):
+    """``handback``: the run ended at its hand-back call (3.30.8, CC 2.1.285), whose request
+    stops on ``tool_use`` although the run completed."""
     stop = agg.get("last_stop")
     if not agg["n"]:
         return "interrupted"                                 # empty transcript -> killed before responding
-    if stop == "tool_use":
+    if stop == "tool_use" and not handback:
         return "interrupted"                                 # asked for a tool and never continued
-    if stop in (None, "end_turn", "stop_sequence"):
+    if stop in (None, "end_turn", "stop_sequence", "tool_use"):
         return "completed"
     return str(stop)
 
@@ -650,13 +645,14 @@ def lock_agent_transcript(conn, agent_path, run_id=None, session_id=None, cfg=No
     desc = meta.get("description") or ""
     if wf_id:
         desc = ("wf:%s %s" % (wf_id, desc)).rstrip()
+    answer, handback = transcript.returned_answer(agent_path)     # 3.30.8: hand-backs count
     row = _run_row(rid, sid, agg, agent_path,
                    kind=role, agent_type=agent_type,
                    description=desc or None,
                    tool_use_id=meta.get("toolUseId"),
                    spawn_depth=meta.get("spawnDepth"),
                    model_pinned=config.pinned_model_for(agent_type, cfg),
-                   status=_status_from_stop(agg))
+                   status=_status_from_stop(agg, handback))
     if wf_id and not parent_run_id and not meta.get("parentAgentId"):
         row["parent_run_id"] = sid
         row["parent_source"] = "workflow"
@@ -687,7 +683,7 @@ def lock_agent_transcript(conn, agent_path, run_id=None, session_id=None, cfg=No
             turns=[{"ctx": agg["seed_ctx"]}, {"ctx": agg["ctx_at_end"]}],
             result_tokens_est=est.get("result_tokens", 0),
             own_output_est=est.get("own_output", 0),
-            answer_tokens=_answer_tokens(agg), status=row["status"], mode=mode,
+            answer_tokens=answer, status=row["status"], mode=mode,
             spawned_at=agg["first_ts"], returned_at=agg["last_ts"])
         if pre_install:
             ret["void"] = 1
@@ -847,13 +843,14 @@ def recalc_session_file(conn, path, slug, sid, cfg, opts, stats):
             desc = meta.get("description") or ""
             if wf_id:
                 desc = ("wf:%s %s" % (wf_id, desc)).rstrip()
+            answer, handback = transcript.returned_answer(sub_path)    # 3.30.8: hand-backs count
             row = _run_row(agent_id, sid, agg, sub_path, kind=role,
                            agent_type=meta.get("agentType"),
                            description=desc or None, tool_use_id=tid,
                            spawn_depth=meta.get("spawnDepth"), parent_run_id=parent,
                            parent_source=source, phase=phase,
                            model_pinned=config.pinned_model_for(meta.get("agentType"), cfg),
-                           status=_status_from_stop(agg))
+                           status=_status_from_stop(agg, handback))
             if not dry:
                 db.upsert_agent_run(conn, row)
             stats["runs"] += 1
@@ -876,7 +873,7 @@ def recalc_session_file(conn, path, slug, sid, cfg, opts, stats):
                     turns=[{"ctx": agg["seed_ctx"]}, {"ctx": agg["ctx_at_end"]}],
                     result_tokens_est=est.get("result_tokens", 0),
                     own_output_est=est.get("own_output", 0),
-                    answer_tokens=_answer_tokens(agg), status=row["status"], mode=mode,
+                    answer_tokens=answer, status=row["status"], mode=mode,
                     spawned_at=agg["first_ts"], returned_at=agg["last_ts"])
                 if pre_install:
                     ret["void"] = 1
@@ -4833,6 +4830,30 @@ def _savings_display_fails(conn, doc=None, sid=None):
     return fails, len(rows)
 
 
+HELPER_ANSWERS_N = 50       # 3.30.8: the doctor's helper-answers row reads the newest finished helpers
+HELPER_ANSWERS_MIN = 10
+
+
+def _helper_answers_row(conn):
+    """``(level, text)``: the doctor's ``helper answers`` row (3.30.8).  WARN when most of the
+    newest finished helpers came back void with no answer read, so their kept-out tokens count
+    for nothing: how CC 2.1.285's hand-back voided every helper for 26 days unseen."""
+    try:
+        rows = conn.execute(
+            "SELECT COALESCE(void, 0), COALESCE(answer_tokens, 0) FROM retrievals"
+            " WHERE kept_out_mode IN ('all_growth', 'results_share') AND returned_at IS NOT NULL"
+            " ORDER BY returned_at DESC LIMIT ?", (HELPER_ANSWERS_N,)).fetchall()
+    except sqlite3.DatabaseError:
+        rows = []
+    n = len(rows)
+    unread = sum(1 for void, answer in rows if void and not answer)
+    if n >= HELPER_ANSWERS_MIN and unread * 2 > n:
+        return "WARN", ("helper answers: %d of the last %d helpers returned no answer the ledger "
+                        "could read, so their savings count as zero; check the Claude Code changelog "
+                        "for a change in how subagents return" % (unread, n))
+    return "OK", "helper answers: %d of the last %d helpers voided" % (unread, n)
+
+
 def _savings_display_row(conn, sid=None):
     """``(ok, row)``: the doctor's ``savings display`` row text (level first)."""
     fails, n = _savings_display_fails(conn, sid=sid)
@@ -5048,6 +5069,7 @@ def cmd_doctor(args):
     conn = open_db()
     try:
         sd_ok, sd_row = _savings_display_row(conn)
+        ha_level, ha_row = _helper_answers_row(conn)
         # 3.15 T12: fallback-shaped account switches the repair step does not rewrite (read-only)
         try:
             from . import repairs
@@ -5058,6 +5080,7 @@ def cmd_doctor(args):
     finally:
         db.close(conn)
     doc.add("OK" if sd_ok else "FAIL", sd_row[5:])
+    doc.add(ha_level, ha_row)
     for item in fb or []:
         doc.warn("account fallback: session %s switched %s -> %s at %s with no switch back; "
                  "if it stayed on %s, run: %s" % (item["session_id"], item["from"], item["to"],

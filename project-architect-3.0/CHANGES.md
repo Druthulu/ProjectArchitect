@@ -2,6 +2,23 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.30.8 — Savings count again
+
+- Since Claude Code 2.1.285 (early October), a helper that runs in the background hands its report back through a
+  tool call and ends there, so Claude Code's stop hook no longer passes PA3 the helper's last message. PA3 read that as
+  "the helper returned nothing" and dropped what each one saved, so the blue savings on the statusline showed a dash
+  or ran low for every user. PA3 now reads each helper's answer from its transcript: its hand-back reports, or its
+  final text when it has no hand-back. Nothing changed in how helpers work or what their callers receive.
+- Your past savings come back by themselves: the first session after this update repairs the usage ledger once (a
+  backup is taken first) and tells you how many helpers it counted. A helper whose answer reaches the transcript a
+  moment after it stops is counted again within the hour.
+- An expert the loop started is now filed under its session, not as its own parent, so per-run reports credit the
+  right run and the live savings figure no longer counts an expert's work twice while it runs.
+- `pa_ledger.py doctor` has a new row, `helper answers`, that warns when most recent helpers came back with no answer
+  the ledger could read, so a change like this shows at the next check instead of weeks later.
+- The pooled rate in `pa_ledger.py report` now rebuilds after each weekly reset. It had stayed as it was at the last
+  full ledger refit.
+
 ## 3.30.7 — Running side by side no longer counts against a model
 
 - When two external coders run at once on Linux, their sandboxes can collide and one command fails before it runs;

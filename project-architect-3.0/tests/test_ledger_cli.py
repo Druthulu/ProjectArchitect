@@ -880,5 +880,99 @@ class ExternalCashRowTest(unittest.TestCase):
         self.assertNotIn(self.EXT, doc["accounts"])
 
 
+class _TempLedger(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pa3-ledger-cli-hb-")
+        self._old_env = os.environ.get("PA_LEDGER_DIR")
+        os.environ["PA_LEDGER_DIR"] = os.path.join(self.dir, "ledger")
+        paths.ensure_ledger_tree()
+        self.conn = db.connect(paths.db_path())
+        db.init_schema(self.conn)
+
+    def tearDown(self):
+        db.close(self.conn)
+        if self._old_env is None:
+            os.environ.pop("PA_LEDGER_DIR", None)
+        else:
+            os.environ["PA_LEDGER_DIR"] = self._old_env
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+
+def _request(msg_id, ts, ctx, content):
+    return json.dumps({"type": "assistant", "uuid": "u-" + msg_id, "requestId": "req_" + msg_id,
+                       "timestamp": ts,
+                       "message": {"id": msg_id, "role": "assistant", "model": "claude-opus-5-5",
+                                   "stop_reason": "tool_use", "content": content,
+                                   "usage": {"input_tokens": ctx, "cache_creation_input_tokens": 0,
+                                             "cache_read_input_tokens": 0, "output_tokens": 300}}})
+
+
+class HandbackRebuildTest(_TempLedger):
+    """3.30.8: a recalc books a helper that ended at its hand-back as completed with its report as
+    the answer (it took the run's closing ``tool_use`` stop for an interruption); a run cut off on
+    another tool call stays interrupted and void."""
+
+    SID = "s_hb"
+
+    def setUp(self):
+        super().setUp()
+        db.upsert_session(self.conn, {"session_id": self.SID, "account": ACCT_A, "cwd": CWD,
+                                      "started": "2026-10-29T01:00:00Z"})
+
+    def _lock(self, agent_id, tool, message):
+        path = os.path.join(self.dir, "projects", "slug", self.SID, "subagents",
+                            "agent-%s.jsonl" % agent_id)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(_request("m1" + agent_id, "2026-10-29T01:00:00.000Z", 20000,
+                              [{"type": "text", "text": "Starting."}]) + "\n")
+            fh.write(_request("m2" + agent_id, "2026-10-29T01:05:00.000Z", 60000,
+                              [{"type": "tool_use", "id": "t-" + agent_id, "name": tool,
+                                "input": {"message": message}}]) + "\n")
+        with open(path[:-6] + ".meta.json", "w", encoding="utf-8") as fh:
+            json.dump({"agentType": "pa-coder", "parentAgentId": "a1", "spawnDepth": 2}, fh)
+        return ledger_cli.lock_agent_transcript(self.conn, path, run_id=agent_id, session_id=self.SID,
+                                                account=ACCT_A)
+
+    def _retrieval(self, run_id):
+        return tuple(self.conn.execute("SELECT status, void, answer_tokens FROM retrievals"
+                                       " WHERE run_id=?", (run_id,)).fetchone())
+
+    def test_a_handback_run_is_completed_with_its_report_as_the_answer(self):
+        self.assertEqual(self._lock("ahb", "SubagentHandback", "done. " * 200)["status"], "completed")
+        self.assertEqual(self._retrieval("ahb"), ("completed", 0, 300))
+
+    def test_a_run_cut_off_on_another_tool_stays_interrupted(self):
+        self.assertEqual(self._lock("acut", "Bash", "ls")["status"], "interrupted")
+        self.assertEqual(self._retrieval("acut"), ("interrupted", 1, 0))
+
+
+class HelperAnswersDoctorTest(_TempLedger):
+    """3.30.8: the doctor WARNs when most of the newest helpers came back void with no answer read
+    (CC 2.1.285's hand-back voided every helper for 26 days with nothing to say so)."""
+
+    def _helpers(self, n, unread):
+        for i in range(n):
+            db.upsert_retrieval(self.conn, {
+                "run_id": "h%02d" % i, "kept_out_mode": "all_growth",
+                "returned_at": "2026-10-29T01:%02d:00Z" % i,
+                "void": 1 if i < unread else 0, "answer_tokens": 0 if i < unread else 120})
+
+    def test_warn_when_most_of_the_newest_helpers_are_unread(self):
+        self._helpers(20, 15)
+        level, text = ledger_cli._helper_answers_row(self.conn)
+        self.assertEqual(level, "WARN")
+        self.assertIn("15 of the last 20 helpers", text)
+        self.assertIn("Claude Code changelog", text)
+
+    def test_ok_when_answers_are_read_or_helpers_are_few(self):
+        self._helpers(20, 2)
+        self.assertEqual(ledger_cli._helper_answers_row(self.conn),
+                         ("OK", "helper answers: 2 of the last 20 helpers voided"))
+        self.conn.execute("DELETE FROM retrievals")
+        self._helpers(6, 6)
+        self.assertEqual(ledger_cli._helper_answers_row(self.conn)[0], "OK")
+
+
 if __name__ == "__main__":
     unittest.main()

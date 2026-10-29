@@ -1018,6 +1018,7 @@ def refit_instance(conn, cfg, account, window, resets_at, readers=None):
 # --------------------------------------------------------------------------- pooled family fit (T32.1)
 
 POOL_WINDOWS = ("five_hour", "seven_day")
+POOL_STAMP = "fit_pool.built_at"      # meta: the last build, rows or none (3.30.8)
 
 
 def build_pool(conn, cfg, readers=None):
@@ -1111,7 +1112,28 @@ def build_pool(conn, cfg, readers=None):
                                       "se": ses[i], "n": len(ys), "n_instances": len(insts),
                                       "regime_since": since_iso, "built_at": built_at})
         out[key] = res
+    db.set_meta(conn, POOL_STAMP, built_at)
     return out
+
+
+def build_pool_if_stale(conn, cfg, readers=None):
+    """Rebuild the pool once a week closes (3.30.8): when no build is stamped since the newest
+    seven-day instance started.  Only :func:`refit_all` built it before, which normal use no
+    longer runs, so every user's pool froze at their last full refit.  True when it rebuilt."""
+    from . import db
+
+    try:
+        newest = conn.execute("SELECT MAX(started_at) FROM window_instances "
+                              "WHERE window='seven_day'").fetchone()[0]
+    except Exception:
+        return False
+    if newest is None:
+        return False
+    stamp = _parse_ts_epoch(db.get_meta(conn, POOL_STAMP))
+    if stamp is not None and stamp >= int(newest):
+        return False
+    build_pool(conn, cfg, readers=readers)
+    return True
 
 
 def pool_rates(conn, tier, window, cfg=None):

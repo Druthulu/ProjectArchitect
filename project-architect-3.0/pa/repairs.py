@@ -14,7 +14,9 @@ real gap / cold / rewrite, from a recalc of the transcript or else from the prev
 ``3.15.2/savings-account`` (T20: a switch event re-filed to A whose detail still says B gets its
 session's B rows up to the next switch re-filed to A; the fallback step now also rewrites the
 switch details and the savings);
-``3.24/residual-off-main`` (T13q: pre-T13l residual rows on the main run move to ``unattributed:<sid>``).
+``3.24/residual-off-main`` (T13q: pre-T13l residual rows on the main run move to ``unattributed:<sid>``);
+``3.30.8/handback-answer`` (helpers voided since CC 2.1.285 for an answer the ledger could not read get
+their hand-back reports counted; rows filed as their own parent move under their session).
 
 A step is stamped in meta ``repair.<id>`` (``fresh`` on a new ledger, else ``{ts, result|counts}``)
 and never runs again; a failing step logs ``repair_step_failed`` and stays unstamped, but
@@ -34,6 +36,7 @@ STEP_ACCOUNT_FALLBACK = "3.15/account-fallback"
 STEP_BATCH_GAP = "3.15.1/batch-gap"
 STEP_SAVINGS_ACCOUNT = "3.15.2/savings-account"
 STEP_RESIDUAL_OFF_MAIN = "3.24/residual-off-main"
+STEP_HANDBACK_ANSWER = "3.30.8/handback-answer"
 _LOCK_STALE_S = 1800           # any lock older than 30 min is stale
 _START_GRACE_S = 30            # a requester's lock outlives the requester while the child starts
 
@@ -420,18 +423,62 @@ def apply_residual_off_main(conn, cfg, plan):
     return {"turns": n}
 
 
+# --------------------------------------------------------------------------- step: 3.30.8/handback-answer
+#
+# From CC 2.1.285 a background helper ends at its SubagentHandback call, so SubagentStop's last
+# message came empty: the ledger read no answer and voided the helper's kept-out tokens (and a
+# recalc took the run for interrupted), from 2026-10-02 on the developer's machines.  This step
+# re-books every such row from its transcript (``savings.rebook_answers``), files the rows the old
+# running-expert guess made their own parent under their session, and rewrites the savings of
+# every session it touched.  No refit: savings never enter a fit.
+
+_VOID_SQL = ("SELECT COUNT(*) FROM retrievals WHERE COALESCE(void, 0)=1 AND COALESCE(answer_tokens, 0)=0"
+             " AND kept_out_mode IN ('all_growth', 'results_share')")
+
+
+def detect_handback_answer(conn, cfg):
+    void = conn.execute(_VOID_SQL).fetchone()[0]
+    own = conn.execute("SELECT COUNT(*) FROM retrievals WHERE parent_run_id=run_id").fetchone()[0]
+    return {"void": void, "own_parent": own} if (void or own) else None
+
+
+def apply_handback_answer(conn, cfg, plan):
+    """Re-parent the self-parented rows, re-book the voided ones, rewrite their sessions' savings.
+
+    No enclosing transaction: the ledger autocommits and its hooks wait 250 ms for a lock, so a
+    transaction held while hundreds of transcripts are read would shut them out.  Each update
+    stands alone, and a rerun only touches rows still void or still their own parent."""
+    from . import ledger_cli, savings, summary
+
+    own = conn.execute("SELECT r.run_id, a.session_id FROM retrievals r JOIN agent_runs a"
+                       " ON a.run_id = r.run_id WHERE r.parent_run_id = r.run_id"
+                       " AND a.session_id IS NOT NULL").fetchall()
+    sids = set()
+    for run_id, sid in own:
+        conn.execute("UPDATE retrievals SET parent_run_id=? WHERE run_id=?", (sid, run_id))
+        sids.add(sid)
+    helpers, rebooked = savings.rebook_answers(conn)
+    sids.update(rebooked)
+    for sid in sorted(s for s in sids if s):
+        ledger_cli.write_savings(conn, sid, cfg)
+    summary.rebuild(conn, cfg)
+    return {"helpers": helpers, "parents": len(own), "sessions": len(sids)}
+
+
 STEPS = [
     (STEP_ACCOUNT_FALLBACK, detect_account_fallback, apply_account_fallback),
     (STEP_BATCH_GAP, detect_batch_gap, apply_batch_gap),
     (STEP_SAVINGS_ACCOUNT, detect_savings_account, apply_savings_account),
     (STEP_RESIDUAL_OFF_MAIN, detect_residual_off_main, apply_residual_off_main),
+    (STEP_HANDBACK_ANSWER, detect_handback_answer, apply_handback_answer),
 ]
 
 
 _NOTICE_TEXT = {STEP_ACCOUNT_FALLBACK: "re-filed or cleared",
                 STEP_BATCH_GAP: "(turns' gaps recomputed)",
                 STEP_SAVINGS_ACCOUNT: "re-filed to the switch's account, savings rewritten",
-                STEP_RESIDUAL_OFF_MAIN: "(residual rows moved off the main run to unattributed)"}
+                STEP_RESIDUAL_OFF_MAIN: "(residual rows moved off the main run to unattributed)",
+                STEP_HANDBACK_ANSWER: "(helpers' hand-back reports counted, savings rewritten)"}
 
 
 def step_ids():

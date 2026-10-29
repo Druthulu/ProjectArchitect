@@ -1,6 +1,6 @@
 {
   "name": "pa",
-  "version": "3.30.7",
+  "version": "3.30.8",
   "description": "Project Architect 3.2 router: the infinite session's partner, its state file, the inbox the watcher writes, and the journal that replaces compaction",
   "author": { "name": "Drew T" },
   "types": "./types/index.d.ts",

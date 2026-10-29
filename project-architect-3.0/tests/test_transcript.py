@@ -2,6 +2,7 @@
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 import unittest
@@ -323,6 +324,79 @@ class ReferenceTranscriptTest(unittest.TestCase):
         meta = T.read_meta(REF)
         self.assertEqual(meta.get("agentType"), "general-purpose")
         self.assertEqual(meta.get("spawnDepth"), 1)
+
+
+def _block(mid, block, stop=None):
+    """One assistant line carrying one content block, as CC writes a streamed message."""
+    return {"type": "assistant", "uuid": "%s-%s" % (mid, block.get("type")),
+            "timestamp": "2026-10-29T02:00:00.000Z",
+            "message": {"id": mid, "role": "assistant", "model": "claude-opus-5-5",
+                        "stop_reason": stop, "content": [block],
+                        "usage": {"input_tokens": 1, "output_tokens": 1}}}
+
+
+def _handback(mid, tool_id, message):
+    return _block(mid, {"type": "tool_use", "id": tool_id, "name": "SubagentHandback",
+                        "input": {"message": message}}, stop="tool_use")
+
+
+def _result(text):
+    return {"type": "user", "message": {"role": "user",
+                                        "content": [{"type": "tool_result", "content": text}]}}
+
+
+class ReturnedAnswerTest(unittest.TestCase):
+    """3.30.8: what a subagent run handed its caller, whatever shape it returned in."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pa3-answer-")
+
+    def tearDown(self):
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def answer(self, records, hook_text=None):
+        return T.returned_answer(_write(os.path.join(self.dir, "agent-a1.jsonl"), records), hook_text)
+
+    def test_the_handback_is_the_answer_and_ends_the_run(self):
+        """CC 2.1.285: the run ends at the hand-back; SubagentStop's message is empty."""
+        recs = [_block("m1", {"type": "text", "text": "Checking the scanner first."}),
+                _block("m2", {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}, "tool_use"),
+                _result("x" * 4000),
+                _block("m3", {"type": "thinking", "thinking": "wrap up"}),
+                _handback("m3", "t2", "done. " * 200),
+                _result("Report delivered to your caller.")]
+        self.assertEqual(self.answer(recs), (300, True))
+        self.assertEqual(self.answer(recs, hook_text=""), (300, True))
+
+    def test_every_handback_of_a_resumed_run_counts_once(self):
+        recs = [_handback("m1", "t1", "a" * 400), _handback("m1", "t1", "a" * 400),   # written twice
+                _block("m2", {"type": "text", "text": "Waiting for the coder."}, "end_turn"),
+                _handback("m3", "t3", "b" * 800)]
+        self.assertEqual(self.answer(recs), (300, True))
+
+    def test_a_foreground_run_answers_with_its_last_message_text(self):
+        recs = [_block("m1", {"type": "text", "text": "x" * 4000}),                # narration, not the answer
+                _block("m2", {"type": "tool_use", "id": "t1", "name": "Read", "input": {}}, "tool_use"),
+                _block("m3", {"type": "text", "text": "y" * 200}, "end_turn"),
+                _block("m3", {"type": "text", "text": "z" * 200}, "end_turn")]
+        self.assertEqual(self.answer(recs), (100, False))
+
+    def test_a_run_cut_off_on_a_tool_call_answered_nothing(self):
+        recs = [_block("m1", {"type": "text", "text": "Starting the scan now."}),
+                _block("m2", {"type": "tool_use", "id": "t1", "name": "Bash", "input": {}}, "tool_use")]
+        self.assertEqual(self.answer(recs), (0, False))
+
+    def test_a_reply_after_the_handback_adds_to_it(self):
+        """Before CC 2.1.285 a background agent wrote one more reply after its hand-back."""
+        recs = [_handback("m1", "t1", "r" * 400),
+                _block("m2", {"type": "text", "text": "s" * 40}, "end_turn")]
+        self.assertEqual(self.answer(recs), (110, False))
+
+    def test_the_hook_message_wins_when_longer_and_stands_in_for_no_file(self):
+        recs = [_block("m1", {"type": "text", "text": "q" * 40}, "end_turn")]
+        self.assertEqual(self.answer(recs, hook_text="h" * 400), (100, False))
+        self.assertEqual(T.returned_answer(os.path.join(self.dir, "missing.jsonl"), "h" * 80), (20, False))
+        self.assertEqual(T.returned_answer(None), (0, False))
 
 
 class ModLocalTurnsTest(unittest.TestCase):

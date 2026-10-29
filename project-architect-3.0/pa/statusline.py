@@ -2921,6 +2921,12 @@ def _on_change(cfg, sid, prev, cur, state, final=True, touched=None):
                      method=f.get("method"), quality=f.get("quality"))
             except Exception:
                 pass
+        try:                                     # 3.30.8: the pool rebuilds once each week closes
+            from . import fit as _fit
+            if _fit.build_pool_if_stale(conn, cfg, readers=readers):
+                _log("statusline.pool_rebuilt")
+        except Exception:
+            pass
         _rebuild_summary(conn, cfg, readers=readers)
         _log("statusline.change", sid=sid, util_rows=rows, instances=made)
     finally:

@@ -1067,5 +1067,25 @@ class TestBorrowedWeeklyRate(FitTestCase):
             db.close(conn)
 
 
+class TestBuildPoolIfStale(FitTestCase):
+    """3.30.8: the pool rebuilds once each week closes (it froze at the last full refit)."""
+
+    def test_rebuilds_once_per_new_week(self):
+        conn = self.conn()
+        try:
+            cfg = config.defaults()
+            self.assertFalse(fit.build_pool_if_stale(conn, cfg))            # no week yet
+            start = int(time.time()) - 3 * 86400
+            db.upsert_window_instance(conn, {"account": "a@example.com", "window": "seven_day",
+                                             "resets_at": start + 7 * 86400, "started_at": start})
+            self.assertTrue(fit.build_pool_if_stale(conn, cfg))             # never built: builds
+            self.assertIsNotNone(db.get_meta(conn, fit.POOL_STAMP))
+            self.assertFalse(fit.build_pool_if_stale(conn, cfg))            # built since the week began
+            db.set_meta(conn, fit.POOL_STAMP, "2026-01-01T00:00:00Z")       # the week closed after it
+            self.assertTrue(fit.build_pool_if_stale(conn, cfg))
+        finally:
+            db.close(conn)
+
+
 if __name__ == "__main__":
     unittest.main()

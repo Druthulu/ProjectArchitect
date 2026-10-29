@@ -322,7 +322,9 @@ class RecalcTest(CliTestCase):
             self.assertEqual(ret["void"], 0)
             self.assertEqual(ret["kept_out_mode"], "results_share")
             self.assertEqual(ret["growth_tokens"], 10080 - 3050)
-            self.assertEqual(ret["answer_tokens"], 200)
+            # 3.30.8: the answer is what reached the caller, chars/4 as the hook counts it (was the
+            # last request's output, which a run ending at its hand-back call leaves a placeholder)
+            self.assertEqual(ret["answer_tokens"], len("The loader lives in src/loader.py.") // 4)
 
             session = conn.execute("SELECT * FROM sessions WHERE session_id=?", (SID,)).fetchone()
             turns_sum = conn.execute("SELECT SUM(cost_usd) FROM turns WHERE session_id=?"

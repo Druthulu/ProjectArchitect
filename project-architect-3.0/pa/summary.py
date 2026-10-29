@@ -1837,6 +1837,31 @@ def request_rebuild(cfg=None, sessions_only=False):
     return False
 
 
+RECHECK_WINDOW_S = 3600        # 3.30.8: how far back the child re-reads voided helpers' transcripts
+RECHECK_MAX_ROWS = 50
+
+
+def _recheck_answers(conn, cfg):
+    """3.30.8: a helper voided in the last hour for an answer the ledger could not read, whose
+    transcript now shows a hand-back or final text, is re-booked before the rebuild (a transcript
+    can lag SubagentStop; the hook never reads one past the inline budget)."""
+    from . import log
+
+    try:
+        from . import savings
+
+        since = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - RECHECK_WINDOW_S))
+        n, sids = savings.rebook_answers(conn, since=since, limit=RECHECK_MAX_ROWS)
+        if n:
+            from . import ledger_cli
+
+            for sid in sorted(s for s in sids if s):
+                ledger_cli.write_savings(conn, sid, cfg)
+            log.log("answers_rebooked", rows=n, sessions=len(sids))
+    except Exception as exc:
+        log.log("answers_recheck_failed", error=str(exc)[:200])
+
+
 def run_rebuild(sessions_only=False):
     """The child: rebuild, rebuild again while a dirty stamp exists, release the lock.
 
@@ -1857,6 +1882,7 @@ def run_rebuild(sessions_only=False):
             if conn is None:
                 break
             try:
+                _recheck_answers(conn, cfg)
                 rebuild(conn, cfg, sessions_only=sessions_only)
             finally:
                 close_db(conn)

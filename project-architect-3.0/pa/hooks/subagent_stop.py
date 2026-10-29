@@ -13,7 +13,9 @@ path.
 Then, by role:
   * **retriever** -- ``kept_out_tokens`` per design E.1 ``results_share``
     (growth = ctx_at_end - seed_ctx, split by the share of the run's visible
-    output that was tool results, minus the answer it returned) into
+    output that was tool results, minus the answer it returned: its hand-back
+    reports or final text, read from the transcript since CC 2.1.285 left
+    ``last_assistant_message`` empty, 3.30.8) into
     ``retrievals``, and ``R``/``returned_at`` into the parent's live entry so the
     expert's next PostToolUse starts counting avoided re-sends.
   * **expert/coder/critic** -- the live savings figure is locked into
@@ -42,8 +44,7 @@ def run(inp, cfg):
     agent_type = inp.get("agent_type")
     role = role_of(inp, cfg)
     path = inp.get("agent_transcript_path") or _built_path(inp, agent_id)
-    answer = inp.get("last_assistant_message") or ""
-    answer_tokens = len(str(answer)) // 4
+    answer_tokens = _answer_tokens(cfg, path, inp.get("last_assistant_message"))
     if answer_tokens > CONTRACT_TOKEN_BUDGET:
         log.log("contract_oversize", session=sid, agent=agent_id, role=role,
                 tokens=answer_tokens)
@@ -87,7 +88,7 @@ def close_run(cfg, sid, agent_id, agent_type, path, live=None, cwd=None):
     if path and os.path.exists(path):
         conn = open_db()
         try:
-            _close_in_db(conn, cfg, inp, sid, agent_id, role, path, live, 0)
+            _close_in_db(conn, cfg, inp, sid, agent_id, role, path, live, _answer_tokens(cfg, path))
         finally:
             close_db(conn)
     close_follow_tab(agent_id)
@@ -160,6 +161,21 @@ def _limit(cfg):
         return int((cfg.get("ledger") or {}).get("lock_inline_max_bytes", 20_000_000))
     except (TypeError, ValueError):
         return 20_000_000
+
+
+def _answer_tokens(cfg, path, hook_text=None):
+    """What the run handed its caller (3.30.8): its hand-back reports or final text, read from the
+    transcript within the inline budget; past it the hook's message alone (the deferred lock and
+    the summary child's re-check book the rest)."""
+    from .. import transcript
+
+    try:
+        size = os.path.getsize(path) if path else None
+    except OSError:
+        size = None
+    if size is None or size > _limit(cfg):
+        return transcript.est(str(hook_text or ""))
+    return transcript.returned_answer(path, hook_text)[0]
 
 
 def _lock(conn, cfg, inp, sid, agent_id, role, path, live):
@@ -302,22 +318,23 @@ def _book_retrieval(conn, cfg, inp, sid, agent_id, role, path, totals, answer_to
 
 
 def _parent_of(conn, agent_id, live, sid, path=None):
-    """The retriever's parent: the harness's meta link, else a live or booked parent that is not
-    the session itself, else the running expert, else the session."""
+    """The run's parent: the harness's meta link, else a live or booked parent that is neither
+    the session nor the run itself, else the session.  3.30.8: the running-expert guess is gone:
+    it filed a mod-started expert as its own parent; SubagentStart already books nested runs
+    (meta link, or the running expert at depth >= 2) and the rest under the session."""
     from .. import transcript
 
     meta_parent = (transcript.read_meta(path) if path else {}).get("parentAgentId")
     if meta_parent:
         return str(meta_parent)
     parent = live.get("parent")
-    if parent and parent != sid:
+    if parent and parent not in (sid, agent_id):
         return parent
     row = conn.execute("SELECT parent_run_id FROM agent_runs WHERE run_id=?",
                        (agent_id,)).fetchone()
-    if row and row[0] and row[0] != sid:
+    if row and row[0] and row[0] not in (sid, agent_id):
         return row[0]
-    expert = running.session(sid).get("expert")
-    return expert or parent or sid
+    return sid
 
 
 # --------------------------------------------------------------------------- savings

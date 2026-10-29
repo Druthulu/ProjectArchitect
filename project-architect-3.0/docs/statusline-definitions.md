@@ -11,7 +11,7 @@ stated assumption). Modeled figures are never added to each other (spec D39).
 |---|---|
 | ledger price | `pa/prices.py`, per model, applied to every API turn the ledger records (`turns.cost_usd`). The basis of every dollar on the screen. |
 | harness cost-state | Claude Code's own cost figure, which bills a `[1m]` launch at the long-context premium. Report cross-check column only; no screen line uses it. |
-| kept-out tokens | Per helper run: the API-measured growth of the helper's context, times the share of that growth that was tool results, minus its answer. Plus the credit rows scripts write (`tools/_credit.py note`). Counted. |
+| kept-out tokens | Per helper run: the API-measured growth of the helper's context, times the share of that growth that was tool results, minus its answer (its hand-back reports, else its final text; a run that returned neither counts nothing). Plus the credit rows scripts write (`tools/_credit.py note`). Counted. |
 | carry model | The kept-out tokens re-read by the parent on every later request of the session at the cache-read price, written once at the 1h write price and again after a cold gap, inside one 1M-token window that resets when it would overflow; the helper's own seed cost is subtracted and the emission credit added. Modeled; the assumption is the 1M window. |
 | replay | Every request of an account replayed as one monolithic session (`pa/replay.py`) under stated assumptions. Modeled; a second, separate model. |
 | points per dollar | The share of a weekly (or 5h) allowance one ledger dollar buys: the window's meter percent over the account's ledger cost in that window (method `ratio`), or the pooled per-family fit of instances that started at or after `fit.regime_since`. |

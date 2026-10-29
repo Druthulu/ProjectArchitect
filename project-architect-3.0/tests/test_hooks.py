@@ -85,6 +85,16 @@ def tool_result_line(uuid, text, ts="2026-09-12T20:00:01.000Z"):
                                    "content": [{"type": "tool_result", "content": text}]}})
 
 
+def handback_line(msg_id, message, read=0, ts="2026-09-12T20:20:00.000Z", tool="SubagentHandback"):
+    """3.30.8: a run's last request: its ``SubagentHandback`` call (CC 2.1.285), or another tool's."""
+    rec = json.loads(usage_line(msg_id, model="claude-opus-5-5", inp=100, read=read, out=300,
+                                ts=ts, ttl="5m"))
+    rec["message"]["stop_reason"] = "tool_use"
+    rec["message"]["content"] = [{"type": "tool_use", "id": "toolu_" + msg_id, "name": tool,
+                                  "input": {"message": message}}]
+    return json.dumps(rec)
+
+
 class LedgerCase(unittest.TestCase):
     """Temp ledger + temp transcript tree + stubbed auth/notifier."""
 
@@ -621,6 +631,83 @@ class RetrievalTest(LedgerCase):
         self.assertEqual(self.rows("SELECT parent_run_id, parent_source, spawn_depth FROM agent_runs "
                                    "WHERE run_id=?", (self.RETR,)), [(self.PARENT, "meta", 2)])
         self.assertIn(self.RETR, running.agent(self.SID, self.PARENT)["retrievals"])
+
+    def _helper_transcript(self, agent_id, last, meta):
+        path = os.path.join(self.projects, "slug", self.SID, "subagents", "agent-%s.jsonl" % agent_id)
+        self.write_transcript(path, [
+            usage_line("msg_%s1" % agent_id, model="claude-opus-5-5", inp=18000, out=100, ttl="5m"),
+            tool_result_line("tr-%s" % agent_id, "z" * 100_000), last])
+        with open(path[:-6] + ".meta.json", "w", encoding="utf-8") as fh:
+            json.dump(meta, fh)
+        return path
+
+    def test_handback_report_is_the_answer_when_the_hook_message_is_empty(self):
+        """3.30.8: since CC 2.1.285 a helper ends at its hand-back and SubagentStop's last message
+        comes empty; the report in its transcript is the answer, so the helper is not voided."""
+        from pa.hooks import subagent_stop
+
+        coder = "a5555555000000012"
+        running.set_agent(self.SID, self.PARENT, {"agent_type": "pa-expert", "role": "expert"})
+        running.set_expert(self.SID, self.PARENT)
+        running.set_agent(self.SID, coder, {"agent_type": "pa-coder", "role": "coder",
+                                            "parent": self.PARENT})
+        path = self._helper_transcript(coder, handback_line("msg_c2", "done. " * 200, read=50000),
+                                       {"agentType": "pa-coder", "parentAgentId": self.PARENT,
+                                        "spawnDepth": 2, "requestShape": "background"})
+        inp = {"session_id": self.SID, "agent_id": coder, "agent_type": "pa-coder",
+               "cwd": self.root, "last_assistant_message": "", "agent_transcript_path": path}
+        self.assertIsNone(subagent_stop.run(inp, self.cfg))
+        (parent, growth, kept, mode, void, answer), = self.rows(
+            "SELECT parent_run_id, growth_tokens, kept_out_tokens, kept_out_mode, void, answer_tokens"
+            " FROM retrievals WHERE run_id=?", (coder,))
+        self.assertEqual((parent, mode, void, answer), (self.PARENT, "all_growth", 0, 300))
+        self.assertEqual(kept, growth - 300)
+        self.assertFalse(running.agent(self.SID, self.PARENT)["retrievals"][coder]["void"])
+
+    def test_a_helper_cut_off_on_another_tool_call_stays_void(self):
+        from pa.hooks import subagent_stop
+
+        coder = "a6666666000000016"
+        path = self._helper_transcript(coder, handback_line("msg_x2", "ls", read=50000, tool="Bash"),
+                                       {"agentType": "pa-coder", "parentAgentId": self.PARENT,
+                                        "spawnDepth": 2})
+        inp = {"session_id": self.SID, "agent_id": coder, "agent_type": "pa-coder",
+               "cwd": self.root, "last_assistant_message": "", "agent_transcript_path": path}
+        self.assertIsNone(subagent_stop.run(inp, self.cfg))
+        self.assertEqual(self.rows("SELECT void, answer_tokens FROM retrievals WHERE run_id=?",
+                                   (coder,)), [(1, 0)])
+
+    def test_a_mod_started_expert_is_filed_under_the_session_not_itself(self):
+        """3.30.8: an expert with no parent link that is itself the running expert was filed as
+        its own parent by the running-expert guess, and credited its context to itself live."""
+        from pa.hooks import subagent_stop
+
+        running.set_agent(self.SID, self.PARENT, {"agent_type": "pa-expert", "role": "expert",
+                                                  "parent": self.SID, "parent_source": "main"})
+        running.set_expert(self.SID, self.PARENT)
+        path = self._helper_transcript(self.PARENT, handback_line("msg_e2", "T9 done. " * 50, read=60000),
+                                       {"agentType": "pa-expert", "spawnDepth": 1,
+                                        "requestShape": "background"})
+        inp = {"session_id": self.SID, "agent_id": self.PARENT, "agent_type": "pa-expert",
+               "cwd": self.root, "last_assistant_message": "", "agent_transcript_path": path}
+        with mock.patch.object(running, "add_retrieval") as add:
+            self.assertIsNone(subagent_stop.run(inp, self.cfg))
+        add.assert_not_called()
+        self.assertEqual(self.rows("SELECT parent_run_id, void FROM retrievals WHERE run_id=?",
+                                   (self.PARENT,)), [(self.SID, 0)])
+
+    def test_the_liveness_sweep_reads_the_handback_too(self):
+        from pa.hooks import subagent_stop
+
+        coder = "a7777777000000018"
+        running.set_agent(self.SID, coder, {"agent_type": "pa-coder", "role": "coder",
+                                            "parent": self.PARENT})
+        path = self._helper_transcript(coder, handback_line("msg_s2", "done. " * 200, read=50000),
+                                       {"agentType": "pa-coder", "parentAgentId": self.PARENT,
+                                        "spawnDepth": 2})
+        subagent_stop.close_run(self.cfg, self.SID, coder, "pa-coder", path, cwd=self.root)
+        self.assertEqual(self.rows("SELECT void, answer_tokens FROM retrievals WHERE run_id=?",
+                                   (coder,)), [(0, 300)])
 
     def test_phantom_stop_of_the_main_thread_writes_nothing(self):
         """The harness fires SubagentStop for the router's own turns: no start, no transcript."""

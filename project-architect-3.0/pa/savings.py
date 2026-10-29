@@ -6,6 +6,7 @@ Public:
     kept_out_tokens(turns, result_tokens_est, own_output_est, answer_tokens, mode)
                                             -> (R, detail)
     retrieval_row(...)                      -> a ``retrievals`` row dict
+    rebook_answers(conn, since=None, limit=None)      -> (rows, session ids)
     price_read(model, at=None)              -> $/MTok cache-read price (0.0 if unknown)
     measured_saved(conn, expert_run_id, until=None)   -> dict
     live_saved(agent_entry, price_read)     -> float          (running.json shape)
@@ -570,6 +571,60 @@ def retrieval_row(run_id, parent_run_id=None, agent_type=None, model=None, turns
         "status": status,
         "void": void,
     }
+
+
+_OK_STATUS = ("completed", "ok", "end_turn", "success", "handoff")
+
+
+def rebook_answers(conn, since=None, limit=None):
+    """Re-book void helper rows whose transcript shows an answer (3.30.8); ``(rows, sids)``.
+
+    A row voided for returning nothing (no answer read, mode ``all_growth`` or
+    ``results_share``) takes its answer from :func:`pa.transcript.returned_answer`: since CC
+    2.1.285 a helper ends at its hand-back, which SubagentStop's message misses and a recalc
+    took for an interruption.  A run still running or orphaned stays void, and an interrupted
+    one unless it ended at its hand-back.  ``since``: rows returned at or after it (ISO);
+    ``limit``: the newest rows only.  The caller rewrites the touched sessions' savings.
+    """
+    import os
+    from . import transcript
+
+    sql = ("SELECT r.run_id, r.seed_ctx, r.ctx_at_end, r.result_tokens_est, r.own_output_est,"
+           " r.kept_out_mode, r.status, a.session_id, a.status AS run_status, a.transcript_path"
+           " FROM retrievals r JOIN agent_runs a ON a.run_id = r.run_id"
+           " WHERE COALESCE(r.void, 0)=1 AND COALESCE(r.answer_tokens, 0)=0"
+           " AND r.kept_out_mode IN ('all_growth', 'results_share')"
+           " AND COALESCE(a.status, '') NOT IN ('running', 'orphaned')")
+    args = []
+    if since:
+        sql += " AND r.returned_at >= ?"
+        args.append(since)
+    sql += " ORDER BY r.returned_at DESC"
+    if limit:
+        sql += " LIMIT %d" % int(limit)
+    n, sids = 0, set()
+    for row in conn.execute(sql, args).fetchall():
+        path = _field(row, "transcript_path")
+        if not path or not os.path.exists(path):
+            continue
+        answer, handback = transcript.returned_answer(path)
+        run_status = _field(row, "run_status")
+        if answer <= 0 or (run_status == "interrupted" and not handback):
+            continue
+        kept, _detail = kept_out_tokens(
+            [{"ctx": _int(_field(row, "seed_ctx"))}, {"ctx": _int(_field(row, "ctx_at_end"))}],
+            _field(row, "result_tokens_est", 0), _field(row, "own_output_est", 0), answer,
+            _field(row, "kept_out_mode"))
+        status = _field(row, "status")
+        conn.execute("UPDATE retrievals SET answer_tokens=?, kept_out_tokens=?, void=0, status=?"
+                     " WHERE run_id=?", (answer, kept, status if status in _OK_STATUS else "completed",
+                                         _field(row, "run_id")))
+        if run_status == "interrupted":
+            conn.execute("UPDATE agent_runs SET status='completed' WHERE run_id=?",
+                         (_field(row, "run_id"),))
+        n += 1
+        sids.add(_field(row, "session_id"))
+    return n, sids
 
 
 # --------------------------------------------------------------------------- measured savings
