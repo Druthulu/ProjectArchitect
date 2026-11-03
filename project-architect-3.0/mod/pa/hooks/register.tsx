@@ -1722,9 +1722,16 @@ export const register: Register = (on, options) => {
             files.push([name.slice(0, -'.json'.length), await $.fs.read(`${dir}/${name}`).catch(() => '')])
           }
           // T11-fix2: each agent's real status (`stopped`: killed, failed, or the expert gone from the list; `waiting`).
-          const listed = new Map((await $.agent.list()).map(a => [a.id, a.status as string]))
-          running = runningNow({ id: lt.id, title: lt.title }, taskAgents(lt.agentId, files)
-            .map(a => ({ ...a, state: a.role === 'expert' || listed.has(a.id) ? statusWord(listed.get(a.id)) : '' })))
+          const all = await $.agent.list()
+          const listed = new Map(all.map(a => [a.id, a.status as string]))
+          // 3.32.1: the expert gone from the list with a child listed busy is waiting on it (3.28.8), never `stopped`;
+          // the list's `parentId` places a child whose facts file lacks one.
+          const child = all.find(a => a.parentId === lt.agentId && ['pending', 'running', 'waiting'].includes(a.status))
+          const parents = new Map(all.filter(a => (a.parentId ?? '') !== '').map(a => [a.id, a.parentId ?? '']))
+          running = runningNow({ id: lt.id, title: lt.title }, taskAgents(lt.agentId, files, parents)
+            .map(a => ({ ...a, state: a.role === 'expert' && !listed.has(a.id) && child !== undefined
+              ? `waiting on its ${/coder/.test(child.type ?? '') ? 'coder' : child.type || 'helper'}`
+              : a.role === 'expert' || listed.has(a.id) ? statusWord(listed.get(a.id)) : '' })))
         } else if (loop.state !== 'off' && lt === null) {
           // 3.24 T17p: no task runs: say so (the last done task and when), so a stale "running" cannot stand.
           const ld = (loop as { lastDone?: { id?: unknown; at?: unknown } }).lastDone

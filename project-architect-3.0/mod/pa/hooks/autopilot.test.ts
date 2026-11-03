@@ -3516,6 +3516,22 @@ describe('a stopped loop agent (T11-fix2)', () => {
     await clock.advance(2_000)
     expect(delivered(w).some(t => t.includes('- expert E1 (claude-opus-5-5): waiting'))).toBe(true)
   })
+
+  test('3.32.1: an expert gone from the list with a child listed busy is waiting on it; the child shows without a facts parentId', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, {
+      [LOOP]: running(), [`${BASE}/S1/state.json`]: PRIOR,
+      [`${BASE}/S1/agents/E1.json`]: facts({ type: 'pa-expert', description: 'T1 add function' }),
+      [`${BASE}/S1/agents/C1.json`]: facts({ type: 'pa-coder', parentId: '' }),
+    })
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }, { id: 'C1', status: 'running', parentId: 'E1', type: 'pa-coder' }]
+    await $.session.start(ISTART)
+    await clock.advance(2_000)
+    await $.prompt.submit({ text: 'what happened?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(2_000)
+    expect(delivered(w).some(t => t.includes('- expert E1 (claude-opus-5-5): waiting on its coder\n- coder C1 (claude-opus-5-5)'))).toBe(true)
+    expect(loopJ(w).holds).not.toContain('stopped')
+  })
 })
 
 // 3.28.1 T15: a `WAITING: shell <what>` hand-back is told to Claude; a live shell keeps its run waiting; a woken
@@ -3639,6 +3655,252 @@ describe('no stall on a false stop (3.28.8)', () => {
     await clock.advance(2_000)
     expect(loopJ(w).holds).toEqual(['stopped'])
     expect(ran(w, 'tools/plan_edit.py set-status')).toEqual([])
+  })
+})
+
+// 3.32.1: no forced route. A helper done in all but name (handed back, no tool call since) is a leftover: its busy
+// listing and live shells hold nothing; real work waits as before, with one snapshot and notice at 30 minutes.
+describe('leftovers after a hand-back, and the 30-minute notice (3.32.1)', () => {
+  const DONE = 'done. Roads reach every town.\nSummary: logs/T1.md (commit def5678).'
+  const reported = (contract: string | null, o: Record<string, unknown> = {}): string => running({
+    task: { id: 'T1', title: 'add function', agent: 'pa-expert', coder: 'opus55', effort: 'medium', attempt: 1, kind: 'task',
+      agentId: 'E1', startSha: 'abc', spawnedAt: NOW - 60 * 60_000, lastCompleteAt: NOW, contract: null, plan: T1,
+      ...(contract === null ? {} : { pendingContract: contract }), ...o },
+  })
+  const CODER = { id: 'C1', status: 'running' as const, parentId: 'E1', type: 'pa-coder', description: 'T1.c1 roads' }
+  const SHELLS = `${BASE}/S1/shells.json`
+  const routed = (w: W): number => ran(w, 'tools/plan_edit.py set-status').length
+  const leftNotices = (w: W): string[] => notices(w).map(x => x.input.text).filter(x => x.includes('was left running'))
+  const stallNotices = (w: W): string[] => notices(w).map(x => x.input.text).filter(x => x.includes('the loop is still waiting for'))
+  const tick = async (clock: { advance: (ms: number) => Promise<unknown> }, ms: number): Promise<void> => {
+    for (let i = 0; i < ms / 2_000; i++) await clock.advance(2_000)
+  }
+  const handBack = async ($: { tool: { check: (e: { tool: string; agentId: string; input: { message: string } }) => Promise<unknown> } }, id: string, message: string): Promise<void> => {
+    await $.tool.check({ tool: 'SubagentHandback', agentId: id, input: { message } })
+  }
+
+  test('a coder handed back with only a moved shell left: the done routes after the quiet time, with snapshot and notice', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(DONE) })
+    w.list = [CODER]
+    w.files.set(SHELLS, JSON.stringify({ C1: [{ id: 'm7', name: 'python', at: NOW, type: 'pa-coder', moved: true }] }))
+    await $.session.start(START)
+    await handBack($, 'C1', 'done. Roads added.')
+    await tick(clock, 30_000)
+    expect([routed(w), snapshots(w).length]).toEqual([1, 1])
+    const rel = (snapshots(w)[0] ?? '').slice(ROOT.length + 1)
+    expect(leftNotices(w)).toEqual([
+      "‹pa› T1's expert reported done and the loop went on, but pa-coder C1 (T1.c1 roads), the shell python (moved into the " +
+      "background when it timed out) was left running in Claude Code after handing back. Tell the developer in one line, " +
+      `naming it: if they don't need it, they can stop it in /tasks. A diagnostic snapshot is at ${rel}.`])
+    expect(hold(w)).toContain('routed past what was left running after handing back')
+  })
+
+  test('a coder handed back with a deliberate background shell left: routes, the notice names the shell', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(DONE) })
+    w.list = [{ ...CODER, status: 'idle' }]
+    w.files.set(SHELLS, JSON.stringify({ C1: [{ id: 'b1', name: 'gate.sh', at: NOW, type: 'pa-coder' }] }))
+    await $.session.start(START)
+    await handBack($, 'C1', 'done. Roads added.')
+    await tick(clock, 30_000)
+    expect(routed(w)).toBe(1)
+    expect(leftNotices(w)).toHaveLength(1)
+    expect(leftNotices(w)[0]).toContain('but the shell gate.sh was left running')
+  })
+
+  test('a coder still working with no hand-back: not routed at 2 minutes, nor said', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: reported(DONE) })
+    w.list = [CODER]
+    await $.session.start(START)
+    await tick(clock, 124_000)
+    expect([routed(w), stallNotices(w), snapshots(w)]).toEqual([0, [], []])
+  })
+
+  test('a coder still working with no hand-back: at 30 minutes one snapshot and notice, not routed; still not at 60', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    // the report came 28 minutes before the start: 30 at 2 minutes in; the loop's file keeps what was said
+    const w = world(on, { [LOOP]: reported(DONE, { lastCompleteAt: NOW - 28 * 60_000 }) })
+    w.list = [CODER]
+    await $.session.start(START)
+    await tick(clock, 60_000)
+    expect([routed(w), stallNotices(w)]).toEqual([0, []])
+    await tick(clock, 64_000)
+    expect([routed(w), snapshots(w).length, loopJ(w).state]).toEqual([0, 1, 'running'])
+    const rel = (snapshots(w)[0] ?? '').slice(ROOT.length + 1)
+    expect(stallNotices(w)).toEqual([
+      "‹pa› T1's expert reported done 30 minutes ago, and the loop is still waiting for pa-coder C1 (T1.c1 roads). " +
+      `A diagnostic snapshot is at ${rel}. Tell the developer in one line; if it isn't needed, they can stop it in /tasks.`])
+    expect(hold(w)).toContain("T1's done has waited 30 minutes for: pa-coder C1 (T1.c1 roads).")
+  })
+
+  test('at 60 minutes, already said for this attempt: not routed, nothing said again', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: reported(DONE, { lastCompleteAt: NOW - 60 * 60_000, stallNoted: '1#E1' }) })
+    w.list = [CODER]
+    await $.session.start(START)
+    await tick(clock, 10_000)
+    expect([routed(w), snapshots(w), stallNotices(w), loopJ(w).state]).toEqual([0, [], [], 'running'])
+  })
+
+  test('a coder that handed back and then made a tool call counts as busy again', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(DONE) })
+    w.list = [CODER]
+    await $.session.start(START)
+    await handBack($, 'C1', 'done. Roads added.')
+    w.files.set(`${BASE}/S1/agents/C1.json`, JSON.stringify({ type: 'pa-coder', updatedAt: NOW + 10_000 }))
+    await tick(clock, 124_000)
+    expect([routed(w), leftNotices(w)]).toEqual([0, []])
+  })
+
+  test('the expert listed waiting with only its own leftover shell after its hand-back: its report is captured and routes', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(null) })
+    w.list = [{ id: 'E1', status: 'waiting', type: 'pa-expert' }]
+    w.files.set(SHELLS, JSON.stringify({ E1: [{ id: 'm8', name: 'gate.sh', at: NOW, type: 'pa-expert', moved: true }] }))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await handBack($, 'E1', DONE)
+    await tick(clock, 30_000)
+    expect(routed(w)).toBe(1)
+    expect(leftNotices(w)).toHaveLength(1)
+    expect(leftNotices(w)[0]).toContain('the shell gate.sh (moved into the background when it timed out), pa-expert E1 itself (still listed as waiting)')
+  })
+
+  test('the expert listed waiting on a working child: waits, with the notice at 30 minutes', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(DONE, { lastCompleteAt: NOW - 28 * 60_000 }) })
+    w.list = [{ id: 'E1', status: 'waiting', type: 'pa-expert' }, CODER]
+    await $.session.start(START)
+    await handBack($, 'E1', DONE)
+    await tick(clock, 124_000)
+    expect([routed(w), stallNotices(w).length]).toEqual([0, 1])
+    expect(stallNotices(w)[0]).toContain('still waiting for pa-coder C1 (T1.c1 roads).')
+  })
+
+  test('the expert listed running with a report: waits; the notice at 30 names it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: reported(DONE, { lastCompleteAt: NOW - 28 * 60_000 }) })
+    w.list = [{ id: 'E1', status: 'running', type: 'pa-expert' }]
+    await $.session.start(START)
+    await tick(clock, 124_000)
+    expect([loopJ(w).state, routed(w), stallNotices(w).length]).toEqual(['running', 0, 1])
+    expect(stallNotices(w)[0]).toContain('still waiting for pa-expert E1 itself (listed as running).')
+  })
+
+  test('no report with a busy child: still waiting at 30 minutes, never stopped, no notice', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: reported(null, { lastCompleteAt: NOW - 28 * 60_000 }) })
+    w.list = [CODER]
+    await $.session.start(START)
+    await tick(clock, 2 * 60_000 + 4_000)
+    expect([loopJ(w).state, loopJ(w).holds, routed(w), stallNotices(w)]).toEqual(['running', [], 0, []])
+  })
+
+  test('a steer queued to the expert keeps it waiting past a leftover', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(DONE, { steerAt: NOW + 1 }) })
+    w.list = [{ id: 'E1', status: 'idle', type: 'pa-expert' }, CODER]
+    await $.session.start(START)
+    await handBack($, 'C1', 'done. Roads added.')
+    await tick(clock, 4 * 60_000)
+    expect([loopJ(w).state, routed(w), leftNotices(w)]).toEqual(['running', 0, []])
+  })
+
+  // T3: Claude Code holds a hand-back while the agent's background command runs; the mod passes the report on.
+  const held = (w: W): string[] => w.sends.filter(t => t.includes('is holding its report'))
+  test('T3: a coder hands back with a live shell: its parent gets the held report once, journaled once', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(null) })
+    w.list = [{ id: 'E1', status: 'running', type: 'pa-expert' }, CODER]
+    w.files.set(SHELLS, JSON.stringify({ C1: [{ id: 'm7', name: 'python', at: NOW, type: 'pa-coder', moved: true }] }))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'C1', input: { message: 'done. Roads added.\nCommit: def5678' } })
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'C1', input: { message: 'done. Roads added.\nCommit: def5678' } })
+    expect(held(w)).toEqual(['‹pa› Your pa-coder C1 handed back while its background command python is still running, so Claude Code ' +
+      'is holding its report until that command ends. Its report, as sent:\n\ndone. Roads added.\nCommit: def5678'])
+    expect(entries(w, 'mod-shell').filter(p => (w.files.get(p) ?? '').includes('C1 handed back'))).toHaveLength(1)
+  })
+
+  test('T3: a hand-back with no live shell changes nothing', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(null) })
+    w.list = [{ id: 'E1', status: 'running', type: 'pa-expert' }, CODER]
+    w.files.set(SHELLS, JSON.stringify({ C1: [{ id: 'm7', name: 'python', at: NOW, type: 'pa-coder', exit: 1 }] }))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'C1', input: { message: 'done. Roads added.' } })
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'E1', input: { message: DONE } })
+    await tick(clock, 2 * 60_000 + 4_000)
+    expect([routed(w), held(w), entries(w, 'mod-shell'), loopJ(w).task?.pendingContract ?? null]).toEqual([0, [], [], null])
+  })
+
+  // T2: the diagnostic snapshot, written before the route; a failure is journaled and the route goes on.
+  const CODER_TR = norm(subagentTranscript('C:\\p\\S1.jsonl', 'S1', 'C1'))
+  const coderRows = [
+    { type: 'assistant', timestamp: '2026-11-02T10:00:03Z', version: '2.1.300',
+      message: { content: [{ type: 'tool_use', id: 'u1', name: 'Bash', input: { command: 'bash tools/run.sh gate -- pytest', run_in_background: true } }] } },
+    { type: 'user', timestamp: '2026-11-02T10:00:04Z', message: { content: [{ type: 'tool_result', tool_use_id: 'u1', content: 'Command running in background with ID: g7' }] } },
+    { type: 'assistant', timestamp: '2026-11-02T10:00:05Z', message: { content: [{ type: 'text', text: 'Waiting on the gate.' }] } },
+  ].map(r => JSON.stringify(r)).join('\n')
+  const hold = (w: W): string => entries(w, 'mod-hold').map(p => w.files.get(p) ?? '').join('\n')
+  const snapshots = (w: W): string[] => [...w.files.keys()].filter(p => p.startsWith(`${ROOT}/.run/mod/stalls/T1-`))
+
+  test('T2: the snapshot holds the list, the busy child\'s last tool calls and the processes; the notice names it; routed', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(DONE), [CODER_TR]: coderRows, [`${BASE}/S1/agents/C1.json`]: '{"type":"pa-coder"}',
+      [norm(subagentTranscript('C:\\p\\S1.jsonl', 'S1', 'E1'))]: JSON.stringify({ type: 'assistant', version: '2.1.301', message: { content: 'done.' } }) })
+    w.answer = argv => (argv[0] === 'ps' ? ok('PID PPID ELAPSED COMMAND\n42 1 05:00 node gate.js --token s3cr3t\n') : defaultAnswer(argv))
+    w.list = [CODER]
+    await $.session.start(START)
+    // the transcript path only: a startup's SessionStart would hold the loop for the developer
+    await $.classic.SessionStart({ source: 'compact', session_id: 'S1', transcript_path: 'C:\\p\\S1.jsonl' } as never)
+    await handBack($, 'C1', 'done. Roads added.')
+    await tick(clock, 30_000)
+    expect(routed(w)).toBe(1)
+    const [file] = snapshots(w)
+    const text = w.files.get(file ?? '') ?? ''
+    expect(text).toContain('- C1 | pa-coder | - | T1.c1 roads | running | parent E1')
+    expect(text).toContain('- 2026-11-02T10:00:03 Bash [background] bash tools/run.sh gate -- pytest')
+    expect(text).toContain('- shell g7 started 2026-11-02T10:00:04, no completion notice')
+    expect(text).toContain('42 1 05:00 node gate.js --token [redacted]')
+    expect(text).toContain('- PA3 ')
+    expect(text).toContain('; Claude Code 2.1.301; platform not Windows; session S1')
+    expect(text).toContain('### E1\n\n(none)') // the expert's facts file is absent here
+    const rel = (file ?? '').slice(ROOT.length + 1)
+    expect(leftNotices(w)).toHaveLength(1)
+    expect(leftNotices(w)[0]?.endsWith(`they can stop it in /tasks. A diagnostic snapshot is at ${rel}.`)).toBe(true)
+    expect(hold(w)).toContain(`Snapshot: ${rel}.`)
+    expect(ran(w, '-eo pid,ppid,etime,args')).toHaveLength(1)
+  })
+
+  test('T2: a failing process run and an unreadable transcript: the snapshot says so, the journal line too, routed', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: reported(DONE) })
+    w.answer = argv => (argv[0] === 'ps' ? { exitCode: 1, stdout: '', stderr: 'ps: not found' } : defaultAnswer(argv))
+    w.list = [CODER]
+    await $.session.start(START)
+    await handBack($, 'C1', 'done. Roads added.')
+    await tick(clock, 30_000)
+    expect(routed(w)).toBe(1)
+    expect(leftNotices(w)).toHaveLength(1)
+    expect(snapshots(w)).toHaveLength(1)
+    expect(w.files.get(snapshots(w)[0] ?? '')).toContain('## Processes\n\n(not read)')
+    expect(hold(w)).toContain('Gaps: the transcript of E1 was unreadable (no session transcript path yet); ' +
+      'the transcript of C1 was unreadable (no session transcript path yet); the process list failed (exit 1): ps: not found.')
   })
 })
 

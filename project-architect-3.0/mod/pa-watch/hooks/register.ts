@@ -72,8 +72,9 @@ function ev(kind: string, data: Record<string, unknown>): [string, string] {
 const quiet = (): undefined => undefined
 
 /** 3.28.1 T15: background shells (Bash `run_in_background`) per agent, `.run/mod/<sid>/shells.json` (pa loop.ts
- * SHELLS_FILE, shellsOf): `{ <agentId>: [{ id, name, at, type, exit? }] }`, from the call to its completion notice. */
-type ShellRec = { id: string; name: string; at: number; type: string; exit?: number }
+ * SHELLS_FILE, shellsOf): `{ <agentId>: [{ id, name, at, type, exit?, moved? }] }`, from the call to its completion notice;
+ * 3.32.1 T3: `moved` when Claude Code pushed a foreground call into the background at its time limit. */
+type ShellRec = { id: string; name: string; at: number; type: string; exit?: number; moved?: boolean }
 let shellsChain: Promise<unknown> = Promise.resolve() // one read-modify-write at a time
 /** A shell's name: the last script-like token's basename (`bake_rest.sh`), else the last command's first word; 3.3 T7:
  * a `pa_ext.py run` is `external <stem>`, its last argument's basename without the extension (`external T4.c1`). */
@@ -441,15 +442,18 @@ export const register: Register = on => {
       if (debugDir !== '') {
         await $.fs.write(...ev('tool', { agentId: e.agentId, tool: f.tool, args: f.args })).catch(quiet)
       }
-      if (e.tool === 'Bash' && args['run_in_background'] === true) {
+      if (e.tool === 'Bash') {
         // 3.28.1 T15: a background shell is recorded under its agent until its completion notice (session.append).
+        // 3.32.1 T3: so is a call Claude Code moved to the background at its time limit (`moved: true`).
         const r = await next(e)
         const res = r.result as { backgroundTaskId?: unknown } | undefined
-        const id = typeof res?.backgroundTaskId === 'string' ? res.backgroundTaskId : (/ID: (\w+)/.exec(r.text ?? '')?.[1] ?? '')
+        const bg = args['run_in_background'] === true
+        const id = typeof res?.backgroundTaskId === 'string' ? res.backgroundTaskId
+          : ((bg ? /ID: (\w+)/ : /moved to the background \(ID: (\w+)\)|background with ID: (\w+)/).exec(r.text ?? '')?.slice(1).find(x => x !== undefined) ?? '')
         if (id !== '') {
           const agent = e.agentId
           const type = f.type !== '' ? f.type : ((await $.agent.list().catch(() => [])).find(a => a.id === agent)?.type ?? '')
-          const rec: ShellRec = { id, name: shellName(String(args['command'] ?? '')), at: Date.now(), type }
+          const rec: ShellRec = { id, name: shellName(String(args['command'] ?? '')), at: Date.now(), type, ...(bg ? {} : { moved: true }) }
           await shellsEdit($, s => ({ ...s, [agent]: [...(s[agent] ?? []).filter(x => x.id !== id), rec] }))
         }
         return r

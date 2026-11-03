@@ -50,8 +50,9 @@ function factsOf(text: string): AgentFacts | null {
   }
 }
 
-/** The running task's agents (T5c): its expert, then its descendants by the facts' `parentId`, from `[agentId, file text]`. */
-export function taskAgents(expertId: string, files: readonly [string, string][]): RunningAgent[] {
+/** The running task's agents (T5c): its expert, then its descendants by the facts' `parentId`, from `[agentId, file text]`.
+ * 3.32.1: `parents` (id → parentId from `$.agent.list()`) stands in where a facts file has no `parentId`. */
+export function taskAgents(expertId: string, files: readonly [string, string][], parents: ReadonlyMap<string, string> = new Map()): RunningAgent[] {
   const all = new Map<string, AgentFacts>()
   for (const [id, text] of files) {
     const f = factsOf(text)
@@ -66,7 +67,8 @@ export function taskAgents(expertId: string, files: readonly [string, string][])
   for (let grew = true; grew;) {
     grew = false
     for (const [id, f] of [...all].sort((a, b) => a[0].localeCompare(b[0]))) {
-      if (!ids.has(id) && f.parentId !== undefined && ids.has(f.parentId)) {
+      const parent = f.parentId || parents.get(id)
+      if (!ids.has(id) && parent !== undefined && ids.has(parent)) {
         ids.add(id)
         out.push({ ...f, id, role: 'coder' })
         grew = true

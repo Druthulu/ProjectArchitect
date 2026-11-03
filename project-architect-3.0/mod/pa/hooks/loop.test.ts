@@ -7,6 +7,7 @@ import {
   quietReply, nextPhaseOf, recalcSessions, withPhaseSid, archiveOf, curateQuestion, firstRunLine,
   markerOf, modFilesKey, externalReminder, setupNotice, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
   extHealthOf, extHealthNotice, generalizableCount, bankQuestion, bankTask, bankNotice, startCheckOffline, startCheckState,
+  doneInName, STALL_NOTICE_MS,
 } from './loop'
 
 describe('the one-time cookbook banking (3.30)', () => {
@@ -151,6 +152,11 @@ describe('decisions', () => {
     expect(runEnded(t, 1, 0, 1e9)).toBe(false)
     expect(runEnded(t, 0, 1, 1e9)).toBe(false)
     expect(runEnded(TASK, 0, 0, 1e9)).toBe(false)
+  })
+
+  test('done in all but name: handed back, no tool call since (a second of slack) (3.32.1)', async () => {
+    expect(STALL_NOTICE_MS).toBe(30 * 60_000)
+    expect([doneInName(0, 0), doneInName(1_000, 0), doneInName(1_000, 2_000), doneInName(1_000, 2_001)]).toEqual([false, true, true, false])
   })
 
   test('3.24 T13A: a hand-back in: no 15 s quiet; children idle after it still wait; no hand-back keeps the wait', async () => {

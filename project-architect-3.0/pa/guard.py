@@ -9,6 +9,7 @@ Public:
     is_mutating_bash(cmd)                        -> bool   (mutation indicator present)
     phase_plan_deny(tool_name, tool_input)       -> reason | None
     root_search_deny(tool_name, tool_input)      -> reason | None  (find / grep -r from a disk root)
+    stdin_script_deny(tool_name, tool_input)     -> reason | None  (python/node `-` with nothing feeding it)
     decide(tool_name, tool_input, cfg=None, agent_type=None) -> reason | None
     bash_read_deny(cmd, role, cfg, root=None)    -> reason | None  (whole shell reads)
     reread_deny(inp, sid, run_id, cfg, root)     -> reason | None  (unchanged whole re-Read)
@@ -573,12 +574,77 @@ def root_search_deny(tool_name, tool_input):
     return None
 
 
+STDIN_SCRIPT_REASON = ("This runs an interpreter with `-` as its script: it reads its script from input and nothing "
+                       "feeds it, so it waits for ever. Claude Code then keeps it running in the background after the "
+                       "time limit, which holds your report from whoever briefed you. Give it a heredoc "
+                       "(`python - <<'EOF'`), a file or `-c`.")
+# 3.32.1 T3: python, python3(.N), py, node, a path or .exe of one, or `$PY` / `"$PY"` / `${PY}`
+_STDIN_INTERP_RE = re.compile(r"^(?:python(?:3(?:\.\d+)?)?|py|node|\$py|\$\{py\})$")
+_STDIN_EVAL = frozenset(["-c", "-m", "-e", "-p", "--eval", "--print"])
+_STDIN_VALUED = frozenset(["-W", "-X", "-r", "--require"])
+
+
+def _pipelines(cmd):
+    """Quote-aware split on ``&&``, ``||``, ``;`` and newlines; each part a list of its ``|`` stages."""
+    out, stages, cur, quote, i = [], [], "", "", 0
+    text = str(cmd or "")
+    while i < len(text):
+        ch = text[i]
+        if quote:
+            quote = "" if ch == quote else quote
+            cur += ch
+        elif ch in "'\"":
+            quote = ch
+            cur += ch
+        elif text.startswith(("&&", "||"), i) or ch in ";\n\r":
+            out.append(stages + [cur])
+            stages, cur = [], ""
+            i += 2 if ch in "&|" else 1
+            continue
+        elif ch == "|":
+            stages.append(cur)
+            cur = ""
+        else:
+            cur += ch
+        i += 1
+    out.append(stages + [cur])
+    return out
+
+
+def stdin_script_deny(tool_name, tool_input):
+    """Deny reason when a Bash command runs ``python``/``py``/``node`` with ``-`` as its script and nothing
+    feeds it: no heredoc, no ``<`` redirect, not on the right of a ``|`` (3.32.1 T3: a stray ``python -``
+    waited for ever, Claude Code moved it to the background, and the coder's hand-back was held for days)."""
+    if str(tool_name or "").strip().lower() not in ("bash", "shell"):
+        return None
+    for stages in _pipelines(_strip_heredocs(_command_of(tool_input))):
+        stage = stages[0].strip()
+        if not stage or "<<" in stage:
+            continue
+        toks = tokenize(stage)
+        name, args = _stage_head(toks)
+        if not _STDIN_INTERP_RE.match(name) or any(re.match(r"^\d?<(?!<)", t) for t in toks):
+            continue
+        skip = False
+        for a in args:
+            if skip:
+                skip = False
+            elif a == "-":
+                return STDIN_SCRIPT_REASON
+            elif a in _STDIN_EVAL or not a.startswith("-"):
+                break
+            elif a in _STDIN_VALUED:
+                skip = True
+    return None
+
+
 def decide(tool_name, tool_input, cfg=None, agent_type=None):
     """Deny reason for this PreToolUse call, or None to stay silent."""
     reason = agent_bash_deny(agent_type, tool_name, tool_input)
     if reason:
         return reason
-    return phase_plan_deny(tool_name, tool_input) or root_search_deny(tool_name, tool_input)
+    return (phase_plan_deny(tool_name, tool_input) or root_search_deny(tool_name, tool_input)
+            or stdin_script_deny(tool_name, tool_input))
 
 
 def deny(reason):

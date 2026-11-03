@@ -227,6 +227,8 @@ export type LoopTask = {
   /** The expert's children were last seen busy (3.23 T5d2a.c2); `childIdleAt` is when they went idle (runEnded waits after it). */
   childBusy?: boolean
   childIdleAt?: number
+  /** 3.32.1: `<attempt>#<expert id>` whose report waited STALL_NOTICE_MS on work: its snapshot and notice were sent. */
+  stallNoted?: string
   /** The last contract routed for this task (3.23 T6a2): a STATUS block textually identical to it is a repeat, ignored. */
   lastRouted?: string
   /** 3.24 T8: its expert was asked once for a missing `Review:` block; a second miss is a review hold from the summary. */
@@ -297,7 +299,7 @@ export type LoopState = {
 /** 3.28.1 T15: a background shell (Bash `run_in_background`) an agent started (`.run/mod/<sid>/shells.json`): Claude
  * Code's task id, its command's script or first word, its start (ms), the agent's type, and its exit code once it ended
  * badly (it stays listed, shown dead, until the agent reports). */
-export type Shell = { id: string; name: string; at: number; type: string; exit?: number }
+export type Shell = { id: string; name: string; at: number; type: string; exit?: number; moved?: boolean }
 
 /** The watcher's facts of one agent (`.run/mod/<sid>/agents/<id>.json`, 3.22 T8f), extended in 3.23 T5c with its type,
  * spawn description, parent, latest approach note (≤ 2 lines), its last three steps (`Tool short-arg`, oldest first)

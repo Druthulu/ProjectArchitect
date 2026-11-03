@@ -769,6 +769,24 @@ describe('background shells (3.28.1 T15)', () => {
     expect(shells(m)).toEqual({})
   })
 
+  test('3.32.1 T3: a foreground call Claude Code moved to the background is recorded as moved; its notice clears it', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
+    let res: unknown = { stdout: 'ok', stderr: '', interrupted: false }
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: res, text: typeof res === 'string' ? res : undefined }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: 'make test', agentId: 'C1' } as never)
+    expect(shells(m)).toEqual({})
+    res = 'Command did not complete within its 120s timeout and was moved to the background (ID: m7)'
+    await $.tool.call({ tool: 'Bash', command: 'python -', agentId: 'C1' } as never)
+    res = { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'm8' }
+    await $.tool.call({ tool: 'Bash', command: 'make gate', agentId: 'C1' } as never)
+    const got = JSON.parse(m.get(SHELLS) ?? '{}') as Record<string, { id: string; name: string; moved?: boolean }[]>
+    expect(got['C1']?.map(s => [s.id, s.name, s.moved])).toEqual([['m7', 'python', true], ['m8', 'make', true]])
+    await append($, notice('m7', 'completed', 'Background command "python -" completed (exit code 0)'))
+    expect(shells(m)['C1']?.map(s => s.id)).toEqual(['m8'])
+  })
+
   test('a failed shell keeps its record with the exit code until its agent reports', async ($, on) => {
     mock.clock(on)
     const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)

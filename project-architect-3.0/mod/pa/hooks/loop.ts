@@ -29,6 +29,11 @@ export const WAIT_POLL_MS = 30_000
 export const WAIT_MAX_MS = 50 * 60_000
 /** A forward with no turn.complete after it stops counting as queued after this (3.23 T5d2a.c2: undelivered, parent gone). */
 export const FORWARD_TTL_MS = 5 * 60_000
+/**
+ * 3.32.1: no forced route (TerrainDiffusion's coders worked 20 to 59 minutes past their expert's `handoff`). A report
+ * in hand this long while something still counts as busy gets one snapshot and one notice per attempt; nothing routes.
+ */
+export const STALL_NOTICE_MS = 30 * 60_000
 
 const STATES: readonly LoopStateName[] = ['off', 'boundary', 'running', 'routing', 'closing']
 const HOLDS: readonly HoldName[] = ['talk', 'review', 'question', 'plan', 'close', 'window', 'stopped', 'generation', 'session']
@@ -180,6 +185,7 @@ export function shellsOf(text: string | null): Record<string, Shell[]> {
       if (str(j['id']) === '') return []
       const sh: Shell = { id: str(j['id']), name: str(j['name']), at: num(j['at']), type: str(j['type']) }
       if (typeof j['exit'] === 'number') sh.exit = j['exit']
+      if (j['moved'] === true) sh.moved = true // 3.32.1 T3: Claude Code pushed it into the background at its time limit
       return [sh]
     })
     if (shells.length > 0) out[agentId] = shells
@@ -264,6 +270,31 @@ export function runEnded(task: LoopTask, childrenBusy: number, queuedToIt: numbe
 export function queuedTo(task: LoopTask, now: number): number {
   const fwd = task.forwardAt ?? 0
   return ((task.steerAt ?? 0) > task.lastCompleteAt ? 1 : 0) + (fwd > task.lastCompleteAt && now - fwd < FORWARD_TTL_MS ? 1 : 0)
+}
+
+/**
+ * 3.32.1: an agent done in all but name: it handed back (`handbackAt`, not a `WAITING:` line) and took no tool call
+ * since (its facts' `updatedAt`, a second's slack). Its busy listing and its live shells are leftovers, not work.
+ */
+export function doneInName(handbackAt: number, activityAt: number): boolean {
+  return handbackAt > 0 && activityAt <= handbackAt + 1_000
+}
+
+/**
+ * 3.32.1: the one notice Claude gets when a report is routed past leftovers (`what`: names); T2: `snapshot`, the
+ * diagnostic snapshot's path when one was written.
+ */
+export function leftoverNotice(task: string, route: string, what: string[], snapshot = ''): string {
+  return `‹pa› ${task}'s expert reported ${route} and the loop went on, but ${what.join(', ')} was left running in Claude ` +
+    "Code after handing back. Tell the developer in one line, naming it: if they don't need it, they can stop it in " +
+    `/tasks.${snapshot === '' ? '' : ` A diagnostic snapshot is at ${snapshot}.`}`
+}
+
+/** 3.32.1: the one notice when a report has been in hand STALL_NOTICE_MS and the loop still waits; nothing is routed. */
+export function stallNotice(task: string, route: string, what: string[], snapshot = ''): string {
+  return `‹pa› ${task}'s expert reported ${route} 30 minutes ago, and the loop is still waiting for ${what.join(', ')}.` +
+    `${snapshot === '' ? '' : ` A diagnostic snapshot is at ${snapshot}.`} Tell the developer in one line; if it isn't ` +
+    'needed, they can stop it in /tasks.'
 }
 
 /** The text a `steer` sends the running task's expert. */

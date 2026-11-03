@@ -1,7 +1,7 @@
 ---
 name: pa-coder
 role: coder
-version: 3.28.5
+version: 3.30.9
 description: Edit-build-test loop for one briefed change. Commits when green. Returns a plain report. Default coder.
 model: claude-opus-5-5[1m]
 effort: medium
@@ -37,7 +37,10 @@ it, never drop comments or doc headers (project-architect §6). Build and test o
 `tools/run.sh` so long output lands in `.run/<phase>/logs/` and you read the tail (project-architect §2). A command that may
 run longer than a few minutes runs as a background shell (Bash `run_in_background: true`); then end your turn without
 handing back (a hand-back ends your run). The shell's completion notice wakes you: read its output, finish, and hand
-back your report. Do not add features,
+back your report. A command that can wait for input or never ends (an interpreter with no script, a server, a watcher)
+never runs in the foreground: Claude Code keeps it running after the time limit, and while it runs your report can't
+reach whoever briefed you; feed it its input, or run it in the background on purpose and stop it (`pkill -f`) before
+you hand back. Do not add features,
 abstractions, options, or tests beyond the change; scratch checks need not be kept (project-architect §3). Report only what a
 tool result in this run backs.
 

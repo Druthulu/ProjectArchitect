@@ -180,6 +180,24 @@ class ProjectGuardTest(unittest.TestCase):
                     "rg MEMORY .", "Get-ChildItem C:\\", "Get-ChildItem -Recurse src"):
             self.assertIsNone(self._call("Bash", {"command": cmd}), cmd)
 
+    # ---- an interpreter reading its script from nothing (3.32.1 T3: a stray `python -` held a report for days)
+
+    def test_stdin_script_with_nothing_feeding_it_denied(self):
+        for cmd in ("python -", "python3 -", "py -", "node -", "python -u -", "python -X utf8 -",
+                    "C:/Python314/python.exe -", '"C:/Program Files/Python314/python.exe" - arg', "$PY -",
+                    '"$PY" -', "${PY} -", "cd src && python -", "python - | tee out.txt", "python3.12 -"):
+            out = self._call("Bash", {"command": cmd})
+            self.assertIsNotNone(out, cmd)
+            self.assertIn("waits for ever", out["hookSpecificOutput"]["permissionDecisionReason"])
+
+    def test_stdin_script_fed_or_not_stdin_allowed(self):
+        for cmd in ("python - <<'EOF'\nprint(1)\nEOF", "python - <<EOF\nx\nEOF", "echo 'print(1)' | python -",
+                    "cat a.py | node -", "python - < a.py", "python - <a.py", "python -c 'print(1)'",
+                    "python -m pytest -", "python tools/x.py -", "node -e 'x' -", "python", "pip install -",
+                    'echo "run python - here"', "git commit -m 'python - fix'",
+                    "cat <<'EOF' > notes.md\npython -\nEOF"):
+            self.assertIsNone(self._call("Bash", {"command": cmd}), cmd)
+
     def test_plan_edit_py_is_the_exception(self):
         self.assertIsNone(self._call(
             "Bash", {"command": "python tools/plan_edit.py set-status T3 done"}))

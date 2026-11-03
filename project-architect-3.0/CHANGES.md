@@ -2,6 +2,30 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.30.9 — No wait on a helper that stays busy
+
+- A finished task no longer waits for ever on a helper that has already handed back its report but that Claude Code
+  still lists as running, only because a command it left behind is still going. Once a helper has handed back and done
+  nothing since, PA3 treats it, and any background command it left running, as finished, and the task goes on as usual.
+  Claude tells you once what was left running, so you can stop it in `/tasks` if you don't need it. Nothing is stopped
+  for you, and there is no time limit: a helper still at work is always waited for.
+- When a task's expert has reported but the loop has waited 30 minutes for a helper or command still at work, Claude
+  tells you once what it is waiting for, so you can stop it in `/tasks` if it isn't needed. The task still waits.
+- Both times, PA3 saves what it saw (Claude Code's helper list, what each helper did last, and the programs running on
+  your machine, with passwords and keys masked) to a file under `.run/mod/stalls/`, and Claude tells you where it is, so
+  you can send it to us.
+- A command that Claude Code pushes into the background when it reaches its time limit is now tracked like one started
+  in the background on purpose, so the loop and the stall file see it.
+- While a helper's own background command is still running, Claude Code holds the report it handed back. PA3 now
+  passes it on at once: the task's expert's report reaches the loop, and any other helper's report goes to whoever
+  briefed it, with a note saying why. Nothing is stopped.
+- PA3 refuses to run `python -` (or `py`, `node`) with nothing feeding it: it waits for input for ever, and that is
+  what held a report for days. Give it a heredoc, a file or `-c` instead.
+- Coders, experts and the house rules now say it plainly: a command that waits for input or never ends never runs in
+  the foreground; feed it, or run it in the background on purpose and stop it before handing back.
+- The running-now note says an expert is waiting on its coder, not stopped, when Claude Code has dropped the expert
+  from its list while the coder works, and it shows that coder under its expert.
+
 ## 3.30.8 — Savings count again
 
 - Since Claude Code 2.1.285 (early October), a helper that runs in the background hands its report back through a

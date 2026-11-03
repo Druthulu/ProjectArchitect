@@ -76,7 +76,7 @@
 import { atom, read, update } from 'claude-code'
 import type { On } from 'claude-code'
 
-import type { Band, HoldName, LoopState, LoopTask, ToastOut } from '../types'
+import type { Band, HoldName, LoopState, LoopTask, Shell, ToastOut } from '../types'
 
 import { paSetting, versionAtLeast } from './activation'
 import { auditorBrief, curatorBrief, expertBrief, type ExpertOpts, type External, fixBrief, type PlanTask, upgradeBrief } from './brief'
@@ -87,8 +87,9 @@ import { BUILD } from './build'
 import { isProgressEntry, recoveryDigest } from './digest'
 import { isLoopKind, noticeRequest, parseRequest, pendingRequests, type Request, requestFile } from './inbox'
 import { JOURNAL_DIR, stamp, type Meta } from './journal'
+import { processLines, PROCESS_MS, PROCESSES_POSIX, PROCESSES_WIN, snapshotText, stallFile, type Tail, transcriptTail } from './stall'
 import {
-  agentFor, candidateOf, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
+  agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
   nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, RULE_OPTIONS, runEnded, nextTaskOf,
   serializeLoop, silenceReleases, steerText, stoppedText, quietReply, liveness, ABSENT_MS, takesOver, WAIT_MAX_MS, WAIT_POLL_MS, waitSpec, windowResumes,
   contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, FIRST_RUN_WAITS, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
@@ -236,6 +237,8 @@ const driftAsked = new Set<string>() // `<sid>\n<rel>`: each drift row asked onc
 const seenLive = new Set<string>()
 // 3.28.1 T15: `WAITING: shell <what>` hand-backs seen by the hooks, for the tick to tell Claude (part d).
 let shellQ: { agentId: string; what: string; at: number }[] = []
+const heldSeen = new Set<string>() // 3.32.1 T3: `<agentId>\n<report>`: a hand-back held by a live shell, passed on once
+const handedAt = new Map<string, number>() // 3.32.1: agent id -> its last hand-back (ms), for loop.doneInName
 function waitsOnShell(agentId: string | undefined, text: string, at: number): void {
   const what = waitingShell(text)
   if (what !== null && agentId !== undefined && agentId !== '') {
@@ -2662,13 +2665,78 @@ ${REPLAN_NOTICE}`)
           // 3.28.1 T15: a background shell its run waits on (its own or a child's, pa-watch's shells.json) keeps it busy;
           // dropped from the list meanwhile, it waits (the shell's completion notice wakes it), never stopped; so it does
           // for FORWARD_TTL_MS after a send to it (`forwardAt`) until its next turn ends.
-          const shellsLive = shellsOut(shellsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${SHELLS_FILE}`).catch(() => null)),
-            [t.agentId, ...list.filter(a => a.parentId === t.agentId).map(a => a.id)]).length
+          // 3.32.1: an agent done in all but name (loop.doneInName: handed back, no tool call since) is no longer at work:
+          // its busy listing and its live shells, moved or deliberate, are leftovers and hold nothing.
+          const shellMap = shellsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${SHELLS_FILE}`).catch(() => null))
+          const kids = list.filter(a => a.parentId === t.agentId)
+          const left = new Map<string, boolean>()
+          for (const id of [t.agentId, ...kids.map(a => a.id)]) {
+            left.set(id, doneInName(handedAt.get(id) ?? 0, await activityAt(id)))
+          }
+          const shellsAll = [t.agentId, ...kids.map(a => a.id)].flatMap(id => shellsOut(shellMap, [id]).map(sh => ({ sh, left: left.get(id) === true })))
+          const shellsUp = shellsAll.filter(x => !x.left).map(x => x.sh)
+          const shellsLeft = shellsAll.filter(x => x.left).map(x => x.sh)
+          const shellsLive = shellsUp.length
           const sentTo = (t.forwardAt ?? 0) > t.lastCompleteAt && now - (t.forwardAt ?? 0) < FORWARD_TTL_MS
           // 3.28.8: so does a child still at work (TerrainDiffusion T12: its expert, dropped from the list while its
           // coder ran the census, was taken for killed and the loop held).
-          const busy = list.filter(a => a.parentId === t.agentId && BUSY.has(a.status)).length
-          const live = me === undefined && (shellsLive > 0 || sentTo || busy > 0) ? 'idle' : liveness(me?.status, now - t.spawnedAt)
+          const kidsUp = kids.filter(a => BUSY.has(a.status) && left.get(a.id) !== true)
+          const kidsLeft = kids.filter(a => BUSY.has(a.status) && left.get(a.id) === true)
+          const busy = kidsUp.length
+          // 3.32.1: the expert listed `waiting` with a report in hand, done in all but name, nothing else at work: not busy.
+          const meLeft = me?.status === 'waiting' && (cur.pendingContract ?? null) !== null && left.get(t.agentId) === true &&
+            busy + shellsLive === 0
+          const live = meLeft || (me === undefined && (shellsLive > 0 || sentTo || busy > 0)) ? 'idle' : liveness(me?.status, now - t.spawnedAt)
+          const kidName = (a: (typeof list)[number]): string => `${a.type || 'agent'} ${a.id}${(a.description ?? '') === '' ? '' : ` (${a.description})`}`
+          const shName = (sh: Shell): string => `the shell ${sh.name || sh.id}${sh.moved === true ? ' (moved into the background when it timed out)' : ''}`
+          // 3.32.1 T2: what Claude Code and the machine showed (stall.ts), for `who`; a failure is noted, never blocks.
+          const snapshotOf = async (route: string, who: { id: string; type: string }[]): Promise<{ snap: string; snapNote: string }> => {
+            try {
+              const gaps: string[] = []
+              const tp = transcriptSeen.sid === sidNow ? transcriptSeen.path : ''
+              const tails: { id: string; type: string; tail: Tail | null }[] = []
+              const factsRead: { id: string; text: string | null }[] = []
+              for (const a of who) {
+                const text = tp === '' ? null : await $.fs.read(subagentTranscript(tp, sidNow, a.id)).catch(() => null)
+                if (text === null) {
+                  gaps.push(`the transcript of ${a.id} was unreadable${tp === '' ? ' (no session transcript path yet)' : ''}`)
+                }
+                tails.push({ ...a, tail: text === null ? null : transcriptTail(text) })
+                factsRead.push({ id: a.id, text: await $.fs.read(`${root}/.run/mod/${sidNow}/agents/${a.id}.json`).catch(() => null) })
+              }
+              const win = (await $.env.get('OS')) === 'Windows_NT'
+              const ps = await run(win ? PROCESSES_WIN : PROCESSES_POSIX, PROCESS_MS)
+              if (ps.exitCode !== 0) {
+                gaps.push(`the process list failed (exit ${String(ps.exitCode)}): ${clip((ps.stderr || ps.stdout).trim(), 200)}`)
+              }
+              const uname = win ? '' : (await run(['uname', '-sr'], 5_000)).stdout.trim()
+              const [day, hms] = stamp(now)
+              const rel = stallFile(t.id, day, hms)
+              await $.fs.write(`${root}/${rel}`, snapshotText({
+                task: t.id, attempt: cur.attempt, expert: who[0] ?? { id: t.agentId, type: t.agent }, route, ageMs: now - cur.lastCompleteAt,
+                pa3: modLoaded, claudeCode: tails[0]?.tail?.version ?? '', platform: win ? 'Windows_NT' : uname || 'not Windows',
+                session: sidNow, at: new Date(now).toISOString(), list,
+                shells: await $.fs.read(`${root}/.run/mod/${sidNow}/${SHELLS_FILE}`).catch(() => null), facts: factsRead, tails,
+                processes: ps.exitCode === 0 ? processLines(ps.stdout) : null, gaps,
+              }))
+              return { snap: rel, snapNote: ` Snapshot: ${rel}.${gaps.length === 0 ? '' : ` Gaps: ${gaps.join('; ')}.`}` }
+            } catch (err) {
+              return { snap: '', snapNote: ` Snapshot not written: ${clip(String(err), 200)}.` }
+            }
+          }
+          const expertRow = { id: t.agentId, type: me?.type || t.agent }
+          // 3.32.1: a route past leftovers: the snapshot, the journal line and one notice naming what was left running.
+          const leftoverSay = async (route: string): Promise<void> => {
+            const what = [...kidsLeft.map(kidName), ...shellsLeft.map(shName),
+              ...(meLeft ? [`${expertRow.type} ${t.agentId} itself (still listed as waiting)`] : [])]
+            if (what.length === 0) {
+              return
+            }
+            const { snap, snapNote } = await snapshotOf(route, [expertRow, ...kidsLeft.map(a => ({ id: a.id, type: a.type }))])
+            await journal('mod', 'hold', { task: t.id, agentId: t.agentId },
+              `${t.id}'s ${route} routed past what was left running after handing back: ${what.join(', ')}.${snapNote}`)
+            await notice(leftoverNotice(t.id, route, what, snap))
+          }
           if (me !== undefined && live !== 'stopped') {
             seenLive.add(t.agentId)
           }
@@ -2692,6 +2760,7 @@ ${REPLAN_NOTICE}`)
               await stopHold(cur, me?.status ?? 'absent')
               return
             }
+            await leftoverSay(routeStatus(cur.pendingContract ?? null))
             await save({ ...keepSummary(s, cur, cur.pendingContract ?? null), state: 'routing',
               task: { ...cur, contract: cur.pendingContract ?? '', lastRouted: cur.pendingContract ?? '' } }, 'captured:stopped')
             return
@@ -2700,6 +2769,23 @@ ${REPLAN_NOTICE}`)
           if ((busy > 0) !== (cur.childBusy ?? false)) {
             cur = { ...cur, childBusy: busy > 0, ...(busy > 0 ? {} : { childIdleAt: now }) }
             await save({ ...s, task: cur }, busy > 0 ? 'child.busy' : 'child.idle')
+          }
+          // 3.32.1: a report in hand STALL_NOTICE_MS while something still counts as busy: one snapshot and one notice
+          // per attempt, naming what the loop waits for; nothing is routed (TerrainDiffusion's coders really worked on).
+          const waitingOn = [...kidsUp.map(kidName), ...shellsUp.map(shName)]
+          if (waitingOn.length === 0 && live === 'busy' && me !== undefined) {
+            waitingOn.push(`${expertRow.type} ${t.agentId} itself (listed as ${me.status})`)
+          }
+          const stallKey = `${String(cur.attempt)}#${t.agentId}`
+          if (waitingOn.length > 0 && cur.stallNoted !== stallKey && cur.lastCompleteAt > 0 && now - cur.lastCompleteAt >= STALL_NOTICE_MS &&
+            parseExpertContract(cur.pendingContract ?? '') !== null) {
+            cur = { ...cur, stallNoted: stallKey }
+            await save({ ...s, task: cur }, 'stall.noted')
+            const route = routeStatus(cur.pendingContract ?? null)
+            const { snap, snapNote } = await snapshotOf(route, [expertRow, ...kidsUp.map(a => ({ id: a.id, type: a.type }))])
+            await journal('mod', 'hold', { task: t.id, agentId: t.agentId },
+              `${t.id}'s ${route} has waited 30 minutes for: ${waitingOn.join(', ')}.${snapNote}`)
+            await notice(stallNotice(t.id, route, waitingOn, snap))
           }
           if (live === 'busy') {
             return
@@ -2718,6 +2804,7 @@ ${REPLAN_NOTICE}`)
             contract = last !== null && last.trim() !== '' && last.trim() !== '.' ? last : ''
             via = contract === '' ? 'none' : 'transcript'
           }
+          await leftoverSay(routeStatus(contract))
           await save({ ...keepSummary(s, cur, contract), state: 'routing', task: { ...cur, contract, lastRouted: contract } }, `captured:${via}`)
           return
         }
@@ -2865,6 +2952,8 @@ ${REPLAN_NOTICE}`)
     partnerSaid = { at: 0, asked: false, notice: false }
     seenLive.clear()
     shellQ = []
+    heldSeen.clear()
+    handedAt.clear()
     waitPolledAt = 0
     genMode = { sid: '', at: 0, doc: null }
     sideAgent = ''
@@ -3037,6 +3126,39 @@ ${REPLAN_NOTICE}`)
   on('tool.check', { tool: 'SubagentHandback' }, async ($, e, next) => {
     const m = (e.input as { message?: unknown } | null)?.message
     waitsOnShell(e.agentId, typeof m === 'string' ? m : '', await $.clock.now())
+    // 3.32.1 T3: Claude Code holds a hand-back until the agent's background commands end, so with a live shell the report
+    // is passed on now: the loop's expert's contract into its facts (as prompt.submit does), else to its parent, once.
+    const id = e.agentId ?? ''
+    const msg = typeof m === 'string' ? m : ''
+    if (id !== '' && waitingShell(msg) === null) {
+      handedAt.set(id, await $.clock.now()) // 3.32.1: a hand-back (a `WAITING:` line is none): loop.doneInName
+    }
+    if (id !== '' && msg.trim() !== '' && !heldSeen.has(`${id}\n${msg}`)) {
+      const root = await $.session.root()
+      const sid = await $.session.id()
+      const live = shellsOut(shellsOf(await $.fs.read(`${root}/.run/mod/${sid}/${SHELLS_FILE}`).catch(() => null)), [id])
+      if (live.length > 0) {
+        heldSeen.add(`${id}\n${msg}`)
+        const at = await $.clock.now()
+        if (id === loopAgent && parseExpertContract(msg) !== null) {
+          if (routedText.trim() === '' || msg.trim() !== routedText.trim()) {
+            const f = facts[id] ?? { status: null, lastCompleteAt: 0 }
+            facts = { ...facts, [id]: { ...f, status: msg, lastCompleteAt: Math.max(f.lastCompleteAt, at), handbackAt: at } }
+          }
+        } else {
+          const row = (await $.agent.list().catch(() => [])).find(a => a.id === id)
+          const parent = row?.parentId ?? ''
+          const name = live[0]?.name ?? ''
+          if (parent !== '') {
+            await $.session.send({ to: { agentId: parent }, text: `‹pa› Your ${row?.type || 'helper'} ${id} handed back while its background command ${name} is still running, so Claude Code is holding its report until that command ends. Its report, as sent:\n\n${msg}` }).catch(quiet)
+          }
+          jseq += 1
+          const o = journalOut(at, jseq, 'mod', 'shell', { session: sid, agentId: id },
+            `${id} handed back while its background command ${name} still runs; its report ${parent === '' ? 'had no parent to go to' : `was sent to ${parent}`}.`)
+          await $.fs.write(`${root}/${o.rel}`, o.text).catch(quiet)
+        }
+      }
+    }
     return next(e)
   }).catch(($, e, next) => next(e)) // a failure leaves the verdict beneath
   on('turn.complete', {}, async ($, e, next) => {
