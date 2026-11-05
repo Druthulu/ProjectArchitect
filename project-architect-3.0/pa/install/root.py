@@ -56,9 +56,7 @@ GUARD_SCRIPTS = ("ctx_guard.sh", "ctx90.sh")
 REMINDERS = (
     "Remote Control: open /config and turn the push toggles on if you want "
     "questions on your phone.",
-    "Turn \"recaps\" OFF in /config: away_summary requests are billed but never "
-    "appear in a transcript (2.7-4.5 % of session cost).",
-)
+)  # was: a "turn recaps off" reminder; 3.32.2 sets awaySummaryEnabled false on every merge
 
 # 3.11 T6: the one thing to do after a machine install
 NEXT_STEP = ("\nNext: open one of your repositories in Claude Code; PA3 shows the one line that sets it up\n"

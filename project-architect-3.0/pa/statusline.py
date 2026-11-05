@@ -1,7 +1,7 @@
 """The PA3 statusline: a five-line renderer and the ledger's live sampler.
 
 Public:
-    render(payload, cfg=None, user_show=None) -> str        the printable lines (no trailing "\\n")
+    render(payload, cfg=None) -> str        the printable lines (no trailing "\\n")
     sample(payload, cfg=None) -> None       spool + queue the slow paths for the child
     run_background() -> None                the detached child (``-m pa.statusline --background``)
     main(argv=None) -> int                  stdin -> print -> sample; always 0
@@ -71,32 +71,10 @@ STATUSLINE_DEFAULTS = {
     "max_width": 130, "seven_day": "all",  # was the 7d parenthetical's level on line 1; retired to the Pace line (T1.c1)  # was "pace,used"
     "pace_yellow": 1.25, "pace_red": 1.75,  # was 1.0  # was 1.2
     "pace_left_green": 14, "pace_left_yellow": 10,
-    "show": {
-        "model": True, "effort": True, "ctx": True,
-        "five_hour": True, "five_hour_pace": False, "seven_day_meter": True, "fable": True,
-        "pace_line": True,
-        "generation": True, "phase": True, "task": True,  # was on _line2; folded into the task block
-        "agent": True, "progress": True, "next_task": True,  # was on _line2
-        "session_cost": True, "session_saved": True, "session_window_saved": True,
-        "session_usage": True,
-        "project_usage": True, "project_window_saved": True,
-        "project_window_saved_pct": True, "project_lifetime": True,
-        "project_month": True, "project_accounts": True,
-        "account_saved": True, "fable_saved": True, "month": True, "account_lifetime": True,
-        "account_usage": True,
-        "dollars": False, "pace_vanilla": True, "session_vanilla": True,
-        "project_vanilla": True, "account_vanilla": True,
-        "alerts": True, "task_block": True, "task_helpers": False,
-        "task_project": True,
-        "pace_used": True, "project_five_hour": True, "project_multiplier": True,  # fix-14
-        "external": True,  # 3.3: the External line (external coders' tokens and cash)
-    },
-    "fewer_numbers": False,  # fix-14: preset in sl_config, explicit show keys still win
+    # issue #10: one switch per row; every other part always shows (was a key per part, and
+    # fewer_numbers, a preset of them; both retired: config.SUPERSEDED)
+    "show": {"pace_line": True, "session_line": True, "project_line": True, "account_line": True},
 }
-# fix-14: show keys the ``fewer_numbers`` preset turns off
-FEWER_NUMBERS_OFF = ("pace_used", "project_five_hour", "project_month", "project_multiplier",
-                     "month", "account_usage", "account_saved", "account_lifetime",
-                     "account_vanilla")
 HEARTBEAT_S = 600
 WARM_FRESH_S = 3300  # warmer.fire_1h_s: a last_ping older than this is stale (was 330: the retired loop's state file)
 DROP_RESET_PCT = 2
@@ -297,20 +275,12 @@ def utc_stamp(now=None):
 
 # --------------------------------------------------------------------------- config
 
-def sl_config(cfg, user_show=None):
-    """``config.statusline`` merged over :data:`STATUSLINE_DEFAULTS`.
-
-    ``user_show``: the show keys the user set (config.json as stored); None treats
-    ``statusline.show`` as the explicit layer. Under ``fewer_numbers`` the preset applies,
-    then the explicit keys win (fix-14).
-    """
+def sl_config(cfg):
+    """``config.statusline`` merged over :data:`STATUSLINE_DEFAULTS`; ``show`` holds only the
+    four row switches (issue #10), any other show key is ignored."""
     node = cfg.get("statusline") if isinstance(cfg, dict) else None
     out = dict(STATUSLINE_DEFAULTS)
     out["show"] = dict(STATUSLINE_DEFAULTS["show"])
-    fewer = isinstance(node, dict) and bool(node.get("fewer_numbers"))
-    if fewer and user_show is None:
-        for sk in FEWER_NUMBERS_OFF:  # preset first; explicit show keys below still win
-            out["show"][sk] = False
     if isinstance(node, dict):
         for key, default in STATUSLINE_DEFAULTS.items():
             if key not in node or node[key] is None:
@@ -327,12 +297,6 @@ def sl_config(cfg, user_show=None):
                 out[key] = str(node[key])
             else:
                 out[key] = _num(node[key], default)
-    if fewer and isinstance(user_show, dict):
-        for sk in FEWER_NUMBERS_OFF:  # the merged show holds defaults: re-apply, then the user's keys
-            out["show"][sk] = False
-        for sk, sv in user_show.items():
-            if sk in out["show"]:
-                out["show"][sk] = bool(sv)
     out["max_width"] = int(out["max_width"] or 110)
     out["lines"] = int(out["lines"] or 4)
     return out
@@ -873,13 +837,12 @@ def _work_due(payload, sid, now):
 
 def _line1(payload, ctx, cfg, sl, now):
     colors = sl["colors"]
-    show = sl["show"]
     segments = []
     model = _text(_dig(payload, "model", "display_name")) or _text(_dig(payload, "model", "id"))
     effort = _text(_dig(payload, "effort", "level"))
-    if model and show.get("model", True):
+    if model:
         segments.append(_seg(model, None, colors))
-    if effort and show.get("effort", True):
+    if effort:
         segments.append(_seg(effort, EFFORT_COLORS.get(effort.lower(), CYAN), colors))
 
     used = _num(_dig(payload, "context_window", "used_percentage"), None)
@@ -888,11 +851,11 @@ def _line1(payload, ctx, cfg, sl, now):
         used = (100.0 - remaining) if remaining is not None else None
     total_in = _num(_dig(payload, "context_window", "total_input_tokens"), None)
     size = _num(_dig(payload, "context_window", "context_window_size"), None)
-    if _mod_on(ctx) and show.get("ctx", True):
+    if _mod_on(ctx):
         # 3.28.7 T20: the mod's main session calls no model; show the session's work instead
         work = _dig(_read_json(_work_path(ctx["sid"]), None), "work") if ctx.get("sid") else None
         segments.append(_seg("%s/∞" % (fmt_tokens(work) if work is not None else "—"), MAGENTA, colors))
-    elif total_in is not None and size and show.get("ctx", True):
+    elif total_in is not None and size:
         ctx_text = "%s/%s" % (fmt_tokens(total_in), fmt_tokens(size))
         if used is None:
             segments.append(_seg(ctx_text, MAGENTA, colors))
@@ -910,26 +873,20 @@ def _line1(payload, ctx, cfg, sl, now):
                 if _ak.startswith("model_scoped:") and isinstance(_av, dict):
                     windows[_ak] = _av
     seven = None                          # (segment index, base pieces, pace, resets_at, pct, duration)
-    show_key_map = {"five_hour": "five_hour", "seven_day": "seven_day_meter"}
     for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
         window = windows.get(key)
-        if not window or not show.get(show_key_map[key], True):
+        if not window:
             continue
         pct = window["pct"]
         pieces = [("%s %d%%" % (label, int(round(pct))), None)]   # usage reading: no colour (T10.c1)
         eta = fmt_eta(window.get("resets_at"), now)
         if eta:
             pieces.append(("%s %s" % (RESET_MARK, eta), DIM))
-        # 5h pace: still on line 1 behind show.five_hour_pace; 7d pace moved to the Pace line (T1.c1)
-        if key == "five_hour" and show.get("five_hour_pace", False) and sl["show_pace"]:
-            duration = _window_duration(cfg, key)
-            pace = _pace(window.get("resets_at"), pct, now, duration)
-            if pace is not None:
-                pieces.append(("(pace %.1fx)" % pace, _pace_color(pace, sl)))
+        # was: the 5h pace behind show.five_hour_pace (default off); retired with the per-part keys (issue #10)
         segments.append(_seg_of(pieces, colors))
 
     fable = _fable_window(windows)
-    if fable and show.get("fable", True):
+    if fable:
         fpct = windows[fable]["pct"]
         # fable: label DIM, reading plain; no pace/severity colour (T22)
         segments.append(_seg_of([("fable", DIM), ("%d%%" % int(round(fpct)), None)], colors))
@@ -982,8 +939,7 @@ def _line_pace(payload, ctx, cfg, sl, now):
         elapsed = now - start
         remaining = resets - now
         used, left = _day_rates(pct, start, resets, now)
-        if (used is not None and elapsed > (resets - start) * 0.01 and pace is not None
-                and sl["show"].get("pace_used", True)):
+        if (used is not None and elapsed > (resets - start) * 0.01 and pace is not None):
             num = "%d%%" % int(round(used))  # was pct / days begun (T21.1.1.1)
             parts.append(_pace_rate_seg(num, "/day used", _pace_color(pace, sl), colors))
         if remaining > 0:  # was remaining >= 21600 (6h guard, dropped T23)
@@ -1001,7 +957,7 @@ def _line_pace(payload, ctx, cfg, sl, now):
     # discount and multiplier: account 7d window scope (T1.c7); paid on the ledger price basis,
     # like the saving and the fit (fix-8)
     fold_idx = fold_seg = None
-    if sl["show"].get("pace_vanilla", True) and ctx is not None:
+    if ctx is not None:
         summary = ctx.get("summary")
         account = _account_block(summary, ctx.get("account"))
         account_windows = account.get("windows") if account else None
@@ -1026,24 +982,23 @@ def _line_pace(payload, ctx, cfg, sl, now):
 def _line2(payload, ctx, cfg, sl, now):
     # was: the phase line; folded into the task block (T1.c1)
     colors = sl["colors"]
-    show = sl["show"]
     status = ctx["status"] or {}
     plan = scan_phase_plan(ctx["phase_plan"])
     segments = []
     shrink = None
 
     generation = _text(status.get("generation"))
-    if generation and show.get("generation", True):
+    if generation:
         segments.append(_seg(generation, CYAN, colors))
 
     phase = _text(status.get("phase")) or (plan["phase"] or "")
     phase_name = _text(status.get("phase_name")) or (plan["phase_name"] or "")
-    if (phase or phase_name) and show.get("phase", True):
+    if (phase or phase_name):
         segments.append(_seg(("Phase %s %s" % (phase, phase_name)).strip(), None, colors))
     # was: launch.json's Gen 3 mode label between phases (router/planner seeds), gone with Gen 3 (3.24 T9)
 
     task = _text(status.get("task"))
-    if task and show.get("task", True):
+    if task:
         title = _text(status.get("task_title")) or _text(plan["titles"].get(task))
         text = ("%s %s" % (task, title)).strip()
         started = parse_epoch(status.get("started"))
@@ -1055,7 +1010,7 @@ def _line2(payload, ctx, cfg, sl, now):
     run_id = _text(status.get("run_id")) or None
     agent, _live = _running_agent(ctx["running"], ctx["sid"], run_id)
     task_done = any(t["id"] == task and t["status"] == "done" for t in plan["tasks"])
-    if agent and not task_done and show.get("agent", True):
+    if agent and not task_done:
         # agent ctx figure dropped (T27): label, handoff mark, warm count only
         label = _agent_label(status, agent)
         if label:
@@ -1073,9 +1028,9 @@ def _line2(payload, ctx, cfg, sl, now):
     if warm:
         segments.append(_seg("warm ×%d" % warm, DIM, colors))
 
-    if plan["total"] and show.get("progress", True):
+    if plan["total"]:
         segments.append(_seg("%d/%d" % (plan["done"], plan["total"]), None, colors))
-    if plan["next"] and show.get("next_task", True):
+    if plan["next"]:
         segments.append(_seg("next %s" % plan["next"], DIM, colors))
 
     waiting = _text(status.get("waiting"))
@@ -1192,7 +1147,6 @@ def _saved_pct_text(saved_by_window, account_windows):
 def _line_project(payload, ctx, cfg, sl, now):
     """Project: x/y of 5h · x/y of 7d · month ~Xw/Yw · lifetime ~Xw/Yw · N% fewer · lasts Mx longer."""
     colors = sl["colors"]
-    show = sl["show"]
     segments = []
     summary = ctx["summary"]
     account = _account_block(summary, ctx["account"])
@@ -1206,12 +1160,10 @@ def _line_project(payload, ctx, cfg, sl, now):
     acct_slice = by_account.get(ctx.get("account")) if isinstance(by_account, dict) else None
 
     # windowed pairs: x = this account's usage share, y = this account's own saved share (T10, fix-7)
-    if isinstance(account_windows, dict) and account_windows and show.get("project_usage", True):
+    if isinstance(account_windows, dict) and account_windows:
         first = True
         for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
             if key not in account_windows:
-                continue
-            if key == "five_hour" and not show.get("project_five_hour", True):
                 continue
             pw = proj_windows.get(key) or {}
             # usage: this account's apportioned share (T10); fall back to cost through fit
@@ -1253,8 +1205,6 @@ def _line_project(payload, ctx, cfg, sl, now):
             ("project_month", project.get("period") if isinstance(project, dict) else None, "month"),
             ("project_lifetime", project.get("lifetime") if isinstance(project, dict) else None,
              "lifetime")):
-        if not show.get(show_key, True):
-            continue
         if (name == "month" and isinstance(blk, dict)
                 and ctx.get("account") in (blk.get("unknown_accounts") or ())):
             blk = {"unknown": True}                         # 3.11 T9: the active account has no renewal day
@@ -1268,7 +1218,7 @@ def _line_project(payload, ctx, cfg, sl, now):
 
     # discount and multiplier: project lifetime scope (T1.c7)
     fold_idx = fold_seg = None
-    if show.get("project_vanilla", True) and isinstance(lifetime, dict):
+    if isinstance(lifetime, dict):
         lt_cost = _num(lifetime.get("cost_used"), None)
         lt_saved = _num(lifetime.get("cost_saved_measured"), None)
         v = _vanilla_pieces(lt_cost, lt_saved, False, colors)
@@ -1280,13 +1230,12 @@ def _line_project(payload, ctx, cfg, sl, now):
                 segments.append((vis, None, painted))
             else:
                 segments.append(v[0])
-            if show.get("project_multiplier", True):
-                fold_idx = len(segments)
-                segments.append(v[1])
-                fold_seg = v[2]
+            fold_idx = len(segments)
+            segments.append(v[1])
+            fold_seg = v[2]
 
     # multi-account marker (T10)
-    if show.get("project_accounts", True) and isinstance(by_account, dict) and len(by_account) > 1:
+    if isinstance(by_account, dict) and len(by_account) > 1:
         if segments:
             segments.append(_seg("· %d accounts" % len(by_account), DIM, colors))
 
@@ -1316,15 +1265,6 @@ def _xy_seg(x_str, y_str, suffix, colors):
         return (vis, None, vis)
     painted = "%s%s%s%s%s" % (x_str, RESET, _paint("/%s" % y_str, LIGHT_BLUE, True),
                               RESET, _paint(suffix, DIM, True))
-    return (vis, None, painted)
-
-
-def _xy_money_seg(x_str, y_str, colors):
-    """Segment for ``$cost/$saved``: x white, y LIGHT_BLUE (was GREEN)."""
-    vis = "%s/%s" % (x_str, y_str)
-    if not colors:
-        return (vis, None, vis)
-    painted = "%s%s%s" % (x_str, RESET, _paint("/%s" % y_str, LIGHT_BLUE, True))
     return (vis, None, painted)
 
 
@@ -1514,7 +1454,6 @@ def _repair_session(ctx, cfg, now):
 def _line_session(payload, ctx, cfg, sl, now):
     """Session: x/y of 5h · x/y of 7d [· total ~Xw/Yw] [· $cost/$saved] · N% fewer · lasts Mx longer."""
     colors = sl["colors"]
-    show = sl["show"]
     segments = []
     # T11.1's repair of a missing sessions[sid].windows runs in the sampler's child (3.24 T9)
     summary = ctx["summary"]
@@ -1552,7 +1491,7 @@ def _line_session(payload, ctx, cfg, sl, now):
             if w_started is None or started is None or w_started <= started:
                 fallback[wkey] = {"cost_used": cost, "net_saved": 0.0}
         session_windows = fallback
-    if show.get("session_usage", True) and isinstance(account_windows, dict):
+    if isinstance(account_windows, dict):
         first = True
         for wkey, wlabel in (("five_hour", "5h"), ("seven_day", "7d")):
             sw = session_windows.get(wkey) or {}
@@ -1606,40 +1545,25 @@ def _line_session(payload, ctx, cfg, sl, now):
                         painted = "%s %s" % (label_seg[2], painted)
                     segments.append((vis, None, painted))
 
-    # dollars: $cost/$net behind show.dollars (default off, T1.c7)
-    if show.get("dollars", False) and cost is not None:
-        cost_str = "%s%s" % (approx, fmt_money(cost))
-        if saved > 0:
-            saved_str = "%s%s" % (approx, fmt_money(saved))
-            seg = _xy_money_seg(cost_str, saved_str, colors)
-        else:
-            seg = _seg(cost_str, None, colors)
-        if not segments:
-            label_seg = _seg("Session:", DIM, colors)
-            vis = "%s %s" % (label_seg[0], seg[0])
-            painted = "%s %s" % (label_seg[2], seg[2])
-            segments.append((vis, None, painted))
-        else:
-            segments.append(seg)
+    # was: $cost/$net behind show.dollars (default off, T1.c7); retired with the per-part keys (issue #10)
 
     # discount and multiplier: whole session scope (T1.c7)
     fold_idx = fold_seg = None
-    if show.get("session_vanilla", True):
-        v = None if no_block else _vanilla_pieces(cost, saved, False, colors, approx)
-        if cost is not None and cost > 0 and (no_block or (not measured and (
-                v is None or int(round(100.0 * saved / (cost + saved))) == 0))):
-            v = _vanilla_dash(colors)  # no windows block, or live-only rounding to 0% fewer (T11.1)
-        if v:
-            if not segments:
-                label_seg = _seg("Session:", DIM, colors)
-                vis = "%s %s" % (label_seg[0], v[0][0])
-                painted = "%s %s" % (label_seg[2], v[0][2])
-                segments.append((vis, None, painted))
-            else:
-                segments.append(v[0])
-            fold_idx = len(segments)
-            segments.append(v[1])
-            fold_seg = v[2]
+    v = None if no_block else _vanilla_pieces(cost, saved, False, colors, approx)
+    if cost is not None and cost > 0 and (no_block or (not measured and (
+            v is None or int(round(100.0 * saved / (cost + saved))) == 0))):
+        v = _vanilla_dash(colors)  # no windows block, or live-only rounding to 0% fewer (T11.1)
+    if v:
+        if not segments:
+            label_seg = _seg("Session:", DIM, colors)
+            vis = "%s %s" % (label_seg[0], v[0][0])
+            painted = "%s %s" % (label_seg[2], v[0][2])
+            segments.append((vis, None, painted))
+        else:
+            segments.append(v[0])
+        fold_idx = len(segments)
+        segments.append(v[1])
+        fold_seg = v[2]
 
     if not segments:
         return ""
@@ -1664,8 +1588,6 @@ def _line_external(ext, cfg, now=None):
     live = [v for v in (ext.get("live") if isinstance(ext.get("live"), dict) else {}).values()
             if isinstance(v, dict) and now - (_num(v.get("at"), 0) or 0) < EXT_LIVE_STALE_S]
     if not _num(ext.get("runs"), 0) and not live:
-        return ""
-    if not cfg["show"].get("external", True):
         return ""
     colors = cfg["colors"]
     usd = (_num(ext.get("usd"), 0.0) or 0.0) + sum(_num(v.get("usd"), 0.0) or 0.0 for v in live)
@@ -1708,14 +1630,13 @@ def _line3(payload, ctx, cfg, sl, now):
 def _line4(payload, ctx, cfg, sl, now):
     """Account: x/~y of 5h · x/~y of 7d · month ~Xw/Yw · lifetime ~Xw/Yw · N% fewer · lasts Mx longer."""
     colors = sl["colors"]
-    show = sl["show"]
     segments = []
     summary = ctx["summary"]
     account = _account_block(summary, ctx["account"])
     windows = account.get("windows") if account else None
 
     # x = meter pct repeated, y = savings pct (fitted, marked ~)
-    if isinstance(windows, dict) and show.get("account_usage", True):
+    if isinstance(windows, dict):
         first = True
         for key, label in (("five_hour", "5h"), ("seven_day", "7d")):
             win = windows.get(key)
@@ -1744,20 +1665,19 @@ def _line4(payload, ctx, cfg, sl, now):
 
     # month and lifetime in weeks of allowance (T1.c7): the summary's per-window weeks (fix-9.c2)
     # was _weeks(cost, _ppd_7d(windows)): earlier weeks shown in today's weeks
-    if show.get("month", True) and account:
+    if account:
         seg = _weeks_piece(account.get("period"), "month", colors)
         if seg:
             segments.append(seg)
 
     lifetime = account.get("lifetime") if account else None
-    if show.get("account_lifetime", True):
-        seg = _weeks_piece(lifetime, "lifetime", colors)
-        if seg:
-            segments.append(seg)
+    seg = _weeks_piece(lifetime, "lifetime", colors)
+    if seg:
+        segments.append(seg)
 
     # discount and multiplier: account lifetime scope (T1.c7)
     fold_idx = fold_seg = None
-    if show.get("account_vanilla", True) and isinstance(lifetime, dict):
+    if isinstance(lifetime, dict):
         lt_cost = _num(lifetime.get("cost_used"), None)
         lt_saved = _num(lifetime.get("cost_saved_measured"), None)
         v = _vanilla_pieces(lt_cost, lt_saved, False, colors)
@@ -1776,8 +1696,6 @@ def _line4(payload, ctx, cfg, sl, now):
 
 def _line5(payload, ctx, cfg, sl, now):
     """The alerts (T12, moved from line 4): waiting-on-you flags, model fallback, disk low."""
-    if not sl["show"].get("alerts", True):
-        return ""
     colors = sl["colors"]
     sid = ctx["sid"]
     items = []
@@ -1995,10 +1913,9 @@ def _task_block(payload, ctx, cfg, sl, now):
 
     # header: <project> · Phase <n> · <done>/<total> (T7.c1, was on the running line)
     header_parts = []
-    if sl["show"].get("task_project", True):
-        pname = _task_project_name(ctx)
-        if pname:
-            header_parts.append(pname)
+    pname = _task_project_name(ctx)
+    if pname:
+        header_parts.append(pname)
     if tasks:
         header_phase = _text(status.get("phase")) or plan.get("phase") or ""
         if header_phase:
@@ -2081,21 +1998,11 @@ def _task_block(payload, ctx, cfg, sl, now):
         # children of the running task
         if tid == current_task:
             lines.extend(_shell_lines(ctx, now, max_w, colors))
-            show = (cfg or {}).get("statusline", {}).get("show", {})
             # DISABLED: running-agent line (label, handoff mark, warm count) under the task — 3.24 T13s
             # Original intent: show the running subagent, e.g. `pa-expert opus55/medium` (design A line 2)
             # Why disabled: the developer, 2026-10-10: the bands above the text input show agents better
             # Re-enable if: the mod's agent bands are gone; the block is in git at 03a77f8b (pa/statusline.py:1955-1985)
-            children = _task_children(ctx, status)
-            # helper lines gated by show.task_helpers (default off, T10.c1)
-            if show.get("task_helpers", False):
-                for child in children:
-                    ctext = "  %s %s %s" % (child["agent_type"], child["status"],
-                                             child.get("elapsed") or "")
-                    if max_w > 0 and len(ctext) > max_w:
-                        ctext = ctext[:max_w - 1] + "…"
-                    ccolor = DIM if child.get("stale") else (GREEN if child["status"] == "running" else DIM)
-                    lines.append(_paint(ctext, ccolor, colors) if colors and ccolor else ctext)
+            # was: one line per helper behind show.task_helpers (default off, T10.c1); retired (issue #10)
     return lines
 
 
@@ -2250,11 +2157,11 @@ def _release_line(project, colors):
     return _paint(text, GREEN, colors)
 
 
-def render(payload, cfg=None, user_show=None):
+def render(payload, cfg=None):
     """The statusline text: task block, model line, Pace, Session, Project, Account, alerts."""
     payload = payload if isinstance(payload, dict) else {}
     cfg = cfg if isinstance(cfg, dict) else {}
-    sl = sl_config(cfg, user_show)
+    sl = sl_config(cfg)
     now = time.time()
     ctx = _gather(payload, cfg)
 
@@ -2262,7 +2169,7 @@ def render(payload, cfg=None, user_show=None):
     lines = []
 
     # task block comes FIRST (T1.c1)
-    if governed and sl["show"].get("task_block", True):
+    if governed:
         task_lines = _task_block(payload, ctx, cfg, sl, now)
         lines.extend(task_lines)
 
@@ -2283,7 +2190,7 @@ def render(payload, cfg=None, user_show=None):
             lines.append(line)
 
     # Session → Project → Account → alerts
-    if sl["lines"] >= 3:
+    if sl["lines"] >= 3 and sl["show"].get("session_line", True):
         line = _line_session(payload, ctx, cfg, sl, now)
         if line:
             lines.append(line)
@@ -2291,11 +2198,11 @@ def render(payload, cfg=None, user_show=None):
         line = _line_external(ctx.get("ext"), sl)
         if line:
             lines.append(line)
-    if sl["lines"] >= 4:
+    if sl["lines"] >= 4 and sl["show"].get("project_line", True):
         line = _line_project(payload, ctx, cfg, sl, now)
         if line:
             lines.append(line)
-    if sl["lines"] >= 5:
+    if sl["lines"] >= 5 and sl["show"].get("account_line", True):
         line = _line4(payload, ctx, cfg, sl, now)
         if line:
             lines.append(line)
@@ -3029,15 +2936,12 @@ def main(argv=None):
 
         cfg = config_mod.load()
         live = config_mod.enabled(cfg)
-        user_sl = config_mod.user_layer().get("statusline")  # fix-14: the keys the user set
-        user_show = user_sl.get("show") if isinstance(user_sl, dict) else None
-        user_show = user_show if isinstance(user_show, dict) else {}
     except Exception as exc:
         _log("statusline.config_failed", err=repr(exc))
-        cfg, live, user_show = {}, True, None
+        cfg, live = {}, True
     try:
         if live:
-            text = render(payload, cfg, user_show)
+            text = render(payload, cfg)
         else:
             sl = sl_config(cfg)
             text = _line1(payload, None, cfg, sl, time.time())

@@ -234,31 +234,6 @@ class FiveHourPaceTest(LedgerCase):
         self.assertIn("5h 34%", first)
         self.assertNotIn("pace", first)
 
-    def test_five_hour_pace_present(self):
-        self._set_five_hour(34, 0.25)                  # 34% used, a quarter through the window
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["five_hour_pace"] = True
-        first = self.lines(cfg)[0]
-        expected = "(pace %.1fx)" % (34 / 100.0 / 0.25)
-        self.assertIn(expected, first)
-
-    def test_five_hour_pace_absent_too_early(self):
-        self._set_five_hour(34, 0.005)                 # under 1% elapsed: too early to mean anything
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["five_hour_pace"] = True
-        first = self.lines(cfg)[0]
-        self.assertIn("5h 34%", first)
-        self.assertNotIn("pace", first)
-
-    def test_five_hour_pace_red_above_threshold(self):
-        self._set_five_hour(34, 0.25)                  # pace 1.36x; above pace_red 1.75? no, 1.36 < 1.75
-        cfg = config.defaults()                        # pace_yellow=1.25, pace_red=1.75
-        cfg["statusline"]["show"]["five_hour_pace"] = True
-        colored = statusline.render(self.payload, cfg)
-        # 1.36x is between 1.25 and 1.75 -> YELLOW
-        self.assertIn(statusline.YELLOW, colored)
-
-
 class SevenDayRateTest(LedgerCase):
     """Line 1's 7d segment (T13): pace plus used/day and left/day, each on its own guard."""
 
@@ -353,9 +328,8 @@ class SevenDayRateTest(LedgerCase):
         cfg = plain_cfg()
         cfg["statusline"]["max_width"] = 300
         cfg["statusline"]["seven_day"] = "all"
-        cfg["statusline"]["show"]["five_hour_pace"] = True
         first = self.lines(cfg)[0]
-        self.assertIn("(pace 1.4x)", first)              # 5h: unchanged, still uses parens
+        self.assertIn("5h 34%", first)                   # 5h: unchanged
         # 7d parenthetical is gone from line 1
         self.assertNotIn("(pace 0.7x", first)
 
@@ -391,13 +365,6 @@ class ProjectLineTest(LedgerCase):
         """T7.c1: the header line is present even with no running task."""
         self.make_project()
         self.assertEqual(self.lines()[0], "demo · Phase 36 · 2/4")
-
-    def test_header_line_project_off_keeps_phase_and_counter(self):
-        """T7.c1: task_project off drops the project piece, keeps phase/counter."""
-        self.make_project()
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["task_project"] = False
-        self.assertEqual(self.lines(cfg)[0], "Phase 36 · 2/4")
 
     def test_next_falls_back_to_first_queued(self):
         plan = PLAN.replace("- T3 | next  ", "- T3 | done  ")
@@ -595,18 +562,6 @@ class TaskProjectNameTest(LedgerCase):
         self.assertNotIn("Phase", running)
         self.assertNotIn("2/4", running)
 
-    def test_project_name_off(self):
-        """task_project off: the project name does not appear, but phase/counter stay."""
-        self.make_project(status={
-            "task": "T3", "phase": "36", "started": "2026-09-12T20:58:00Z"})
-        cfg = dict(self.cfg)
-        cfg["statusline"] = dict(cfg.get("statusline", {}))
-        cfg["statusline"]["show"] = {"task_project": False}
-        lines = self.lines(cfg)
-        joined = "\n".join(lines)
-        self.assertNotIn("demo", joined)
-        self.assertEqual(lines[0], "Phase 36 · 2/4")
-
     def test_project_name_fallback_to_folder(self):
         """Without pa.json 'project', the folder name is used on the header line."""
         self.make_project(pa_json={"pa_version": "3.0.0", "phase_ends_dir": "phase-ends"},
@@ -652,10 +607,7 @@ class EmptyPlanHeaderTest(LedgerCase):
     def test_planning_with_taskless_phase_plan(self):
         self.make_project(plan="# Phase 3.9.5 — The warmer (draft)\n\n## Tasks\n")
         self.write_gen(self.GEN)
-        cfg = dict(self.cfg)
-        cfg["statusline"] = dict(cfg.get("statusline", {}))
-        cfg["statusline"]["show"] = {"task_project": False}
-        self.assertEqual(self.lines(cfg)[0], "Phase 3.9.5 · planning")
+        self.assertEqual(self.lines()[0], "demo · Phase 3.9.5 · planning")
 
 
 class PhasePlanScanTest(unittest.TestCase):
@@ -1791,63 +1743,27 @@ class SessionTotalLabelTest(LedgerCase):
         if session:
             self.assertNotIn("$11.70", session[0])
 
-    def test_dollars_shown_with_key(self):
-        """T1.c7: show.dollars restores the dollar pair."""
-        write_json(paths.summary_path(), {
-            "schema": 1,
-            "accounts": {"dev@example.com": {"label": "win-main", "windows": {}}},
-            "sessions": {self.sid: {"account": "dev@example.com", "saved_measured": 9.1,
-                                    "saved_net": 9.1}}})  # (3.9.8 T4)
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["dollars"] = True
-        session = [l for l in self.lines(cfg) if "Session:" in l][0]
-        self.assertIn("$11.70", session)
-        self.assertIn("$9.10", session)
-
-
 # --------------------------------------------------------------------------- T10: pace colors
 
-class PaceColorTest(LedgerCase):
+class PaceColorTest(unittest.TestCase):
     """T1.c4: pace colors: green <= pace_yellow (1.25), yellow <= pace_red (1.75), red above."""
 
-    def _set_five_hour(self, pct, elapsed_fraction):
-        now = time.time()
-        duration = statusline.FIVE_HOUR_S
-        elapsed = duration * elapsed_fraction
-        self.payload["rate_limits"] = {
-            "five_hour": {"used_percentage": pct, "resets_at": now + (duration - elapsed)}}
+    def _color(self, pace, **over):
+        cfg = config.defaults()
+        cfg["statusline"].update(over)
+        return statusline._pace_color(pace, statusline.sl_config(cfg))
 
     def test_pace_green_at_one(self):
-        """T1.c4: below pace_yellow is GREEN (was LIGHT_BLUE, T10.c1)."""
-        self._set_five_hour(25, 0.25)                     # pace 1.0x; below pace_yellow 1.25
-        cfg = config.defaults()
-        cfg["statusline"]["show"]["five_hour_pace"] = True
-        colored = statusline.render(self.payload, cfg)
-        self.assertIn(statusline.GREEN + "(pace 1.0x)", colored)
+        self.assertEqual(self._color(1.0), statusline.GREEN)
 
     def test_pace_yellow_between_thresholds(self):
-        self._set_five_hour(35, 0.25)                     # pace 1.4x -> between 1.25 and 1.75
-        cfg = config.defaults()
-        cfg["statusline"]["show"]["five_hour_pace"] = True
-        colored = statusline.render(self.payload, cfg)
-        self.assertIn(statusline.YELLOW + "(pace 1.4x)", colored)
+        self.assertEqual(self._color(1.4), statusline.YELLOW)
 
     def test_pace_red_above_threshold(self):
-        self._set_five_hour(50, 0.25)                     # pace 2.0x -> above 1.75
-        cfg = config.defaults()
-        cfg["statusline"]["show"]["five_hour_pace"] = True
-        colored = statusline.render(self.payload, cfg)
-        self.assertIn(statusline.RED + "(pace 2.0x)", colored)
+        self.assertEqual(self._color(2.0), statusline.RED)
 
     def test_pace_thresholds_configurable(self):
-        self._set_five_hour(25, 0.25)                     # pace 1.0x
-        cfg = config.defaults()
-        cfg["statusline"]["show"]["five_hour_pace"] = True
-        cfg["statusline"]["pace_yellow"] = 0.8
-        cfg["statusline"]["pace_red"] = 0.9
-        colored = statusline.render(self.payload, cfg)
-        # pace 1.0x is above pace_red (0.9), so RED
-        self.assertIn(statusline.RED + "(pace 1.0x)", colored)
+        self.assertEqual(self._color(1.0, pace_yellow=0.8, pace_red=0.9), statusline.RED)
 
 
 class EffortColorTest(LedgerCase):
@@ -1897,14 +1813,6 @@ class Line3FormatTest(LedgerCase):
         self.assertIn("Session:", session_line)
         self.assertNotIn("$11.70", session_line)      # dollars off by default
         self.assertIn("fewer", session_line)
-
-    def test_session_saved_in_dollars_with_key(self):
-        """T1.c7: session dollars restored with show.dollars."""
-        self.summary()
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["dollars"] = True
-        session_line = [l for l in self.lines(cfg) if "Session:" in l][0]
-        self.assertIn("$9.10", session_line)
 
     def test_project_label_format(self):
         """T1.c7: Project line uses x/y of Xh schema with windows data."""
@@ -2142,61 +2050,6 @@ class Line4FormatTest(LedgerCase):
 
 # --------------------------------------------------------------------------- T10: show dict
 
-class ShowDictTest(LedgerCase):
-    """T10: statusline.show dict toggles individual segments."""
-
-    def test_hide_model_segment(self):
-        cfg = plain_cfg()
-        cfg["statusline"]["show"] = {"model": False}
-        first = self.lines(cfg)[0]
-        self.assertNotIn("Fable 5.1", first)
-
-    def test_hide_effort_segment(self):
-        cfg = plain_cfg()
-        cfg["statusline"]["show"] = {"effort": False}
-        first = self.lines(cfg)[0]
-        self.assertNotIn("max", first)
-        self.assertIn("Fable 5.1", first)
-
-    def test_hide_ctx_segment(self):
-        cfg = plain_cfg()
-        cfg["statusline"]["show"] = {"ctx": False}
-        first = self.lines(cfg)[0]
-        self.assertNotIn("472k/1M", first)
-
-    def test_hide_five_hour_segment(self):
-        cfg = plain_cfg()
-        cfg["statusline"]["show"] = {"five_hour": False}
-        first = self.lines(cfg)[0]
-        self.assertNotIn("5h", first)
-        self.assertIn("7d", first)
-
-    def test_hide_task_block(self):
-        self.make_project(status={"task": "T3", "started": "2026-09-12T20:58:00Z"})
-        cfg_on = plain_cfg()
-        lines_on = self.lines(cfg_on)
-        cfg_off = plain_cfg()
-        cfg_off["statusline"]["show"] = {"task_block": False}
-        lines_off = self.lines(cfg_off)
-        self.assertGreater(len(lines_on), len(lines_off))
-
-    def test_hide_alerts(self):
-        self.make_project(status={"task": "T3", "started": "2026-09-12T20:58:00Z"})
-        write_json(paths.waiting_path(self.sid),
-                   {"kind": "question", "agent": "expert-fable"})
-        cfg = plain_cfg()
-        cfg["statusline"]["show"] = {"alerts": False}
-        joined = "\n".join(self.lines(cfg))
-        self.assertNotIn("waiting on you", joined)
-
-    def test_hide_session_cost(self):
-        cfg = plain_cfg()
-        cfg["statusline"]["show"] = {"session_cost": False}
-        joined = "\n".join(self.lines(cfg))
-        # Session: with cost hidden should not show the dollar amount
-        self.assertNotIn("$11.70", joined)
-
-
 # --------------------------------------------------------------------------- T10: task block
 
 class TaskBlockTest(LedgerCase):
@@ -2338,33 +2191,6 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         joined = self.render()
         self.assertIn("recipe rung", joined)
         self.assertNotIn("runs in another session", joined)
-
-    def test_task_block_children_shown_with_task_helpers(self):
-        """T10.c1: task_helpers: true restores helper lines."""
-        self.make_project(plan=self.PLAN_SIX,
-                          status={"task": "T3", "run_id": "expert-1",
-                                  "started": "2026-09-12T20:58:00Z"})
-        write_json(paths.running_path(), {"schema": 1, "sessions": {self.sid: {
-            "account": "dev@example.com", "expert": "expert-1",
-            "agents": {"expert-1": {"agent_type": "expert-fable", "ctx": 100000},
-                       "coder-1": {"agent_type": "coder-opus46",
-                                   "started": "2026-09-12T21:00:00Z"}}}}})
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["task_helpers"] = True
-        lines = self.lines(cfg)
-        joined = "\n".join(lines)
-        self.assertIn("coder-opus46", joined)
-        self.assertIn("running", joined)
-
-    def test_task_block_off_reduces_lines(self):
-        self.make_project(plan=self.PLAN_SIX,
-                          status={"task": "T3", "started": "2026-09-12T20:58:00Z"})
-        cfg_on = plain_cfg()
-        cfg_off = plain_cfg()
-        cfg_off["statusline"]["show"] = {"task_block": False}
-        lines_on = self.lines(cfg_on)
-        lines_off = self.lines(cfg_off)
-        self.assertGreater(len(lines_on), len(lines_off))
 
     def test_scan_phase_plan_returns_tasks(self):
         plan_path = os.path.join(self.project, "test_plan.md")
@@ -2681,19 +2507,6 @@ class DollarsShowKeyTest(LedgerCase):
             "sessions": {self.sid: {"account": "dev@example.com", "saved_measured": 5.0}}})
         joined = "\n".join(self.lines())
         self.assertNotIn("$11.70", joined)
-
-    def test_dollars_shown(self):
-        write_json(paths.summary_path(), {
-            "schema": 1,
-            "accounts": {"dev@example.com": {"label": "win", "windows": {}}},
-            "sessions": {self.sid: {"account": "dev@example.com", "saved_measured": 5.0,
-                                    "saved_net": 5.0}}})  # (3.9.8 T4)
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["dollars"] = True
-        session = [l for l in self.lines(cfg) if "Session:" in l][0]
-        self.assertIn("$11.70", session)
-        self.assertIn("$5.00", session)
-
 
 class StraddleTest(LedgerCase):
     """T1.c7: the straddle piece appears only when the session predates t0."""
@@ -3074,10 +2887,10 @@ class RatioSessionLineTest(LedgerCase):
         self.assertNotEqual(win["fit_method"], "ratio")
 
 
-# --------------------------------------------------------------------------- fix-14: fewer_numbers
+# --------------------------------------------------------------------------- issue #10: row switches
 
-class FewerNumbersTest(LedgerCase):
-    """fix-14: ``statusline.fewer_numbers`` drops the busier figures; explicit show keys win."""
+class RowSwitchTest(LedgerCase):
+    """issue #10: one switch per row (pace, session, project, account); every other part always shows."""
 
     def setUp(self):
         super().setUp()
@@ -3110,20 +2923,9 @@ class FewerNumbersTest(LedgerCase):
             "sessions": {self.sid: {"account": "dev@example.com", "saved_measured": 0.0}},
             "projects": {statusline._project_key(self.project): project}})
 
-    def _cfg(self, show=None):
-        cfg = plain_cfg()
-        cfg["statusline"]["fewer_numbers"] = True
-        cfg["statusline"]["max_width"] = 400
-        if show is not None:
-            cfg["statusline"]["show"] = show
-        return cfg
-
-    def _line(self, label, cfg, user_show=None):
+    def _line(self, label, cfg):
         statusline._JSON_CACHE.clear()
-        text = statusline.render(self.payload, cfg,
-                                 {} if user_show is None and cfg["statusline"].get("fewer_numbers")
-                                 else user_show)
-        found = [l for l in text.split("\n") if label in l]
+        found = [l for l in statusline.render(self.payload, cfg).split("\n") if label in l]
         return found[0] if found else None
 
     def test_default_keeps_every_piece(self):
@@ -3135,33 +2937,23 @@ class FewerNumbersTest(LedgerCase):
             self.assertIn(piece, project)
         self.assertIsNotNone(self._line("Account:", cfg))
 
-    def test_pace_line(self):
-        pace = self._line("Pace:", self._cfg())
-        self.assertNotIn("/day used", pace)
-        for piece in ("/day left", "fewer tokens than vanilla", "longer"):
-            self.assertIn(piece, pace)
+    def test_row_keys_hide_whole_rows(self):
+        """issue #10: one key per row hides it whole."""
+        cfg = plain_cfg()
+        cfg["statusline"]["max_width"] = 400
+        cfg["statusline"]["show"] = {"session_line": False, "project_line": False,
+                                     "account_line": False}
+        for label in ("Session:", "Project:", "Account:"):
+            self.assertIsNone(self._line(label, cfg), label)
+        self.assertIsNotNone(self._line("Pace:", cfg))
 
-    def test_project_line(self):
-        project = self._line("Project:", self._cfg())
-        for piece in ("of 5h", "month", "longer"):
-            self.assertNotIn(piece, project)
-        for piece in ("of 7d", "lifetime", "fewer", "2 accounts"):
-            self.assertIn(piece, project)
-        self.assertTrue(project.startswith("Project: "), project)
-
-    def test_account_line_gone(self):
-        self.assertIsNone(self._line("Account:", self._cfg()))
-        self.assertIsNone(self._line("month", self._cfg()))  # no unlabelled account piece either
-
-    def test_explicit_show_wins(self):
-        sl = statusline.sl_config(self._cfg(), {"month": True})
-        self.assertTrue(sl["show"]["month"])
-        self.assertFalse(sl["show"]["account_usage"])
-        # the Account label rides on the usage pair (off), so find the month piece itself
-        account = self._line("month ~1.5w", self._cfg(), {"month": True})
-        self.assertIsNotNone(account)
-        self.assertNotIn("of 5h", account)
-
+    def test_old_part_keys_and_fewer_numbers_do_nothing(self):
+        cfg = plain_cfg()
+        cfg["statusline"]["max_width"] = 400
+        cfg["statusline"]["fewer_numbers"] = True
+        cfg["statusline"]["show"] = {"month": False, "model": False, "alerts": False}
+        self.assertIn("month", self._line("Project:", cfg))
+        self.assertIsNotNone(self._line("Account:", cfg))
 
 class ReleaseLineTest(LedgerCase):
     """3.28.1 T14: the 8-hour check's release, green, directly above the model line, in two stages."""
@@ -3367,13 +3159,6 @@ class ExternalLineTest(LedgerCase):
         self.assertTrue(self.external()[0].endswith(" · LEAK: a1b2"))
         colored = statusline.render(self.payload, config.defaults())
         self.assertIn(statusline.BOLD_RED + "LEAK: a1b2" + statusline.RESET, colored)
-
-    def test_show_external_off(self):
-        self.make_project()
-        self.ext(self.EXT)
-        cfg = plain_cfg()
-        cfg["statusline"]["show"]["external"] = False
-        self.assertEqual(self.external(cfg), [])
 
     def test_line_cap_and_ungoverned(self):
         self.ext(self.EXT)

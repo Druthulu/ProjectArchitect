@@ -176,6 +176,15 @@ class RootWindowsTest(unittest.TestCase):
         self.assertIs(self.merged["todoFeatureEnabled"], False)
         self.assertIn("todoFeatureEnabled forced to false", self.out)
 
+    def test_recaps_and_suggestions_forced_off(self):
+        """3.32.2: a user who turned them back on gets false again at every merge, both scopes."""
+        for scope, name in (("user", "user.snippet.json"), ("project", "project.snippet.json")):
+            snippet = read_json(os.path.join(PKG, "settings", name))
+            for current in ({"awaySummaryEnabled": True, "promptSuggestionEnabled": True}, {}):
+                merged, _report = sm.merge(dict(current), snippet, scope=scope)
+                self.assertIs(merged["awaySummaryEnabled"], False, (scope, current))
+                self.assertIs(merged["promptSuggestionEnabled"], False, (scope, current))
+
     def test_cleanup_period_days_not_lowered(self):
         self.assertEqual(self.merged["cleanupPeriodDays"], 3650)
 
@@ -284,11 +293,11 @@ class RootWindowsTest(unittest.TestCase):
             text = fh.read()
         from pa import __version__
         self.assertIn("version: %s" % __version__, text)
-        self.assertEqual(text.splitlines()[0], "version: 3.32.1")  # I11
+        self.assertEqual(text.splitlines()[0], "version: 3.32.2")  # I11
         self.assertRegex(text, r"git: [0-9a-f]{6,40}")
 
     def test_version_parse_forms_and_fallback(self):
-        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.32.1``."""
+        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.32.2``."""
         import pa
         self.assertEqual(pa.parse_version("3.11\n"), "3.11")
         self.assertEqual(pa.parse_version("version: 3.12\ngit: abc\n"), "3.12")
@@ -311,8 +320,8 @@ class RootWindowsTest(unittest.TestCase):
                                   text=True, check=True).stdout.strip()
         self.assertEqual(ver("3.12\n"), "3.12")
         self.assertEqual(ver("version: 3.15.3\ngit: abc\n"), "3.15.3")
-        self.assertEqual(ver(None), "3.32.1")
-        self.assertEqual(ver("garbage: x\n"), "3.32.1")
+        self.assertEqual(ver(None), "3.32.2")
+        self.assertEqual(ver("garbage: x\n"), "3.32.2")
 
     def test_ledger_has_every_table(self):
         conn = db.connect(os.path.join(self.ledger, "ledger.sqlite"), create=False)
@@ -345,12 +354,11 @@ class RootWindowsTest(unittest.TestCase):
         cfg = read_json(os.path.join(self.ledger, "config.json"))
         self.assertRegex(cfg["installed_at"], r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$")
 
-    def test_manifest_prints_dirs_and_both_reminders(self):
+    def test_manifest_prints_dirs_and_the_reminder(self):
         self.assertIn(self.cfg.replace("\\", "/"), self.out)
         self.assertIn(self.pa3.replace("\\", "/"), self.out)
         self.assertIn(self.ledger.replace("\\", "/"), self.out)
         self.assertIn("Remote Control", self.out)
-        self.assertIn("recaps", self.out)
 
 
 # --------------------------------------------------------------------------- todo env (fix-6)
@@ -962,10 +970,6 @@ class SettingsMergeTest(unittest.TestCase):
         self.assertEqual(report["hooks_added"], [])
         self.assertEqual(report["hooks_replaced"], [])
 
-    def test_prompt_suggestion_value_is_kept(self):
-        merged, _ = sm.merge({"promptSuggestionEnabled": True}, self.snippet)
-        self.assertIs(merged["promptSuggestionEnabled"], True)
-
     def test_cleanup_period_days_is_raise_only(self):
         merged, _ = sm.merge({"cleanupPeriodDays": 9999}, self.snippet)
         self.assertEqual(merged["cleanupPeriodDays"], 9999)
@@ -1204,7 +1208,7 @@ class SupersededMigrationTest(unittest.TestCase):
 
     def test_fresh_install_writes_slim(self):
         self.assertNotIn("pinned_models", self.first_cfg)
-        self.assertNotIn("statusline", self.first_cfg)
+        self.assertEqual(self.first_cfg["statusline"], {"show": install.pa_config.show_block(None)})  # issue #10
         self.assertIn("renewal_day", self.first_cfg)
 
     def test_second_run_ok(self):
@@ -1214,7 +1218,8 @@ class SupersededMigrationTest(unittest.TestCase):
         self.assertNotIn("pinned_models", self.final_cfg)
         self.assertNotIn("roles", self.final_cfg)
         self.assertNotIn("handoff", self.final_cfg)
-        self.assertEqual(self.final_cfg["statusline"], {"max_width": 120})
+        self.assertEqual(self.final_cfg["statusline"],
+                         {"show": install.pa_config.show_block(None), "max_width": 120})
 
     def test_user_keys_kept(self):
         self.assertEqual(self.final_cfg["renewal_day"], 9)

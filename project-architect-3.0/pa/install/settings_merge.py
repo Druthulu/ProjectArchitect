@@ -17,6 +17,8 @@ The rules implemented here are the ``_merge_rules`` key of
 
 * add-if-absent for every key (recursively for plain dicts), EXCEPT
 * ``todoFeatureEnabled`` -- forced to ``false`` even when present (announced),
+* ``awaySummaryEnabled``, ``promptSuggestionEnabled`` -- forced to ``false`` even when
+  present (recaps and suggested replies: billed turns PA3 has no use for; 3.32.2),
 * ``cleanupPeriodDays`` -- raise only, never lower an existing larger value,
 * ``hooks`` -- PA entries appended per event, PA entries already present
   replaced **in place** (so a second ``--root`` is byte-identical), entries whose
@@ -41,8 +43,9 @@ import re
 PA_MARKERS = ("pa_hook.py", "pa_statusline.py")
 RETIRED_MARKERS = ("ctx_guard.sh", "ctx90.sh")
 PROTECTED_KEYS = ("model", "modelSettings")
+FORCED_OFF = ("awaySummaryEnabled", "promptSuggestionEnabled")   # 3.32.2: false on every merge
 SPECIAL_KEYS = ("todoFeatureEnabled", "cleanupPeriodDays", "hooks", "statusLine",
-                "permissions", "env")
+                "permissions", "env") + FORCED_OFF
 
 _ACTION_RE = re.compile(r"pa_hook\.py[\"']?\s+([A-Za-z_][A-Za-z0-9_]*)")
 _RETIRED_RE = re.compile(r"(\S*(?:ctx_guard\.sh|ctx90\.sh))")
@@ -409,6 +412,14 @@ def merge(current, snippet, hooks=True, statusline=True, scope="user"):
                 report["changed"].append((key, out.get(key, "<absent>"), False))
                 report["notes"].append(
                     "todoFeatureEnabled forced to false (announced override; removes the Task tools)")
+            out[key] = False
+
+        elif key in FORCED_OFF:
+            if out.get(key) is not False:
+                if key in out:
+                    report["changed"].append((key, out[key], False))
+                else:
+                    report["added"].append(key)
             out[key] = False
 
         elif key == "cleanupPeriodDays":

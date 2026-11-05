@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.32.1: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.32.2: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -60,10 +60,9 @@ from Project Architect 2.0 removes its `SessionEnd` backup hook — PA3 keeps no
 It asks nothing. A label for your account (`--label EMAIL=LABEL`) and other machines'
 ledgers to include in reports (`--extra-root DIR`) are flags. The other machine's ledger is
 linked on its own: under WSL the current Windows user's, on Windows each WSL distro's that has
-one; a re-run links any that appeared since and leaves existing links as they are. It ends with two reminders (turn the **Remote Control** push
-toggles on in `/config` if you want questions on your phone, and turn **recaps OFF**: they
-are billed and never show up in a transcript) and the next step: open a repository in Claude
-Code, or double-click `setup-project.cmd`.
+one; a re-run links any that appeared since and leaves existing links as they are. It ends with a reminder (turn the
+**Remote Control** push toggles on in `/config` if you want questions on your phone) and the next step: open a
+repository in Claude Code, or double-click `setup-project.cmd`.
 
 Your plan's renewal day is never guessed. The first session with an account whose day PA3
 does not know shows one line: read the renewal date in the Claude app under Settings >

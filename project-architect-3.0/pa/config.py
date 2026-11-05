@@ -7,7 +7,9 @@ Public:
     merge(base, over)               recursive dict merge (returns a new dict)
     validate(cfg)                   list of human-readable problems ([] == ok)
     save(cfg, path=None)            atomic write of slim(cfg) (user-set keys and overrides only)
-    slim(cfg, dropped=None)         cfg minus current/past defaults; USER_KEYS always kept
+    slim(cfg, dropped=None)         cfg minus current/past defaults; USER_KEYS and the full
+                                    statusline.show block always kept (issue #10)
+    show_block(show)                statusline.show in full: the four row switches
     audit(raw)                      raw config.json -> [(kind, dotted, value, detail)]
                                     kinds past_default | retired_model | unknown_key
     enabled(cfg=None)               False when config.enabled is off or PA_LEDGER_OFF=1
@@ -111,27 +113,9 @@ DEFAULTS = {
         "max_width": 130, "seven_day": "all",  # was the 7d parenthetical's level on line 1; retired to the Pace line (T1.c1)  # was "pace,used"
         "pace_yellow": 1.25, "pace_red": 1.75,  # was 1.0  # was 1.2
         "pace_left_green": 14, "pace_left_yellow": 10,
-        "show": {
-            "model": True, "effort": True, "ctx": True,
-            "five_hour": True, "five_hour_pace": False, "seven_day_meter": True, "fable": True,
-            "pace_line": True,
-            "generation": True, "phase": True, "task": True,  # was on _line2; folded into the task block
-            "agent": True, "progress": True, "next_task": True,  # was on _line2
-            "session_cost": True, "session_saved": True, "session_window_saved": True,
-            "session_usage": True,
-            "project_usage": True, "project_window_saved": True,
-            "project_window_saved_pct": True, "project_lifetime": True,
-            "project_month": True, "project_accounts": True,
-            "account_saved": True, "fable_saved": True, "month": True, "account_lifetime": True,
-            "account_usage": True,
-            "dollars": False, "pace_vanilla": True, "session_vanilla": True,
-            "project_vanilla": True, "account_vanilla": True,
-            "alerts": True, "task_block": True, "task_helpers": False,
-            "task_project": True,
-            "pace_used": True, "project_five_hour": True, "project_multiplier": True,  # fix-14
-            "external": True,  # 3.3: the External line (external coders' tokens and cash)
-        },
-        "fewer_numbers": False,  # fix-14: preset of fewer figures; explicit show keys win
+        # issue #10: one switch per row; every other part always shows. config.json always
+        # carries this block in full (slim). Was a key per part and "fewer_numbers": False.
+        "show": {"pace_line": True, "session_line": True, "project_line": True, "account_line": True},
     },
     "ledger": {"lock_inline_max_bytes": 20000000, "disk_min_free_mb": 50,
                "wal_size_limit": 4194304, "retain_samples_days": 120},
@@ -189,6 +173,7 @@ SUPERSEDED = {
                                  ["tools/analysis/*.py", "tools/plan_show.py", "tools/discussion.py",
                                   "tools/card.py slice|check", "tools/plan_edit.py show|grammar"]],  # retired 3.24
     "statusline.show_modeled": [True],
+    "statusline.fewer_numbers": [False, True],  # issue #10: retired with the per-part keys
     "statusline.max_width": [110],
     "warmer.max_pings": [3],                 # retired key: renamed max_pings_5m (66ae86f)
     "warmer.fire_5m_s": [285],               # retired key: the warmer left (3.24 T3.1)
@@ -206,6 +191,18 @@ SUPERSEDED = {
     "modeled.vanilla_seed": [40000],         # retired key: plain 1M cycle (T30)
     "seed.growth_pct": [20],                 # retired key: the seed alert keeps only its cap (3.28 T4e)
 }
+
+# issue #10: the per-part statusline switches, retired; only the four row switches remain
+RETIRED_SHOW = ("model", "effort", "ctx", "five_hour", "five_hour_pace", "seven_day_meter", "fable",
+                "generation", "phase", "task", "agent", "progress", "next_task",
+                "session_cost", "session_saved", "session_window_saved", "session_usage",
+                "project_usage", "project_window_saved", "project_window_saved_pct",
+                "project_lifetime", "project_month", "project_accounts",
+                "account_saved", "fable_saved", "month", "account_lifetime", "account_usage",
+                "dollars", "pace_vanilla", "session_vanilla", "project_vanilla", "account_vanilla",
+                "alerts", "task_block", "task_helpers", "task_project",
+                "pace_used", "project_five_hour", "project_multiplier", "external")
+SUPERSEDED.update(("statusline.show." + k, [True, False]) for k in RETIRED_SHOW)
 
 # Top-level keys only the user (or the installer, for them) sets: never pruned by save().
 USER_KEYS = ("schema", "machine", "python", "installed_at", "renewal_day", "extra_roots",
@@ -286,10 +283,19 @@ def user_layer(path=None):
     return raw if isinstance(raw, dict) else {}
 
 
+def show_block(show):
+    """``statusline.show`` in full (issue #10): the four row switches in the defaults' order,
+    the given values over the defaults; any other key left out."""
+    show = show if isinstance(show, dict) else {}
+    return dict((k, bool(show.get(k, v))) for k, v in DEFAULTS["statusline"]["show"].items())
+
+
 def save(cfg, path=None):
     """Write ``slim(cfg)`` atomically (installer / ``pa-ledger``); cache the full merged cfg.
 
     config.json holds only user-set keys and overrides; defaults live in the package.
+    The one exception is ``statusline.show``, always written in full so the four row
+    switches are listed there (issue #10).
     """
     p = os.path.abspath(path or paths.config_path())
     fsutil.atomic_write_json(p, slim(cfg), indent=2)
@@ -321,12 +327,20 @@ def slim(cfg, dropped=None):
     """*cfg* without keys equal to a current or past default (USER_KEYS always kept).
 
     Empty dicts are dropped.  When *dropped* is a list, the dotted path of every
-    dropped leaf is appended to it.
+    dropped leaf is appended to it.  ``statusline.show`` is kept in full (issue #10):
+    every live part listed, retired keys left out.
     """
     def walk(node, prefix):
         out = {}
+        if prefix == "statusline.":
+            given = node.get("show") if isinstance(node.get("show"), dict) else {}
+            out["show"] = show_block(given)
+            if dropped is not None:
+                dropped.extend("statusline.show." + k for k in given if k not in out["show"])
         for k, v in node.items():
             dotted = prefix + k
+            if dotted == "statusline.show":
+                continue
             if not prefix and k in USER_KEYS:
                 out[k] = _clone(v)
             elif isinstance(v, dict) and v:
@@ -543,7 +557,7 @@ def validate(cfg):
     if isinstance(show, dict):
         valid_show = set(DEFAULTS["statusline"]["show"])
         for key in show:
-            if key not in valid_show:
+            if key not in valid_show and "statusline.show." + key not in SUPERSEDED:
                 problems.append("statusline.show.%s: unknown segment key" % key)
     ls = get(cfg, "statusline.lifetime_since")
     if ls is not None and not isinstance(ls, str):

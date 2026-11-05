@@ -2,6 +2,15 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.2 — Statusline lines you can turn off
+
+- The Pace, Session, Project and Account lines each have a switch now: `pace_line`, `session_line`, `project_line`
+  and `account_line` under `statusline.show` in `~/.claude/usage-ledger/config.json`. PA3 lists all four there; set
+  one to `false` to hide that line. The change shows within seconds, in every open session.
+- Everything else on the statusline always shows. The old switches for single figures, and `fewer_numbers`, are
+  retired: the update removes them from your config.json. If you hid lines with them, set the line switches above
+  instead.
+
 ## 3.32.1 — Holds that answer, reports that arrive, and a bug report
 
 - When Claude releases a hold (a question, a stop, a session start) while PA3 is still checking for updates, an update

@@ -234,7 +234,7 @@ class LoadTest(unittest.TestCase):
         self.assertNotIn("pinned_models", raw)
         self.assertNotIn("roles", raw)
         self.assertNotIn("ttl_default", raw)
-        self.assertEqual(raw["statusline"], {"max_width": 120})
+        self.assertEqual(raw["statusline"], {"show": config.show_block(None), "max_width": 120})
         self.assertEqual(raw["renewal_day"], 11)
         self.assertEqual(raw["accounts"], {"a@example.com": {"label": "main"}})
         self.assertEqual(raw["extra_roots"], ["//wsl/usage-ledger"])
@@ -250,6 +250,28 @@ class LoadTest(unittest.TestCase):
                            "warmer": {"max_pings": 3}}, dropped)
         self.assertEqual(out, {"renewal_day": 21})
         self.assertEqual(sorted(dropped), ["fit.n_min", "notify", "warmer.max_pings"])
+
+    def test_save_lists_the_row_switches(self):
+        """issue #10: config.json carries statusline.show in full; the user's values kept,
+        retired keys and fewer_numbers dropped, defaults filled in."""
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump({"statusline": {"fewer_numbers": True,
+                                      "show": {"account_line": False, "month": False}}}, fh)
+        config.save(config.load(self.path, refresh=True), self.path)
+        with open(self.path, encoding="utf-8") as fh:
+            sl = json.load(fh)["statusline"]
+        self.assertEqual(sl, {"show": {"pace_line": True, "session_line": True,
+                                       "project_line": True, "account_line": False}})
+
+    def test_retired_show_key_is_not_a_problem(self):
+        cfg = config.defaults()
+        cfg["statusline"]["show"]["session_saved"] = True
+        self.assertEqual(config.validate(cfg), [])
+
+    def test_statusline_defaults_match(self):
+        """The renderer's own defaults carry the same show keys as the config's."""
+        from pa import statusline
+        self.assertEqual(statusline.STATUSLINE_DEFAULTS["show"], config.DEFAULTS["statusline"]["show"])
 
     def test_kill_switch(self):
         cfg = config.load(self.path, refresh=True)
@@ -486,38 +508,11 @@ class TierRegimeTest(unittest.TestCase):
 class StatuslineShowTest(unittest.TestCase):
     """T10: statusline.show dict and pace thresholds in config."""
 
-    def test_show_dict_defaults(self):
-        """Every show key is True except five_hour_pace, dollars, task_helpers (False)."""
-        cfg = config.defaults()
-        show = cfg["statusline"]["show"]
-        self.assertIsInstance(show, dict)
-        self.assertFalse(show["five_hour_pace"])
-        self.assertFalse(show["dollars"])
-        self.assertFalse(show["task_helpers"])
-        rest = {k: v for k, v in show.items() if k not in ("five_hour_pace", "dollars", "task_helpers")}
-        self.assertTrue(all(v is True for v in rest.values()), rest)
-
-    def test_show_dict_keys_complete(self):
-        """Every segment key exists in the defaults."""
-        cfg = config.defaults()
-        show = cfg["statusline"]["show"]
-        expected = {"model", "effort", "ctx",
-                    "five_hour", "five_hour_pace", "seven_day_meter", "fable",
-                    "pace_line",
-                    "generation", "phase", "task", "agent", "progress", "next_task",
-                    "session_cost", "session_saved", "session_window_saved",
-                    "session_usage",
-                    "project_usage", "project_window_saved", "project_window_saved_pct",
-                    "project_lifetime", "project_month", "project_accounts",
-                    "account_saved", "fable_saved", "month", "account_lifetime",
-                    "account_usage",
-                    "dollars", "pace_vanilla", "session_vanilla",
-                    "project_vanilla", "account_vanilla",
-                    "alerts", "task_block", "task_helpers",
-                    "task_project",
-                    "pace_used", "project_five_hour", "project_multiplier",  # fix-14
-                    "external"}                                              # 3.3 T8
-        self.assertEqual(set(show.keys()), expected)
+    def test_show_is_the_four_row_switches(self):
+        """issue #10: one switch per row, all on; every other part always shows."""
+        self.assertEqual(config.defaults()["statusline"]["show"],
+                         {"pace_line": True, "session_line": True, "project_line": True,
+                          "account_line": True})
 
     def test_pace_thresholds_defaults(self):
         cfg = config.defaults()
