@@ -114,10 +114,7 @@ for f in $(git diff --cached --name-only -- "$PE/current/logs" "$PE/current/task
   fi
 done
 
-if git diff --cached --quiet; then
-  refuse "nothing staged for $TASK"
-fi
-
+git diff --cached --quiet && refuse "nothing staged for $TASK"
 git -c core.safecrlf=false commit -q -m "$FULL" || refuse "git commit failed"
 SHA="$(git rev-parse --short HEAD)"
 N="$(git -c core.safecrlf=false show --stat --oneline HEAD | tail -n 1)"

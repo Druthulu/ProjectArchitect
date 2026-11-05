@@ -57,8 +57,9 @@ PRESETS = {
                   + [(a, _r(_FABLE, "medium")) for a in _JUDGES]
                   + [("memory-curator", _r(_OPUS, "medium"))]
                   + [("pa-planner", _r(_OPUS, "max"))]),
+    # 3.32 (developer 2026-10-30): no Fable on Max 5x: the auditor runs Opus 5.5 medium; the deep-thinker stays, asked for by name only
     "max5": dict(_roles(_r(_OPUS, "high"), _r(_FABLE, "max"))
-                 + [(a, _r(_FABLE, "medium")) for a in _JUDGES]
+                 + [(a, _r(_OPUS, "medium")) for a in _JUDGES]
                  + [("memory-curator", _r(_OPUS, "medium"))]
                  + [("pa-planner", _r(_OPUS, "high"))]),
     # 3.27 T11 (developer 2026-10-13, the 3.27 benches): Pro runs pa-expert Opus low, pa-coder Sonnet medium,

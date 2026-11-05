@@ -74,6 +74,58 @@ export function decideRoute(
   return 'resume'
 }
 
+/** 3.31 T2: the cache's room a filing needs: its last request younger than the cold rule minus this. */
+export const FILE_ROOM_MS = 5 * 60_000
+export const FILE_QUIET_MIN = 15
+
+export type FilingFacts = {
+  status: string | undefined // partnerStatus
+  busy: boolean // a ping or filing in flight, a send awaited, or the outbox not empty
+  lastRequestAt: number // max(lastTurnAt, spawnedAt, warm.lastPingAt)
+  pingsLeft: boolean
+  pingAfterMs?: number
+  spawnedAt: number
+  lastTurnAt: number
+  lastExchangeAt: number // ms of the newest dev/msg or claude/answer filed; 0 none
+  filedThrough: number // ms of the newest record's `through`; 0 none
+  quietMs: number // journal.file_quiet_min
+  topic: boolean
+  ctx: number
+  modelSwitchAt: number
+}
+
+/**
+ * 3.31 T2: whether the warm partner files now, and why (`quiet`, `topic`, `size`, `model`; else the rule that held it):
+ * idle, nothing in flight, warm with FILE_ROOM_MS left by isCold's own rule, exchanges newer than the last record's
+ * `through` (or than its spawn when no record exists), and either the quiet time passed
+ * since the last exchange or a rotation is due (decideRoute's topic, size and model rules).
+ */
+export function fileDecision(f: FilingFacts, now: number): { file: boolean; why: string } {
+  if (f.status !== 'idle' && f.status !== 'completed') return { file: false, why: `status ${String(f.status)}` }
+  if (f.busy) return { file: false, why: 'busy' }
+  if (isCold(f.lastRequestAt, now + FILE_ROOM_MS, '1h', f.pingsLeft, f.pingAfterMs)) return { file: false, why: 'cold' }
+  if (!(f.lastExchangeAt > (f.filedThrough > 0 ? f.filedThrough : f.spawnedAt))) return { file: false, why: 'filed' }
+  if (f.topic) return { file: true, why: 'topic' }
+  if (!(f.ctx < CTX_MAX)) return { file: true, why: 'size' }
+  if (f.modelSwitchAt > f.lastTurnAt) return { file: true, why: 'model' }
+  if (now - f.lastExchangeAt >= f.quietMs) return { file: true, why: 'quiet' }
+  return { file: false, why: 'not quiet' }
+}
+
+/** 3.31 T2: pa.json's `journal` settings: `file_quiet_min` (default 15) and `show_filed` (default true). */
+export function journalSettings(paText: string | null): { quietMs: number; showFiled: boolean } {
+  let j: Record<string, unknown> = {}
+  try {
+    const doc: unknown = JSON.parse(paText ?? '')
+    const x = typeof doc === 'object' && doc !== null ? (doc as Record<string, unknown>).journal : undefined
+    j = typeof x === 'object' && x !== null ? (x as Record<string, unknown>) : {}
+  } catch {
+    j = {}
+  }
+  const min = typeof j.file_quiet_min === 'number' && Number.isFinite(j.file_quiet_min) && j.file_quiet_min >= 0 ? j.file_quiet_min : FILE_QUIET_MIN
+  return { quietMs: min * 60_000, showFiled: j.show_filed !== false }
+}
+
 export type Rates = { input: number; write_5m: number; write_1h: number; read: number; output: number }
 
 const RATE_KEYS = ['input', 'write_5m', 'write_1h', 'read', 'output'] as const

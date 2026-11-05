@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { decide, errorText, ledgerPath, paSetting, releaseOf, heartbeatText, versionAtLeast, versionOf } from './activation'
 import { clip, eventFile } from './debug'
 import { isNarration, startsLine, startText } from './feed'
-import { displayWho, entryPath, entryText, noteLines, noteWho, partnerIdOf, stepFactsText, whoOf } from './journal'
+import { displayWho, entryPath, entryText, filingOf, noteLines, noteWho, partnerIdOf, stepFactsText, whoOf } from './journal'
 import { argSummary, queuedReply, requestName, validateInput } from './tools'
 
 // The same vectors as mod/pa/hooks/logic.test.ts: the two copies of activation.ts must agree.
@@ -68,7 +68,7 @@ describe('watcher helpers', () => {
   })
 })
 
-// 3.24 T13n: real signatures from the attended run (session d76796c5, subagent ac948616000000028.jsonl): line 29, T2's
+// 3.24 T13n: real signatures from the attended run (session d76796c5, subagent ac948616000000029.jsonl): line 29, T2's
 // "I'll write a bash transcript script ..." (a narration block), and line 21, an ordinary thinking block.
 const SIG_NARRATION = 'CAQSqwkKEQgSGAI4AUIJbmFycmF0aW9uEgyzxzcVZBdSFCHWNdEaDCR+dK4EP9++KfFL6CIwtsBlH6LIr7SuNCjqxh3I3cNBy8sTaF9QFqGLYDXaRusP2jT9Fvq3Vq018Z/Ufcl4KscIfV7lEkgVwg0ja+NNaODYWduJDd82CC/50EbdjnwCFlF0Y4cR2Abby/d3Ip6tTJYJSSY3uGLsLRMwOrw8FOQM33EyYs7AXfWjglKqGFzikgCPGuKbAO4Y25E3an1HpnupvSe4iX7anETXzhSw3hy4C44MzyTkC+iruNhMkdzFZxFV/GzvvUPi8YEmcls3/aUKRB8r1vjqd2Q7xDBQfYeVZnAaL5J456GLi7I844AS7QQV3gYdVHR1fXUuxWAl79siAO+rkYt3+8bl95FQZBo7S/fP+ogOM9TwGr8VrQNISPZBK9/osVgo7Fh0U25ji1nH631LsyhB1hVrJU7j9opVJIElo4CTPRLNqDSxZKTlCbDJvQfBdS/8oHKaXtnDjrDnv9+KHrEAz0xNL2UcxlJNlvsouURQrUFuiTFbAFO2vyIa6uVrgCxI7T+py4W71erGooISdkt+y6Lf5oLimkC0vbu856o0aNyec+v2SNR8KlSiD4iYzkUZCIxVwREvDTobJTpzl4IO+g2WnXXy4Jf31G3qI5tzA8T//OF//wayv4s8qNKZupTG7KAi3n8NK5jHcWVu6Op8xEuJCPbtiY3rSuIqw1PrxxvwKD6Dteddmya7OmnrQanZ2JonHci/H4dT6UwmND/j/ILQ8FcilBvgUf7i3bb840bowmSHCcR1E1wPF4RQcWVUiupxLsy3bQ1WP3fi606btPAoJ4g9xnP7hjUygdTh+rkdWpZf2PdafGylYxkMrmuR8r3Fm2Kv6CZSsxQpmdbIu3iOlZySE9annWmi6iNhg2wLTLV51A81yV3HGUy0bl/ekBiI0VCv/pmT3cgIAK2ULWs6P85881nMlbPNYUlW3Vo0RVKv8pWjZRpb9cBzFcs420P6onavJMxD8AwE23GBR8XhH7h3QSh78EdTnUxJ5Yd1ymWEkLSA0ZY5OKqCIXyxo0QbmP8hdp4zE0I73nH4H0LJe98zZiUEBv8tFzz7zLGQJ/Q5/MhrlfFroA12R5oSSAemunyRXRsgJe/1b7K2J0ToUFAgjw6ZjM4PDWvnKFcJGsDlHgQCIfUXe9rE89C85EQJxqHjYRiiiaNm+lADOWVpYL/gUHvvqw3G8SBOLssx9c0yB91MIlCSwcFWZST7SK5WuRacKH5/LAlNMlk4K2SQ+a9BY3r0fU/yhCtAHOW8UsKzE+TmXCEaTNdgltbMDMmqsaXID00PDWOfN/W129BRk81f60XjxOxRhztuJyRtrNaYc9SNl8GcmwD/H7JAuKZySjLSXOlYKYtvOVMSTqNB3mXTkoQfGl8OOyh6TYMsHzcbez36VOLkmlM4TikiGam5lEj/ASjabbwvgqwdu8kwtR8OLKrCqvcbCRIVxMQ5ru75RTtA6oUe59tM7TsXEA3WvXqMmv11qtst3croYQ+gqetBzCDgH4R7n9Ti1i/107HlMGbzOtpTXWjwbcDPGAE='
 const SIG_THINKING = 'CAQS3QUKEAgSGAI4AUIIdGhpbmtpbmcSDOrluh0DloaXh5s2EhoMHDdKnYZU6m/dlDX6IjC+YP0Zz5K2gGEnQjpw549f0DjKuFQer0L8SuiUiHHFYvBXNXxsri9+liXeU6ldvWMq+gTMs9WuU/mxtB2GV6FWb5TkvIv2sacg5emmtoJ9FwPem7KeDG8MAWO1GyrOYcFaha8/qBq4auB7cZJjrxKfbqlZ/J3fXMo+h0ixoT0ZGNMyQ3Y5JyizLSptotZpqOg36SCwRgicJLZ5y+lqXKgeXnu1IIvYnjdEmC87ecTkXpzA/hcHSN07VDRSMiitzDAGsmh1q2L9b+WBaPjoLHa/HVLoy6pa0R14YBbU/wKAS67lwEu/ln04/isjEzwCD02djcpBlHEQapJiKUT274Jn8DaJqV0Wjz520I34r1Rsvd9jVvlT0yXH5jHuw5DLS7DgT1d/uEZjk/QXaV2qfV9e9CLHfv7HrO9hOhDE+ewhF7t+2QTBZji7kw8xd+ITTXY7/rI8aTXIv5tbBhYzb+asS0p61t/MhaV1mREibm5s/ABzh3P8JwYtIhxk2b5jTscpIv90LxinbShdNdfGov9recGWFFCEzrgbR8oxMxI5ByXL2SVTFFK2YsHt7wB9gHIpmD5wO5paNKztTY7URMvu1bY3I3HMLOj2lJnhEdr7u2mePvDohZz8vcfzyvevHPWSINq86aBp/Bonp/m+hqaO+xcx5DDg36YvjoXyJ6pyo86acO6BfJpDcB4+roM4+bwF86Q5nALkFNudHN5y4SCey7kQdMT59Wb6LXPZfDe9ofk8Mxs/tU216eKbw5TSiNb2fttzCUHnLivVKp+TyjWxYTXoK+Y5TpXiFBDZqzDhH4GpZYx7pP5n4I13RRHqCnCGh9ocTJJ/1ClYNsc+ENQYtSM/amsTGANRRSocraJMdufyC1LC9H0TdDenSWU0aObLSbRKsJOR5UOFG+7XGAE='
@@ -108,7 +108,13 @@ describe('tools', () => {
     expect(validateInput('topic', {})).toBe(null)
     expect(validateInput('topic', { summary: 1 })).toBe('summary must be a string')
     expect(validateInput('release', { hold: 'question', note: 'go' })).toBe(null)
-    expect(validateInput('release', { hold: 'nap' })).toBe('hold must be talk, review, question, close, stopped, generation, session or update')
+    expect(validateInput('release', { hold: 'nap' })).toBe('hold must be talk, review, question, close, stopped, generation, session, update or batch')
+    expect(validateInput('release', { hold: 'batch', tasks: ['T1', 'T2'] })).toBe(null) // 3.32 B8
+    expect(validateInput('release', { hold: 'batch' })).toBe('tasks must be a non-empty list of task ids')
+    expect(validateInput('release', { hold: 'batch', tasks: [] })).toBe('tasks must be a non-empty list of task ids')
+    expect(validateInput('drive', { value: 'coop' })).toBe(null)
+    expect(validateInput('drive', { value: 'autopilot' })).toBe(null)
+    expect(validateInput('drive', { value: 'nap' })).toBe('value must be autopilot or coop')
     expect(validateInput('release', { reason: 'done' })).toBe('hold is required')
     expect(validateInput('plan_edit', { command: 'add T9', why: 'agreed' })).toBe(null)
     expect(validateInput('plan_edit', { command: ' ' })).toBe('command is empty')
@@ -164,6 +170,12 @@ describe('journal (copy of the router\'s naming)', () => {
     expect(partnerIdOf('{"partner":{"agentId":"A1"}}')).toBe('A1')
     expect(partnerIdOf('{"partner":null}')).toBe('')
     expect(partnerIdOf(null)).toBe('')
+    expect(filingOf('{"partner":{"agentId":"A1","filingInFlight":true}}', 'A1')).toBe(true) // 3.31 T2b
+    expect(filingOf('{"partner":{"agentId":"A1","filingInFlight":true}}', 'A2')).toBe(false)
+    expect(filingOf('{"partner":{"agentId":"A1"}}', 'A1')).toBe(false)
+    expect(filingOf('{"partner":null}', 'A1')).toBe(false)
+    expect(filingOf('{', 'A1')).toBe(false)
+    expect(filingOf(null, 'A1')).toBe(false)
     expect(displayWho('pa-claude')).toBe('Claude')
     expect(displayWho('claude')).toBe('claude')
     expect(displayWho('deep-thinker')).toBe('deep-thinker')

@@ -124,7 +124,7 @@ class CreditCase(unittest.TestCase):
             "pa_version": "3.0.0", "project": "demo", "python": "python",
             "phase_ends_dir": "phase-ends",
             "handoff_ctx": {"expert": 350000, "coder": 300000},
-            "rhythm": "autonomous"}, indent=1) + "\n")
+            }, indent=1) + "\n")
         write(os.path.join(self.root, "GENERATION_PLAN.md"), GENERATION_PLAN)
         write(os.path.join(self.root, "HOW_WE_WORK.md"), HOW_WE_WORK)
         write(os.path.join(self.root, ".claude", "skills", "project-architect", "SKILL.md"),

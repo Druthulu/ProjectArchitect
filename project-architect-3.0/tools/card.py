@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """card.py -- manage the HOW_WE_WORK.md card.
 
-interview [--name --experience --domain --autonomy --notify --rhythm] [--defaults]
+interview [--name --experience --domain --autonomy --notify] [--defaults]
           fill the card's placeholders in place (TTY prompts for missing, --defaults
           writes the template defaults)
 slice <role>
@@ -19,6 +19,8 @@ import re
 import sys
 
 _SCRIPT = "card.py"
+DEFAULT_MAX_CHARS = 10000   # 3.32 B7: was 7000; characters stay the unit: a tool needs no tokenizer to count them
+SEED_CARD_CAP = 6000        # 3.32 B7: seed.ts CARD_CAP_CHARS: what a fresh Claude sees of its slice
 
 # placeholder pattern
 _PH_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -71,14 +73,14 @@ def _write_card(root, text):
 
 
 def _max_chars(root):
-    """Read the cap from .claude/pa.json ``card.max_chars`` (default 7000)."""
+    """Read the cap from .claude/pa.json ``card.max_chars`` (default 10000)."""
     pa_json = os.path.join(root, ".claude", "pa.json")
     try:
         with open(pa_json, "r", encoding="utf-8") as fh:
             cfg = json.load(fh)
-        return cfg.get("card", {}).get("max_chars", 7000)
+        return cfg.get("card", {}).get("max_chars", DEFAULT_MAX_CHARS)
     except (OSError, json.JSONDecodeError, KeyError):
-        return 7000
+        return DEFAULT_MAX_CHARS
 
 
 def _parse_sections(text):
@@ -138,7 +140,6 @@ _INTERVIEW_FIELDS = {
     "domain": ("DEVELOPER_DOMAIN", "Primary domain"),
     "autonomy": ("AUTONOMY_POSTURE", "Autonomy posture"),
     "notify": ("NOTIFY_CHANNEL", "Notification channel (e.g. toast, discord)"),
-    "rhythm": ("RHYTHM", "Rhythm (autonomous or review)"),
 }
 
 
@@ -180,8 +181,6 @@ def cmd_interview(args, root):
                 values[placeholder] = "full inside an approved plan; stop only at the two gates"
             elif field == "notify":
                 values[placeholder] = "toast"
-            elif field == "rhythm":
-                values[placeholder] = "autonomous"
         elif sys.stdin.isatty():
             default = ""
             if field == "name":
@@ -194,8 +193,6 @@ def cmd_interview(args, root):
                 default = "full inside an approved plan; stop only at the two gates"
             elif field == "notify":
                 default = "toast"
-            elif field == "rhythm":
-                default = "autonomous"
             try:
                 answer = input("%s [%s]: " % (prompt_text, default))
             except (EOFError, KeyboardInterrupt):
@@ -235,9 +232,15 @@ def cmd_slice(args, root):
         return 2
     text = _read_card(root)
     _cnote(_card_path(root), script=_SCRIPT, sub="slice", whole=True, root=root)
-    sections = _parse_sections(text)
+    # strip trailing whitespace but keep one final newline
+    print(slice_text(text, role))
+    return 0
+
+
+def slice_text(text, role):
+    """The card's text for ``role``: the preamble and the sections its tag names (or that carry no tag)."""
     out = []
-    for heading, tag_line, roles, body in sections:
+    for heading, tag_line, roles, body in _parse_sections(text):
         if heading is None:
             # preamble: always print (the title and comment)
             out.append(body)
@@ -245,10 +248,7 @@ def cmd_slice(args, root):
         if roles is None or role in roles:
             out.append(tag_line)
             out.append(body)
-    result = "".join(out)
-    # strip trailing whitespace but keep one final newline
-    print(result.rstrip())
-    return 0
+    return "".join(out).rstrip()
 
 
 # -- check --------------------------------------------------------------------
@@ -261,7 +261,9 @@ def cmd_check(args, root):
     cap = _max_chars(root)
     placeholders = len(_PH_RE.findall(text))
     standing = 1 if re.search(r"^## Standing decisions", text, re.MULTILINE) else 0
-    print("chars=%d cap=%d placeholders=%d standing=%d" % (chars, cap, placeholders, standing))
+    # 3.32 B7: Claude's slice is printed, never a refusal here: the archive runs this check, and the seed only cuts lines.
+    print("chars=%d cap=%d placeholders=%d standing=%d claude=%d/%d"
+          % (chars, cap, placeholders, standing, len(slice_text(text, "claude")), SEED_CARD_CAP))
     if chars > cap or placeholders > 0 or standing:
         return 1
     return 0
@@ -284,7 +286,6 @@ def main(argv=None):
     iv.add_argument("--domain", default=None)
     iv.add_argument("--autonomy", default=None)
     iv.add_argument("--notify", default=None)
-    iv.add_argument("--rhythm", default=None)
     iv.add_argument("--defaults", action="store_true",
                     help="write the template defaults without prompting")
 

@@ -5,7 +5,7 @@
 import { type CoderReturn, type ExpertContract, parseCoderReturn, parseExpertContract } from './contract'
 import { handbackReport } from './route'
 import type { Band, BandRow, Shell, Work } from '../types'
-import { RESTART_LINE, SPINNER } from './loop'
+import { INTAKE_TRIES, type IntakeStep, RESTART_LINE, SPINNER, STATE_PAGE } from './loop'
 
 export type CardRole = 'claude' | 'planning' | 'expert' | 'coder' | 'thinker' | 'curator' | 'auditor'
 
@@ -40,10 +40,37 @@ export function cardText(role: CardRole, what: string, body: string, opts: { don
 
 export type Card = { role: CardRole; done: boolean; title: string; body: string; diff: string }
 
+const INTAKE_STEP_TEXT: Record<IntakeStep, string> = {
+  memories: 'Sort its memories',
+  'living docs': "Map its docs and write the card's living docs",
+  'state page': `Write where the project stands: \`${STATE_PAGE}\``,
+}
+
+/** 3.32 B9: the card the mod draws when a try of the PA3 intake starts: the steps this try was given, numbered from 1. */
+export const intakeCard = (steps: readonly IntakeStep[], attempt: number): string =>
+  `**PA3 intake** · one agent reads this project once, in the background${attempt > 1 ? ` · try ${String(attempt)} of ${String(INTAKE_TRIES)}` : ''}\n\n` +
+  `${steps.map((x, i) => `${String(i + 1)}. ${INTAKE_STEP_TEXT[x]}`).join('\n')}\n\n` +
+  'Keep talking as usual. A new plan waits until this is done.'
+
+/** 3.32 B9: its one end line, drawn only when everything is done: what this try did. */
+export function intakeDoneCard(steps: readonly IntakeStep[], memoryDir: string): string {
+  const did: Record<IntakeStep, string> = {
+    memories: `memories sorted (archive: ${memoryDir}/gen3.2.md)`,
+    'living docs': 'living docs on the card',
+    'state page': `${STATE_PAGE} written`,
+  }
+  return `**PA3 intake** done · ${steps.map(x => did[x]).join(', ')}`
+}
+const INTAKE_TITLE_RE = /^\*\*PA3 intake\*\*( done)?( · [^\n]+)(?:\n|$)/
+
 const TITLE_RE = /^\*\*(\S+) (✓ )?(Claude|Planning|Expert|Coder|Thinker|Curator|Auditor)((?: · [^*\n]+)?)\*\*(?:\n|$)/
 
 /** A card text split for drawing: its role, done mark, title (without the square), body and diff; null when no card. */
 export function parseCard(text: string): Card | null {
+  const h = INTAKE_TITLE_RE.exec(text)
+  if (h !== null) {
+    return { role: 'claude', done: false, title: `PA3 intake${h[1] ?? ''}${h[2] ?? ''}`, body: text.slice(h[0].length).trim(), diff: '' }
+  }
   const m = TITLE_RE.exec(text)
   if (m === null) {
     return null

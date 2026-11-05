@@ -79,8 +79,8 @@ import type { On } from 'claude-code'
 import type { Band, HoldName, LoopState, LoopTask, Shell, ToastOut } from '../types'
 
 import { paSetting, versionAtLeast } from './activation'
-import { auditorBrief, curatorBrief, expertBrief, type ExpertOpts, type External, fixBrief, type PlanTask, upgradeBrief } from './brief'
-import { acceptedCard, type BandAgent, bandIds, bandRows, bandStepOf } from './card'
+import { auditorBrief, curatorBrief, expertBrief, type ExpertOpts, type External, fixBrief, intakeBrief, type PlanTask, upgradeBrief } from './brief'
+import { acceptedCard, type BandAgent, bandIds, bandRows, bandStepOf, intakeCard, intakeDoneCard } from './card'
 import { CHAIN_SCRIPTS, parseAuditorReturn, parseExpertContract, splitCommand } from './contract'
 import { clip, eventFile, isStale } from './debug'
 import { BUILD } from './build'
@@ -92,12 +92,16 @@ import {
   agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
   nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, RULE_OPTIONS, runEnded, nextTaskOf,
   serializeLoop, silenceReleases, steerText, stoppedText, quietReply, liveness, ABSENT_MS, takesOver, WAIT_MAX_MS, WAIT_POLL_MS, waitSpec, windowResumes,
-  contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, FIRST_RUN_WAITS, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
+  contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
-  archiveLines, bandLine, CHAIN_STEPS, closeNotice, extHealthNotice, extHealthOf, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withPhaseSid,
+  archiveLines, bandLine, batchDoneNotice, batchOf, CHAIN_STEPS, closeNotice, driveOf, extHealthNotice, extHealthOf, extReviewLine, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withDrive, withPhaseSid,
   BANK_MARKER, BANK_OPTIONS, bankNotice, bankQuestion, generalizableCount, SET_BACK, setAsideOf,
   installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, RUN_REVIEW_OPTIONS, RUN_REVIEW_QUESTION, runReviewNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckOffline, startCheckState, OFFLINE_NOTICE, pausedHandbackNotice, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
   UPGRADE_MD, upgradeLeftNotice, upgradeOf, UPGRADE_ROUNDS, FORWARD_TTL_MS, SHELLS_FILE, shellNotice, shellsOf, shellsOut, waitingShell,
+  GATE_CHECK, GATE_RUN, GATE_STALE, gateWaitReply,
+  noVerdict, SPAWN_RETRIES, SPAWN_RETRY_MS, spawnRetryOf,
+  PARENTS_FILE, parentsOf, withParents,
+  bgJobOf, type BgJob, INTAKE_TRIES, INTAKE_WAITS, intakeCapNotice, intakeDue, intakeOwed, type IntakeStep, intakeTriesOf, STATE_PAGE,
 } from './loop'
 import { APPROVED, changesAsked, DIALOG_FILE, dialogOpen, planFilePath } from './planview'
 import { asksQuestion, classify, handbackChild, isNote, journalOut, noteBody, partnerReport } from './route'
@@ -172,7 +176,7 @@ const MILESTONE = 'milestone: `PY tools/plan_edit.py show --section Milestone`'
 const DECIDE = 'Decide small changes inside the milestone yourself (plan_edit, then release({hold: "question", note})); ask the developer about the milestone or the scope.'
 const BUSY = new Set(['pending', 'running', 'waiting'])
 /** 3.29.1 T8: the releases that start work (resume a stop, go past a review or question, close); they wait for the gate. */
-const WORK_HOLDS = new Set(['stopped', 'review', 'question', 'close'])
+const WORK_HOLDS = new Set(['stopped', 'review', 'question', 'close', 'batch'])
 /** A request file's `release` hold, '' for any other kind or a bad file. */
 const holdOf = (text: string): string => {
   try {
@@ -222,11 +226,13 @@ let startSid = ''
 let clearSid = '' // a session whose SessionStart was `clear`: it owns the loop at once from this process's earlier session (T13b.c4)
 const procSids = new Set<string>() // every session this process armed the loop for (T13b.c4)
 let devAt = 0 // the developer's last prompt (ms), for the tick's `talk`
-let devSid = '' // the session of the developer's last prompt: a pending first run is asked with it (3.24 T7b-2c)
+let devSid = '' // the session of the developer's last prompt: the PA3 intake starts with it (3.32 B9)
 let partnerSaid = { at: 0, asked: false, notice: false } // Claude's last answer (ms), whether it asked the developer something, whether it followed a mod notice
 let waitPolledAt = 0 // the WAIT-FOR file's last poll (ms); 0 polls at once (T5d2a)
 let genMode: { sid: string; at: number; doc: Record<string, unknown> | null } = { sid: '', at: 0, doc: null } // launch.py, cached (T6a2)
 let sideAgent = '' // the generation start's running agent (curator or auditor), from loop.json at each tick (T6a2)
+let bgAgent = '' // 3.32 B6: the background job's agent, from loop.json at each tick
+let jobRefused = '' // 3.32 B6: the session the intake won't start in again: cleared by the developer's next message (B9)
 let routedText = '' // the running task's last routed contract, from loop.json at each tick (T6a2)
 let contextQ: { sid: string; kind: 'update' | 'renewal'; line: string }[] = [] // hook-context lines owed (T6a2)
 const bandSince = new Map<string, number>() // agent id -> first seen by the band's tick (ms; the expert's spawnedAt)
@@ -251,6 +257,7 @@ function waitsOnShell(agentId: string | undefined, text: string, at: number): vo
 let modSeen: string | null = null
 let modStale = false
 let updWait = ''
+const gateTold = new Set<string>() // 3.32.1 T5 (#6): the work-hold releases already told why the update gate holds them
 let startAt = 0 // 3.29.1 T8: this process's session start (ms): the update check's note must be this start's
 let pausedAskedSid = '' // 3.29.1 T9: the session Claude was asked about a paused task in (once a session start)
 let runReviewDue = false // 3.29.2: the one-time `.run/` cleanup is to be offered once the update gate opens
@@ -691,20 +698,21 @@ export function armAutopilot(on: On): void {
           return strOf(genMode.doc?.['mode'])
         }
         const g0 = genStartOf(s)
-        // 3.24 T7b: the project's first run in 3.2 still owed this session (pa.json `first_run`; firstRunLine), '' none.
-        // T7b-2c: `firstPending` while it is not done (asked or paused this session too): no plan is installed or held for.
-        const firstLine = firstRunLine(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null), MEMORY_DIR)
-        const firstPending = firstLine !== ''
-        const firstRun = g0 === null || g0.sid !== sidNow ? firstLine : ''
+        // 3.24 T7b: the project's first run in 3.2 still owed (pa.json `first_run`; firstRunLine), '' none.
+        // 3.32 B9: `intakePending` while the PA3 intake is due: no plan is installed or held for, no generation starts.
+        const paNow = await $.fs.read(`${root}/.claude/pa.json`).catch(() => null)
+        const coop = driveOf(paNow) === 'coop' // 3.32 B8: read each tick, so a change lands at the next boundary (loop.ts)
+        const firstLine = firstRunLine(paNow, MEMORY_DIR)
+        const intakePending = intakeDue(paNow)
         // No phase plan: the loop wakes only for a generation plan, an install in progress or its own requests (T6a1); T6a2:
         // also for a live generation start of this session, owed hook-context lines, an update ask, or launch.py's
-        // planner-gen with none started this session; 3.24 T7b: or a first run owed.
+        // planner-gen with none started this session; 3.32 B9: or the intake due, or its job running.
         if (!hasPlan && installOf(s) === null && !(await $.fs.exists(`${root}/${GEN_PLAN}`))) {
           const owed = (await $.fs.exists(inboxDir))
             ? pendingRequests((await $.fs.list(inboxDir)).filter(f => f.kind === 'file').map(f => f.name), doneOf(s), now).filter(isLoopKind)
             : []
           const live = (g0 !== null && g0.sid === sidNow && g0.step !== 'done') || contextQ.some(c => c.sid === sidNow) || updateOf(s) !== null
-          if (owed.length === 0 && !live && firstRun === '' && !((g0 === null || g0.sid !== sidNow) && (await modeOf()) === 'planner-gen')) {
+          if (owed.length === 0 && !live && !intakePending && bgJobOf(s) === null && !((g0 === null || g0.sid !== sidNow) && (await modeOf()) === 'planner-gen')) {
             startSid = startSid === sidNow ? '' : startSid // nothing would act: the session start needs no hold
             return
           }
@@ -735,10 +743,11 @@ export function armAutopilot(on: On): void {
           const parked = s.holds.includes('generation')
           const held = s.holds.some(h => h !== 'talk' && h !== 'window')
           const genLive = g0 !== null && g0.sid === sidNow && g0.step !== 'done'
-          const acts = parked || (!held && (s.state !== 'off' || genLive || firstRun !== '' || (hasPlan
+          const acts = parked || (!held && (s.state !== 'off' || genLive || (hasPlan
             ? (await modeOf()) === 'router'
             : (await modeOf()) === 'planner-gen' || (await $.fs.exists(`${root}/${GEN_PLAN}`)))))
-          if (acts) {
+          // 3.32 B8: in coop a plan's queue starts only for a batch, so it needs no session hold.
+          if (acts && !(coop && hasPlan && !parked && !genLive)) {
             await save(pushHold(s, 'session'), 'session')
             await journal('mod', 'hold', { task: s.task?.id }, 'session: a session start; the loop waits for the developer (release session).')
           }
@@ -775,6 +784,99 @@ export function armAutopilot(on: On): void {
           const v = jsonOf((await $.fs.read(`${root}/.run/mod/${sidNow}/agents/${agentId}.json`).catch(() => null)) ?? '')?.['updatedAt']
           return typeof v === 'number' && Number.isFinite(v) ? v : 0
         }
+        const drawCard = async (text: string): Promise<void> => {
+          nseq += 1
+          const c = requestFile(await $.clock.now(), nseq, 'card', 'loop', { text })
+          await $.fs.write(`${inboxDir}/${c.name}`, c.body).catch(quiet)
+        }
+        // 3.32 B9: the end of a try of the PA3 intake (loop.ts), read fresh from the files: nothing owed, or the cap reached,
+        // ends it; under the cap it runs again with the developer's next message.
+        const endIntake = async (steps: readonly IntakeStep[]): Promise<void> => {
+          const card = await $.fs.read(`${root}/HOW_WE_WORK.md`).catch(() => null)
+          const page = await $.fs.exists(`${root}/${STATE_PAGE}`)
+          const owed = intakeOwed({ paText: await $.fs.read(`${root}/.claude/pa.json`).catch(() => null), card, page })
+          if (owed.length > 0 && intakeTriesOf(s) < INTAKE_TRIES) {
+            jobRefused = sidNow
+            await journal('mod', 'hold', {}, `The PA3 intake ended with ${owed.join(', ')} owed; it runs again with the developer's next message.`)
+            return
+          }
+          const m = await py('tools/history.py', 'mark', 'intake', ...(owed.length > 0 ? ['--incomplete'] : []))
+          if (m.exitCode !== 0) { // no second run on a marker that did not take
+            jobRefused = sidNow
+            await journal('mod', 'decision', {}, `The PA3 intake is not marked: history.py mark exit ${String(m.exitCode)}: ${clip((m.stderr || m.stdout).trim(), 200)}.`)
+            return
+          }
+          const why = await commit('PA3 intake', [...(page ? [STATE_PAGE] : []), ...(card === null ? [] : ['HOW_WE_WORK.md']), '.claude/pa.json'])
+          await journal('mod', 'decision', {}, `The PA3 intake ${owed.length > 0 ? `stopped at its cap without: ${owed.join(', ')}` : 'is done'}${why === '' ? '' : `; ${why}`}.`)
+          if (owed.length > 0) {
+            await notice(intakeCapNotice(owed))
+          } else if (steps.length > 0) {
+            await drawCard(intakeDoneCard(steps, MEMORY_DIR))
+          }
+        }
+        const endJob = async (job: BgJob): Promise<void> => {
+          const recap = (facts[job.agentId]?.answer ?? '').trim()
+          if (recap !== '') {
+            await journal('mod', 'end', { agentId: job.agentId, role: 'memory-curator' }, recap)
+          }
+          delete facts[job.agentId]
+          bgAgent = ''
+          await save({ ...s, bgJob: null } as LoopState, 'job.done')
+          await endIntake(job.steps)
+        }
+        // The job, a step a tick, whatever else the loop is doing; it never holds it. True when it ended this tick.
+        const watchJob = async (): Promise<boolean> => {
+          const job = bgJobOf(s)
+          if (job === null) {
+            return false
+          }
+          if (job.sid !== sidNow) {
+            await journal('mod', 'hold', { agentId: job.agentId }, 'The session that ran the PA3 intake ended.')
+            await endJob(job)
+            return true
+          }
+          const me = (await $.agent.list().catch(() => [])).find(a => a.id === job.agentId)
+          const f = facts[job.agentId]
+          const live = liveness(me?.status, now - job.spawnedAt)
+          const pseudo: LoopTask = {
+            id: 'job', title: '', agent: '', coder: '', effort: '', attempt: 1, kind: 'gen', agentId: job.agentId, startSha: '', spawnedAt: job.spawnedAt,
+            lastCompleteAt: f?.lastCompleteAt ?? 0, contract: null, pendingContract: (f?.answer ?? '') === '' ? null : f?.answer ?? null,
+          }
+          if (live === 'stopped' || me?.status === 'completed' || (live === 'idle' && runEnded(pseudo, 0, 0, now, await activityAt(job.agentId), f?.handbackAt ?? 0))) {
+            await endJob(job)
+            return true
+          }
+          return false
+        }
+        // One try of the intake with the steps still owed; none owed, or past the cap, goes straight to its end.
+        const startIntake = async (): Promise<void> => {
+          const steps = intakeOwed({
+            paText: paNow, card: await $.fs.read(`${root}/HOW_WE_WORK.md`).catch(() => null), page: await $.fs.exists(`${root}/${STATE_PAGE}`),
+          })
+          const tries = intakeTriesOf(s)
+          if (steps.length === 0 || tries >= INTAKE_TRIES) {
+            await endIntake([])
+            return
+          }
+          const src = steps.includes('state page') ? await py('tools/phaseend_index.py', 'state-sources') : null
+          const sources = src?.exitCode === 0 ? src.stdout.split('\n').map(l => l.trim()).filter(l => l !== '') : []
+          const from = /FROM: (\S+)/.exec(firstLine)?.[1] ?? ''
+          const type = 'memory-curator'
+          const before = new Set((await $.agent.list()).map(a => a.id))
+          const r = await $.agent.spawn({
+            subagentType: type, prompt: intakeBrief({ memoryDir: MEMORY_DIR, from, steps, page: STATE_PAGE, sources }), description: 'PA3 intake',
+          })
+          const id = r.deny !== undefined ? '' : r.agentId ?? newAgent((await $.agent.list()).filter(a => !before.has(a.id)), type)
+          await journal('mod', 'hold', {}, id === '' ? `The PA3 intake's spawn was refused (${clip(r.deny ?? 'no agentId', 200)}); it runs again with the developer's next message.`
+            : `The PA3 intake, try ${String(tries + 1)}: agent ${id} spawned for ${steps.join(', ')}.`)
+          if (id === '') {
+            jobRefused = sidNow
+            return
+          }
+          bgAgent = id
+          await save({ ...s, intakeTries: tries + 1, bgJob: { steps, agentId: id, sid: sidNow, spawnedAt: now, lastCompleteAt: 0 } } as LoopState, 'job.spawn')
+          await drawCard(intakeCard(steps, tries + 1))
+        }
         // T5d1: the heartbeat every 15 s. A takeover (`taken`, above) of a running task with no stop starts recovery, a step
         // a tick in `task.recovery`.
         if (s.ownerSid !== sidNow || now - s.heartbeatAt >= HEARTBEAT_MS) {
@@ -804,6 +906,10 @@ export function armAutopilot(on: On): void {
         routedText = s.task?.lastRouted ?? ''
         const gs = genStartOf(s)
         sideAgent = gs === null || gs.step === 'done' ? '' : gs.agentId
+        bgAgent = bgJobOf(s)?.agentId ?? ''
+        if (await watchJob()) {
+          return // pa.json just changed: the next tick reads it
+        }
         // hook-context lines (T6a2), each once a session: filed `mod/context`; the renewal line a notice; an update line
         // the update ask's record (3.24 T6: production, or PA_MOD_UPDATE=1), else a notice.
         const ctx = contextQ.filter(c => c.sid === sidNow)
@@ -930,7 +1036,7 @@ export function armAutopilot(on: On): void {
         // answers record whether it asked; silence pops `talk`.
         // 3.23 T13d.c11: under `held(session)` no `talk` (the session hold holds everything; Claude's release lets it go).
         if (devAt > s.lastDevAt) {
-          const still = s.state === 'off' || s.holds.includes('session')
+          const still = s.state === 'off' || s.holds.includes('session') || coop
           const fresh = !still && !s.holds.includes('talk')
           await save({ ...(still ? s : pushHold(s, 'talk')), lastDevAt: devAt }, fresh ? 'talk' : '')
           if (fresh) {
@@ -941,13 +1047,18 @@ export function armAutopilot(on: On): void {
           const said = partnerSaid
           await save({ ...s, lastAnswerAt: said.at, ...(said.notice ? {} : { talkAnswerAt: said.at, lastAnswerAsked: said.asked }) }, '')
         }
+        if (coop && s.holds.includes('talk')) { // 3.32 B8: a talk hold from before the switch
+          await save(popHold(s, 'talk'), 'talk.coop')
+        }
         if (silenceReleases(s, now)) {
           await save(popHold(s, 'talk'), 'talk.silence')
           await journal('mod', 'hold', { task: s.task?.id }, 'talk released: 15 min with no developer message and no question pending; the loop goes on.')
         }
 
         // Status, then the spawn; agentId, spawnedAt and startSha recorded, and a `T<n>/start` entry.
-        const spawnTask = async (plan: PlanTask, attempt: number, kind: string, opts: ExpertOpts): Promise<void> => {
+        // `pick`: the plan's pick, which tries again on a no-verdict refusal (3.32.1 T5); a relaunch holds at once.
+        const spawnTask = async (plan: PlanTask, attempt: number, kind: string, opts: ExpertOpts, pick = false): Promise<void> => {
+          const before0 = s
           const agent = agentFor(plan.agent, plan.effort)
           const effort = effortFor(plan.agent, plan.effort)
           const title = plan.title ?? ''
@@ -965,6 +1076,9 @@ export function armAutopilot(on: On): void {
           // 3.24 T7b: the brief carries the card's expert slice, so the card reaches every task by construction.
           const sl = await py('tools/card.py', 'slice', 'expert')
           const card = sl.exitCode === 0 ? sl.stdout : ''
+          // 3.31 T4: the in-force outcomes that bind work (records.py), after the card; none on a failure.
+          const oc = await py('tools/records.py', 'inforce', '--binds-work', '--max-tokens', '4000')
+          const outcomes = oc.exitCode === 0 ? oc.stdout : ''
           // 3.3 T7: pa.json `external` names the default external coder for the CODER line; missing or bad: null.
           let external: External | null = null
           try {
@@ -974,13 +1088,29 @@ export function armAutopilot(on: On): void {
             external = null
           }
           const before = new Set((await $.agent.list()).map(a => a.id))
-          const r = await $.agent.spawn({ subagentType: agent, prompt: expertBrief(plan, { ...opts, card, external }),
+          const r = await $.agent.spawn({ subagentType: agent, prompt: expertBrief(plan, { ...opts, card, external, outcomes }),
             description: `${`${plan.id} ${title}`.trim()}${effort === 'medium' ? '' : ` ${effortHint(effort)}`}` })
           const id = r.deny !== undefined
             ? ''
             : r.agentId ?? newAgent((await $.agent.list()).filter(a => !before.has(a.id)), agent)
           if (id === '') {
-            await block(s, `spawn of ${agent} for ${plan.id} failed: ${clip(r.deny ?? 'no agentId', 200)}`, 'mod', 'hold', '')
+            // 3.32.1 T5 (#6): Claude Code's auto-mode check gave no verdict, a transient fault: the pick tries again after
+            // SPAWN_RETRY_MS, counted in loop.json so a restart keeps the count; the last refusal holds as any other.
+            const deny = r.deny ?? 'no agentId'
+            if (pick && r.deny !== undefined && noVerdict(deny)) {
+              const sr = spawnRetryOf(before0)
+              const n = (sr !== null && sr.task === plan.id && sr.attempt === attempt ? sr.n : 0) + 1
+              if (n < SPAWN_RETRIES) {
+                await save({ ...before0, spawnRetry: { task: plan.id, attempt, n, at: await $.clock.now() } }, 'spawn.retry')
+                await journal('mod', 'hold', { task: plan.id }, `The spawn of ${agent} for ${plan.id} was refused: Claude Code's auto-mode ` +
+                  `check gave no answer (${clip(deny, 200)}); the pick runs again in ${String(SPAWN_RETRY_MS / 1000)} s (${String(n)} of ${String(SPAWN_RETRIES)}).`)
+                return
+              }
+              await block({ ...s, spawnRetry: null }, `spawn of ${agent} for ${plan.id} failed: Claude Code's auto-mode check gave no answer ` +
+                `${String(SPAWN_RETRIES)} times (${clip(deny, 200)})`, 'mod', 'hold', '')
+              return
+            }
+            await block(s, `spawn of ${agent} for ${plan.id} failed: ${clip(deny, 200)}`, 'mod', 'hold', '')
             return
           }
           loopAgent = id
@@ -989,7 +1119,7 @@ export function armAutopilot(on: On): void {
           const nextId = rows.exitCode === 0 ? nextTaskOf(rows.stdout, plan.id) : ''
           // Its place in the plan, for the band's `T3 (2 of 5)` (3.23 T13).
           const taskPos = rows.exitCode === 0 ? taskPosOf(rows.stdout, plan.id) : null
-          await save({ ...s, task: { ...task, plan, agentId: id } as LoopTask, nextId, taskPos } as LoopState, 'spawn')
+          await save({ ...s, task: { ...task, plan, agentId: id } as LoopTask, nextId, taskPos, spawnRetry: null } as LoopState, 'spawn')
           await journal(plan.id, 'start', { agentId: id, role: agent, task: plan.id },
             `${agent} ${id} started on ${plan.id} ${title} (${kind}, attempt ${String(attempt)}); start ${startSha || '?'}.`)
           // 3.23 T13d.c3: the start card is one feed record, labelled as this task's expert (zero tokens).
@@ -1209,7 +1339,7 @@ export function armAutopilot(on: On): void {
               await go('recap')
             } else {
               const genEnd = s.chainGenEnd === true // T13b: the generation end is a stop (s is replaced by the save)
-              const text = closedLine(phase, genEnd)
+              const text = closedLine(phase, genEnd && !coop) // 3.32 B8: no nudge toward the next generation in coop
               await journal('mod', 'close', {}, text)
               // 3.24 T13f: the closed entry is written after the archived commit; commit it (commit_task.sh stages the
               // journal), or the close leaves it untracked (the specimen's 004806-534r-mod-close.md).
@@ -1255,7 +1385,8 @@ export function armAutopilot(on: On): void {
             await reply('refused: no command')
             return
           }
-          if (!editIsDecision(s)) {
+          // 3.32 B8: in coop with nothing running there is no boundary to wait for.
+          if (!editIsDecision(s) && !(coop && s.task === null && s.state !== 'closing')) {
             await save({ ...s, queuedEdits: [...s.queuedEdits, { command, why, at: await $.clock.now(), caller: req.caller }] }, 'plan_edit.queued')
             await reply(`queued: ${command} (it lands at the next task boundary)`)
             return
@@ -1289,8 +1420,50 @@ export function armAutopilot(on: On): void {
             await reply('released: update')
             return
           }
+          if (hold === 'batch') { // 3.32 B8: the batch the developer and Claude locked in; a running one takes the new tasks too
+            const ids = Array.isArray(input['tasks']) ? (input['tasks'] as unknown[]).filter((x): x is string => typeof x === 'string' && x !== '') : []
+            if (!coop) {
+              await reply('refused: the drive is autopilot: the tasks run on their own')
+              return
+            }
+            await landQueued()
+            const rows = await py('tools/plan_edit.py', 'show', '--tasks')
+            const known = rows.stdout.split(/\r?\n/).map(l => (l.split('|')[0] ?? '').trim())
+            const bad = ids.filter(id => !known.includes(id))
+            if (ids.length === 0 || rows.exitCode !== 0 || bad.length > 0) {
+              await reply(`refused: no such task${bad.length === 0 ? ' named' : `: ${bad.join(', ')}`}; add it with plan_edit first`)
+              return
+            }
+            const batch = [...new Set([...batchOf(s), ...ids])]
+            await save({ ...popHold(popHold(s, 'talk'), 'session'), state: s.state === 'off' ? 'boundary' : s.state, batch } as LoopState, 'batch')
+            await journal('mod', 'hold', {}, `Batch locked in: ${batch.join(', ')}${note === '' ? '' : ` (${note})`}.`)
+            await reply('released: batch')
+            return
+          }
           if (!HOLD_NAMES.includes(hold)) {
             await reply(`refused: unknown hold "${hold}"`)
+            return
+          }
+          if (hold === 'close' && coop && !s.holds.includes('close')) { // 3.32 B8: the phase closes on the developer's word
+            if (s.task !== null || batchOf(s).length > 0) {
+              await reply('refused: a batch is running; the phase closes after it ends')
+              return
+            }
+            await landQueued()
+            const rows = await py('tools/plan_edit.py', 'show', '--tasks')
+            const open = rows.exitCode === 0 ? nextTaskOf(rows.stdout, '') : ''
+            if (open !== '') {
+              await reply(`refused: ${open} is still open: supersede it with plan_edit, or run it first`)
+              return
+            }
+            const xr = await py('tools/pa_ext.py', 'runs', '--count') // 3.30: the phase-end external review
+            const ext = xr.exitCode === 0 ? Number.parseInt(xr.stdout.trim(), 10) || 0 : 0
+            if (ext > 0) {
+              const pp = planPhase((await $.fs.read(`${root}/${PLAN}`).catch(() => null)) ?? '')
+              await notice(`‹pa›${extReviewLine(pp.phase || '?', ext)}`)
+            }
+            await save({ ...s, closeRequested: true, closeRecap: note } as LoopState, 'release:close')
+            await reply('released: close')
             return
           }
           if (hold === 'talk' && !s.holds.includes('talk')) {
@@ -1398,6 +1571,12 @@ export function armAutopilot(on: On): void {
               await reply('refused: the next generation starts in a new session or after /clear, not in the session that closed this one')
               return
             }
+            if (intakePending) { // 3.32 B9: the holds lift, and the no-plan path starts the generation once the intake is done
+              await save({ ...popHold(popHold(r.state, 'generation'), 'session'), state: 'off' } as LoopState, 'gen.waits')
+              await journal('mod', 'hold', {}, `The ${hold} hold released: the next generation's start waits for the PA3 intake${note === '' ? '' : ` (${note})`}.`)
+              await reply(`released: ${hold}`)
+              return
+            }
             await save({ ...popHold(popHold(r.state, 'generation'), 'session'), state: 'off', genStart: newGenStart('gen', sidNow) } as LoopState, 'gen.start')
             await journal('mod', 'hold', {}, `The ${hold} hold released: the next generation's start begins${note === '' ? '' : ` (${note})`}.`)
             await reply(`released: ${hold}`)
@@ -1461,6 +1640,30 @@ ${REPLAN_NOTICE}`)
           // `close`: the flag T6b's close reads, and its note (3.25 T2: Claude's phase report, the recap); any other hold simply pops.
           await save(hold === 'close' ? ({ ...r.state, closeRequested: true, closeRecap: note } as LoopState) : r.state, `release:${hold}`)
           await reply(`released: ${hold}`)
+        }
+
+        // 3.32 B8: `drive({value})`: pa.json's key, committed; the mod reads it on its next tick. A task already running
+        // becomes the batch, so its end comes back with its results.
+        const driveReq = async (req: Request): Promise<void> => {
+          const value = (req.input as { value?: unknown } | null)?.value
+          if (value !== 'coop' && value !== 'autopilot') {
+            await confirm('refused: drive is autopilot or coop', req.caller)
+            return
+          }
+          const text = withDrive(paNow, value)
+          if (text === null) {
+            await confirm('refused: .claude/pa.json does not parse', req.caller)
+            return
+          }
+          if (driveOf(paNow) === value && /"drive"/.test(paNow ?? '')) {
+            await confirm(`drive: ${value}`, req.caller)
+            return
+          }
+          await $.fs.write(`${root}/.claude/pa.json`, text)
+          await save({ ...s, batch: value === 'coop' && s.task !== null ? [s.task.id] : [] } as LoopState, 'drive')
+          const why = await commit(`Drive: ${value}`, ['.claude/pa.json'])
+          await journal('mod', 'decision', {}, `Drive set to ${value}${why === '' ? '' : `; not committed: ${why}`}.`)
+          await confirm(why === '' ? `drive: ${value}` : `drive: ${value} (not committed: ${why})`, req.caller)
         }
 
         // 3.28.1 T12 (developer 2026-10-15): nothing is sent to a cold agent (policy.isCold: its turn ended, `lastAt`, and
@@ -1753,9 +1956,9 @@ ${REPLAN_NOTICE}`)
             await notice(`${APPROVED}\nnot installed: ${installOf(s) !== null ? 'another plan is being installed' : 'no kind or path'}`, '', req.caller)
             return
           }
-          if (firstPending) { // 3.24 T7b-2c: plans wait for the project's first run
-            await journal('mod', 'hold', {}, `Plan not installed (${path}): the project's first run in PA 3.2 is pending.`)
-            await notice(`${APPROVED}\nnot installed: ${FIRST_RUN_WAITS}`, '', req.caller)
+          if (intakePending) { // 3.32 B9: plans wait for the PA3 intake
+            await journal('mod', 'hold', {}, `Plan not installed (${path}): the PA3 intake is due.`)
+            await notice(`${APPROVED}\nnot installed: ${INTAKE_WAITS}`, '', req.caller)
             return
           }
           const inst: Install = {
@@ -1950,7 +2153,7 @@ ${REPLAN_NOTICE}`)
             const before = new Set((await $.agent.list()).map(a => a.id))
             const r = await $.agent.spawn({ subagentType: type, prompt, description })
             const id = r.deny !== undefined ? '' : r.agentId ?? newAgent((await $.agent.list()).filter(a => !before.has(a.id)), type)
-            const who = g.kind === 'migration' ? "The project's first run in PA 3.2" : 'Generation start' // 3.24 T7b-2c
+            const who = g.kind === 'migration' ? 'Migration' : 'Generation start'
             await journal('mod', 'hold', {}, id === ''
               ? `${who}: the ${type} spawn was refused (${clip(r.deny ?? 'no agentId', 200)}).`
               : `${who}: ${type} ${id} spawned.`)
@@ -1974,7 +2177,7 @@ ${REPLAN_NOTICE}`)
             // T11-fix2: a stopped curator or auditor with no answer is the developer's stop: its step ends without one.
             if (live === 'stopped' && (f?.answer ?? '') === '') {
               const role = g.step === 'curator' ? 'memory curator' : 'auditor'
-              await journal('mod', 'hold', { agentId: g.agentId }, `${g.kind === 'migration' ? "The project's first run in PA 3.2" : 'Generation start'}: the ${role} ${g.agentId} was ${me?.status ?? 'absent'}; not restarted.`)
+              await journal('mod', 'hold', { agentId: g.agentId }, `${g.kind === 'migration' ? 'Migration' : 'Generation start'}: the ${role} ${g.agentId} was ${me?.status ?? 'absent'}; not restarted.`)
               delete facts[g.agentId]
               return `(the ${role} was stopped: ${me?.status ?? 'absent'}; not restarted)`
             }
@@ -2181,15 +2384,26 @@ ${REPLAN_NOTICE}`)
           offlineToldSid = sidNow
           await notice(OFFLINE_NOTICE)
         }
-        const gateWhy = startState === 'pending' ? 'the update check has not answered'
-          : runRunning(markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)), now) ? 'an update is running'
-            : modStale ? 'the new mod is not loaded yet' : ''
+        const gateWhy = startState === 'pending' ? GATE_CHECK
+          : runRunning(markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)), now) ? GATE_RUN
+            : modStale ? GATE_STALE : ''
         // The loop's own inbox kinds, oldest first, each marked done in loop.json before it acts.
         if (await $.fs.exists(inboxDir)) {
           const names = (await $.fs.list(inboxDir)).filter(f => f.kind === 'file').map(f => f.name)
           for (const name of pendingRequests(names, doneOf(s), now).filter(isLoopKind)) {
-            // 3.29.1 T8: a release that would start work waits, unread, until the update gate opens
-            if (gateWhy !== '' && WORK_HOLDS.has(holdOf(await $.fs.read(`${inboxDir}/${name}`).catch(() => '')))) {
+            // 3.29.1 T8: a release that would start work waits, unread, until the update gate opens. 3.32.1 T5 (#6): its
+            // caller hears why at once, once per request, so Claude never reads the silence as its own fault.
+            const held = gateWhy === '' ? '' : holdOf(await $.fs.read(`${inboxDir}/${name}`).catch(() => ''))
+            if (WORK_HOLDS.has(held)) {
+              const wid = name.slice(0, -'.json'.length)
+              if (!gateTold.has(wid)) {
+                gateTold.add(wid)
+                const wreq = parseRequest(await $.fs.read(`${inboxDir}/${name}`).catch(() => ''), name)
+                if (wreq !== null) {
+                  await confirm(gateWaitReply(held, gateWhy), wreq.caller)
+                  await log('release.wait', { id: wid, hold: held, why: gateWhy })
+                }
+              }
               continue
             }
             const id = name.slice(0, -'.json'.length)
@@ -2206,6 +2420,8 @@ ${REPLAN_NOTICE}`)
               await steer(req)
             } else if (req.kind === 'cleanup') {
               await cleanupReq(req)
+            } else if (req.kind === 'drive') {
+              await driveReq(req)
             } else if (req.kind === 'forward') {
               await forwarded(req)
             } else if (req.kind === 'install') {
@@ -2226,9 +2442,8 @@ ${REPLAN_NOTICE}`)
         }
         const gl = genStartOf(s)
         if (gl !== null && gl.sid === sidNow && gl.step !== 'done') {
-          // 3.23 T13d.c11: no curator ask while the session start waits; 3.24 T7b-2c: a first run's ask comes with the
-          // developer's first message of the session (a question, not work), and its run follows the answer.
-          if (!s.holds.includes('session') || (gl.kind === 'migration' && devSid === sidNow)) {
+          // 3.23 T13d.c11: no curator ask while the session start waits.
+          if (!s.holds.includes('session')) {
             await runGen(gl)
           }
           return
@@ -2306,20 +2521,22 @@ ${REPLAN_NOTICE}`)
           }
           return
         }
-        // 3.24 T7b: the project's first run in 3.2 (pa.json `first_run`, pending while `migrated` ≠ "3.2"), in any mode and
-        // before the no-plan hold: the curator's one ask, then its run (runGen, above); planning waits until it is done or
-        // paused. Once a session (a pause is asked again next session), never while a task runs. T7b-2c: under the session
-        // hold too, once the developer has written this session (the ask comes with the first message).
-        if (firstRun !== '' && s.task === null && (!s.holds.includes('session') || devSid === sidNow)) {
-          await journal('mod', 'hold', {}, `The project's first run in PA 3.2: the memory curator is asked once (${firstRun}).`)
-          await save({ ...s, state: 'off', genStart: newGenStart('migration', sidNow, firstRun) } as LoopState, 'gen.firstrun')
+        // 3.32 B9: the PA3 intake starts here, in any mode, after the update gate, the close chain and a live generation
+        // start, and before the no-plan hold. Nothing starts on its own: it comes with the developer's message, with or
+        // without a session hold, and after a try that fell short with the next one. A memory sort waits for a running task
+        // and no task starts during one; the rest runs beside a task.
+        if (intakePending && bgJobOf(s) === null && devSid === sidNow && jobRefused !== sidNow &&
+          !s.holds.some(h => h === 'stopped' || h === 'window') && (firstLine === '' || s.task === null)) {
+          await startIntake()
+        }
+        if (firstLine !== '' && bgJobOf(s) !== null) {
           return
         }
         // No phase plan under a generation plan (T6a1): `held(plan)` once, and Claude drafts one. T6a2: launch.py's
         // planner-gen with no generation start this session opens one. 3.24 T13A: not while a task runs.
         if (!hasPlan && !(s.task !== null && (s.state === 'running' || s.state === 'routing'))) {
-          if (s.holds.includes('generation') || s.holds.includes('session') || firstPending) {
-            return // T13b.c3: parked at the generation end; 3.23 T13d.c11: or held at the session start; 3.24 T7b-2c: or a first run pending (a pause holds planning this session)
+          if (s.holds.includes('generation') || s.holds.includes('session') || intakePending) {
+            return // T13b.c3: parked at the generation end; 3.23 T13d.c11: or held at the session start; 3.32 B9: or the PA3 intake due
           }
           const mode = await modeOf()
           if (mode === 'planner-gen' && (gl === null || gl.sid !== sidNow || gl.kind !== 'gen')) { // 3.24 T7b: after a first run
@@ -2331,7 +2548,7 @@ ${REPLAN_NOTICE}`)
           if (relayAt > 0 && s.lastAnswerAt <= relayAt && now - relayAt < RELAY_WAIT_MS) {
             return
           }
-          if (mode !== 'planner-gen' && !s.holds.includes('plan') && (await $.fs.exists(`${root}/${GEN_PLAN}`))) {
+          if (mode !== 'planner-gen' && !coop && !s.holds.includes('plan') && (await $.fs.exists(`${root}/${GEN_PLAN}`))) {
             await journal('mod', 'hold', {}, 'A phase plan is needed: no phase plan under the generation plan; Claude drafts one.')
             await save(pushHold(s, 'plan'), 'plan needed')
             await notice(PLAN_NEEDED)
@@ -2373,7 +2590,9 @@ ${REPLAN_NOTICE}`)
         if (s.holds.some(h => h !== 'talk')) {
           return
         }
-        const talking = s.holds.includes('talk')
+        // 3.32 B8: coop with no batch is talk with no hold: edits land, nothing starts, nothing is said.
+        const batch = coop ? batchOf(s) : []
+        const talking = s.holds.includes('talk') || (coop && batch.length === 0)
 
         // T6b: `release(close)` ran: the close's boundary, then the close itself at NONE-done (the developer's agreement to
         // close is the go, so `talk` does not hold it); a task named by `next` runs instead, and the note is dropped.
@@ -2464,7 +2683,7 @@ ${REPLAN_NOTICE}`)
           }
           // The migration curate line (T6a2): asked once a session before the next spawn.
           const curateLine = strOf(jsonOf(st.stdout)?.['curate'])
-          if (curateLine.startsWith('curate: migration') && (genStartOf(s)?.sid ?? '') !== sidNow) {
+          if (curateLine.startsWith('curate: migration') && !intakePending && (genStartOf(s)?.sid ?? '') !== sidNow) {
             await save({ ...s, state: 'off', genStart: newGenStart('migration', sidNow, curateLine) } as LoopState, 'gen.migration')
             return
           }
@@ -2503,14 +2722,22 @@ ${REPLAN_NOTICE}`)
           if (s.waitFor !== null && now - waitPolledAt < WAIT_POLL_MS) {
             return
           }
-          const nx =await py('tools/plan_edit.py', 'next', '--brief', '--json')
+          const retry = spawnRetryOf(s) // 3.32.1 T5: after a no-verdict refusal the pick waits SPAWN_RETRY_MS
+          if (retry !== null && now - retry.at < SPAWN_RETRY_MS) {
+            return
+          }
+          const nx =await py('tools/plan_edit.py', 'next', '--brief', '--json', ...(batch.length > 0 ? ['--only', batch.join(',')] : []))
           const pick = nx.exitCode === 0 ? jsonOf(nx.stdout) : null
           if (pick === null) {
             await block(s, `plan_edit next: exit ${String(nx.exitCode)} ${clip(nx.stderr || nx.stdout, 200)}`, 'mod', 'hold', '')
             return
           }
           if (pick['kind'] !== 'task') {
-            if (pick['reason'] === 'done') {
+            if (batch.length > 0 && pick['reason'] === 'done') { // 3.32 B8: the batch ended: everything stops, the results go to Claude
+              await save({ ...s, batch: [] } as LoopState, 'batch.done')
+              await journal('mod', 'plan', {}, `Batch done: ${batch.join(', ')}.`)
+              await notice(batchDoneNotice(batch, summariesOf(s)), 'input')
+            } else if (pick['reason'] === 'done') {
               // T6b: `held(close)` and the close question to Claude (once a plan end), with the tasks' summaries (T13b); its
               // stop toast (`input`) is raised by Claude's presentation.
               const asked = s.closeAsked === true
@@ -2631,7 +2858,7 @@ ${REPLAN_NOTICE}`)
           if (knob((await $.env.get('PA_MOD_TRIAL_CODER')) ?? '', plan.id) !== null) {
             opts.trialCoder = true
           }
-          await spawnTask(plan, attempt, kind, opts)
+          await spawnTask(plan, attempt, kind, opts, true)
           return
         }
 
@@ -2660,7 +2887,8 @@ ${REPLAN_NOTICE}`)
           // ABSENT_MS after its spawn: with a STATUS, routed at once; with none, the `stopped` hold. A release(stopped)
           // resume gets ABSENT_MS before a stale `killed` counts again. 3.28.1 T9c: killed or absent and never seen at work
           // by this process: a session end cut it off; recovered (continue:, else a respawn), no hold.
-          const list = await $.agent.list()
+          // 3.32.1 T5: pa-watch's parents.json places a child the list gives no parent.
+          const list = withParents(await $.agent.list(), parentsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${PARENTS_FILE}`).catch(() => null)))
           const me = list.find(a => a.id === t.agentId)
           // 3.28.1 T15: a background shell its run waits on (its own or a child's, pa-watch's shells.json) keeps it busy;
           // dropped from the list meanwhile, it waits (the shell's completion notice wakes it), never stopped; so it does
@@ -2957,10 +3185,13 @@ ${REPLAN_NOTICE}`)
     waitPolledAt = 0
     genMode = { sid: '', at: 0, doc: null }
     sideAgent = ''
+    bgAgent = ''
+    jobRefused = ''
     routedText = ''
     modSeen = null
     modStale = false
     updWait = ''
+    gateTold.clear()
     releaseCheckedAt = 0
     apRearm = arm
     apTrim = null
@@ -3099,6 +3330,7 @@ ${REPLAN_NOTICE}`)
     if (out.drop === undefined && (await read($, routeAtom)) && classify(e.origin, e.text, await read($, sdkAtom)) === 'developer') {
       devAt = await $.clock.now()
       devSid = await $.session.id()
+      jobRefused = '' // 3.32 B9: a stopped, cut-off or incomplete intake starts again with this message
     }
     const child = HANDBACK_KINDS.has(e.origin.kind) ? handbackChild(e.text) : null
     if (child !== null && child !== '' && child === loopAgent) {
@@ -3112,7 +3344,7 @@ ${REPLAN_NOTICE}`)
         const at = await $.clock.now()
         facts = { ...facts, [child]: { ...f, status: report, lastCompleteAt: Math.max(f.lastCompleteAt, at), handbackAt: at } }
       }
-    } else if (child !== null && child !== '' && child === sideAgent) {
+    } else if (child !== null && child !== '' && (child === sideAgent || child === bgAgent)) {
       // T6a2: the generation start's agent: its last answer of any form; a hand-back is a turn end. 3.24 T13A: a hand-back's
       // report is the answer (the curator's recap) and is kept against later turns.
       const report = (partnerReport(e.text) ?? '').trim()
@@ -3170,7 +3402,7 @@ ${REPLAN_NOTICE}`)
       const f = facts[id] ?? { status: null, lastCompleteAt: 0 }
       const status = parseExpertContract(e.answer) !== null ? e.answer : f.status
       facts = { ...facts, [id]: { ...f, status, lastCompleteAt: now } }
-    } else if (id !== undefined && id !== '' && id === sideAgent) {
+    } else if (id !== undefined && id !== '' && (id === sideAgent || id === bgAgent)) {
       const f = facts[id] ?? { status: null, lastCompleteAt: 0 }
       const said = e.answer.trim()
       // 3.24 T13A: after a hand-back its report stays the answer (round 2: the curator's after-hand-back line was relayed).

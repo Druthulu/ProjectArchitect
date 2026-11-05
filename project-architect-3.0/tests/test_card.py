@@ -96,8 +96,8 @@ class TestEnvironment(unittest.TestCase):
 class TestCardFixtureProject(unittest.TestCase):
     """A fixture project with PROJECT_CONTEXT.md gets a card from the template.
 
-    The card is created the way the fresh install does it: PROJECT_NAME, PY and
-    RHYTHM are filled, environment-derived fields are filled, and the developer
+    The card is created the way the fresh install does it: PROJECT_NAME and PY
+    are filled, environment-derived fields are filled, and the developer
     interview placeholders ({{DEVELOPER_NAME}} etc.) are left as ``{{...}}``.
     """
 
@@ -117,7 +117,7 @@ class TestCardFixtureProject(unittest.TestCase):
         os.makedirs(os.path.join(self.repo, ".claude"))
         _write(os.path.join(self.repo, ".claude", "pa.json"),
                json.dumps({"card": {"max_chars": 7000}}))
-        # simulate fresh install: fill PROJECT_NAME, PY, RHYTHM and env-derived
+        # simulate fresh install: fill PROJECT_NAME, PY and env-derived
         # fields, but leave Developer placeholders as {{...}}
         tmpl = _template_text()
         py = PY.replace("\\", "/")
@@ -126,7 +126,6 @@ class TestCardFixtureProject(unittest.TestCase):
             "PROJECT_NAME": "myproject",
             "PROJECT_TAGLINE": "a test project",
             "PY": py,
-            "RHYTHM": "autonomous",
             "PY_VERSION": env_data["py_version"],
             "OS_AND_SHELLS": "%s / %s" % (env_data["os"], ", ".join(env_data["shells"])),
         }
@@ -167,7 +166,7 @@ class TestCardFixtureProject(unittest.TestCase):
         self.assertEqual(int(m.group(1)), 0, r2.stdout)
 
     def test_slice_expert_sections(self):
-        """slice expert prints expert-tagged sections and not Developer/Rhythm."""
+        """slice expert prints expert-tagged sections and not Developer."""
         self._run_card("interview", "--defaults")
         r = self._run_card("slice", "expert")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -178,13 +177,12 @@ class TestCardFixtureProject(unittest.TestCase):
         self.assertIn("## Skills", out)
         self.assertIn("## Build / run / test", out)
         self.assertIn("## Environment", out)
-        # expert does NOT get Developer or Rhythm
+        # expert does NOT get Developer
         self.assertNotIn("## Developer", out)
-        self.assertNotIn("## Rhythm", out)
 
     def test_slice_claude_sections(self):
         """3.24 T7b: slice claude carries Developer (the card-first write rule's home) and the
-        sections Claude needs in conversation; not the loop's Rhythm, Tools, Skills or Docs map."""
+        sections Claude needs in conversation; not the loop's Tools, Skills or Docs map."""
         self._run_card("interview", "--defaults")
         r = self._run_card("slice", "claude")
         self.assertEqual(r.returncode, 0, r.stderr)
@@ -192,7 +190,7 @@ class TestCardFixtureProject(unittest.TestCase):
         for h in ("## Project", "## Developer", "## Paths", "## Build / run / test",
                   "## Conventions & house style", "## Environment"):
             self.assertIn(h, out)
-        for h in ("## Rhythm", "## Tools", "## Skills", "## Docs map"):
+        for h in ("## Tools", "## Skills", "## Docs map"):
             self.assertNotIn(h, out)
 
     def test_slice_router_is_retired(self):
@@ -263,6 +261,40 @@ class TestCardCheck7001(unittest.TestCase):
         self.assertIn("cap=7000", r.stdout)
 
 
+class TestLivingDocsAndTheSeedCap(unittest.TestCase):
+    """3.32 B7: the cap is 10,000 chars; the section reaches Claude and the experts; Claude's slice fits the seed."""
+
+    def template(self):
+        with open(os.path.join(TOOLS, "..", "templates", "HOW_WE_WORK.template.md"), encoding="utf-8") as fh:
+            return fh.read()
+
+    def test_the_section_reaches_claude_and_experts(self):
+        import card
+        text = self.template()
+        for role in ("claude", "expert"):
+            self.assertIn("## Living docs", card.slice_text(text, role))
+        self.assertNotIn("## Living docs", card.slice_text(text, "coder"))
+
+    def test_the_templates_claude_slice_fits_the_seed(self):
+        import card
+        self.assertLessEqual(len(card.slice_text(self.template(), "claude")), card.SEED_CARD_CAP)
+
+    def test_the_cap_matches_seed_ts(self):
+        import card
+        with open(os.path.join(TOOLS, "..", "mod", "pa", "hooks", "seed.ts"), encoding="utf-8") as fh:
+            m = re.search(r"CARD_CAP_CHARS = ([0-9_]+)", fh.read())
+        self.assertEqual(int(m.group(1).replace("_", "")), card.SEED_CARD_CAP)
+
+    def test_default_cap_and_the_slice_in_check(self):
+        tmp = tempfile.mkdtemp(prefix="pa3-card10k-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        _write(os.path.join(tmp, "HOW_WE_WORK.md"), "# How we work\n\n## Project <!-- roles: claude -->\nx\n")
+        r = subprocess.run([PY, os.path.join(TOOLS, "card.py"), "check"], capture_output=True, text=True, cwd=tmp, timeout=30)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("cap=10000", r.stdout)
+        self.assertRegex(r.stdout, r"claude=[0-9]+/6000")
+
+
 class TestHowWeWorkWrite(unittest.TestCase):
     """howwework.write() fills from environment() and constitution."""
 
@@ -291,7 +323,7 @@ class TestHowWeWorkWrite(unittest.TestCase):
     def test_write_with_interview(self):
         from pa.install.howwework import write
         iv = {"name": "Alice", "experience": "advanced", "domain": "web",
-              "autonomy": "full", "notify": "toast", "rhythm": "autonomous"}
+              "autonomy": "full", "notify": "toast"}
         text = write(self.env, {}, interview=iv)
         self.assertIn("Alice", text)
         self.assertNotIn("{{DEVELOPER_NAME}}", text)

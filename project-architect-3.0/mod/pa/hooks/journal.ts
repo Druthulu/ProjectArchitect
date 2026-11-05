@@ -6,7 +6,7 @@ export const JOURNAL_DIR = '.claude-state/journal'
 
 export const WRITERS = ['r', 'w'] as const
 export const WHOS = ['dev', 'claude', 'partner', 'thinker', 'coder', 'critic', 'mod'] as const // plus T<n>; `partner`: entries before 3.22 T8f
-export const KINDS = ['msg', 'answer', 'thinking', 'start', 'end', 'prompt', 'hold', 'release', 'plan', 'decision', 'note', 'steer', 'interim', 'recover', 'repeat', 'context', 'close', 'feed', 'card', 'shell'] as const // note: the watcher's approach notes, steer: mod/steer (3.23 T5c), interim: T<n>/interim (T5c.c3), recover: mod/recover (T5d1), repeat: T<n>/repeat (3.23 T6a2), context: mod/context (T6a2), close: mod/close (3.23 T6b), feed: mod/feed (3.23 T13d.c2: the feed could not start), card: mod/card (3.24 T13E: a card the loop drew, the review release's accepted card), shell: T<n>/shell (3.28.1 T15: a task's agent handed back to wait on its background shell)
+export const KINDS = ['msg', 'answer', 'thinking', 'start', 'end', 'prompt', 'hold', 'release', 'plan', 'decision', 'note', 'steer', 'interim', 'recover', 'repeat', 'context', 'close', 'feed', 'card', 'shell', 'record'] as const // note: the watcher's approach notes, steer: mod/steer (3.23 T5c), interim: T<n>/interim (T5c.c3), recover: mod/recover (T5d1), repeat: T<n>/repeat (3.23 T6a2), context: mod/context (T6a2), close: mod/close (3.23 T6b), feed: mod/feed (3.23 T13d.c2: the feed could not start), card: mod/card (3.24 T13E: a card the loop drew, the review release's accepted card), shell: T<n>/shell (3.28.1 T15: a task's agent handed back to wait on its background shell), record: claude/record, a filing's records (3.31)
 
 export type Writer = (typeof WRITERS)[number]
 export type Kind = (typeof KINDS)[number]
@@ -93,12 +93,13 @@ export type Meta = {
   turnId?: string
   task?: string
   agentType?: string // 3.24 T17b
+  through?: string // 3.31: a record's newest covered exchange (ISO)
   usage?: Usage
 }
 
 export type Entry = { path: string; meta: Meta; body: string }
 
-const STRING_KEYS = ['ts', 'session', 'agentId', 'parentId', 'role', 'model', 'effort', 'turnId', 'task', 'agentType'] as const // agentType: the watcher's `spawn` entries (3.24 T17b; doctor reads them)
+const STRING_KEYS = ['ts', 'session', 'agentId', 'parentId', 'role', 'model', 'effort', 'turnId', 'task', 'agentType', 'through'] as const // agentType: the watcher's `spawn` entries (3.24 T17b; doctor reads them); through: record entries (3.31)
 const USAGE_KEYS = ['input', 'cacheRead', 'cacheWrite', 'output'] as const
 
 // Plain when it cannot be misread; otherwise a JSON string, which is also a YAML double-quoted scalar on one line.
@@ -247,4 +248,13 @@ export function mergeIndex(indexText: string, paths: string[], read: Entry[]): s
     if (want.has(e.path)) byPath.set(e.path, e)
   }
   return buildIndex([...byPath.values()])
+}
+
+/** 3.31 T2b: `records.py index`'s TOPICS.md, the path of. */
+export const TOPICS_PATH = `${JOURNAL_DIR}/TOPICS.md`
+
+/** 3.31 T2b: the `# filed through: <ISO>` header of TOPICS.md (the newest record's `through`); '' when absent or `(none)`. */
+export function filedThroughOf(topics: string | null): string {
+  const m = /^# filed through: (\d{4}-\S+)$/m.exec(topics ?? '')
+  return m?.[1] ?? ''
 }

@@ -79,10 +79,10 @@ class TestOnexMigration(OnexCase):
     def test_phaseend_renames(self):
         """PhaseEnd files renamed with dots, non-phase to misc/."""
         self.migrate(commit=False)
-        ped = "Project Context Markdowns"
+        ped = "phase-ends"
         # dotted renames
         self.assertTrue(_exists(self.repo, "%s/PhaseEnd_Phase11.5.7.md" % ped))
-        self.assertFalse(_exists(self.repo, "%s/PhaseEnd_Phase11_5_7.md" % ped))
+        self.assertFalse(_exists(self.repo, "Project Context Markdowns/PhaseEnd_Phase11_5_7.md"))
         self.assertTrue(_exists(self.repo, "%s/PhaseEnd_Phase9.3.5.md" % ped))
         self.assertTrue(_exists(self.repo, "%s/PhaseEnd_Phase9.4-9.7.md" % ped))
         self.assertTrue(_exists(self.repo, "%s/PhaseEnd_Phase9.9.md" % ped))
@@ -110,7 +110,7 @@ class TestOnexMigration(OnexCase):
     def test_legacy_pointer_line(self):
         """One ## Legacy line in RESEARCH_INDEX.md."""
         self.migrate(commit=False)
-        ped = "Project Context Markdowns"
+        ped = "phase-ends"
         text = _read(self.repo, "%s/RESEARCH_INDEX.md" % ped)
         self.assertEqual(text.count("## Legacy"), 1)
 
@@ -137,8 +137,8 @@ class TestOnexMigration(OnexCase):
     def test_current_phase_archived(self):
         """CURRENT_PHASE.md archived to logs/."""
         self.migrate(commit=False)
-        ped = "Project Context Markdowns"
-        self.assertFalse(_exists(self.repo, "%s/CURRENT_PHASE.md" % ped))
+        ped = "phase-ends"
+        self.assertFalse(_exists(self.repo, "Project Context Markdowns/CURRENT_PHASE.md"))
         # partial log exists in the logs dir
         logs_dir = _path(self.repo, ped, "logs")
         self.assertTrue(os.path.isdir(logs_dir))
@@ -149,9 +149,9 @@ class TestOnexMigration(OnexCase):
     def test_phase_log_moved(self):
         """phase-logs/* moved into logs/."""
         self.migrate(commit=False)
-        ped = "Project Context Markdowns"
+        ped = "phase-ends"
         self.assertFalse(os.path.isfile(
-            _path(self.repo, ped, "phase-logs", "PhaseLog_Gen4_V.md")))
+            _path(self.repo, "Project Context Markdowns", "phase-logs", "PhaseLog_Gen4_V.md")))
         self.assertTrue(_exists(self.repo, "%s/logs/PhaseLog_Gen4_V.md" % ped))
 
     def test_effort_map_retired(self):
@@ -173,7 +173,7 @@ class TestOnexMigration(OnexCase):
         """pa.json carries the correct phase_ends_dir."""
         self.migrate(commit=False)
         pa = json.loads(_read(self.repo, ".claude/pa.json"))
-        self.assertEqual(pa["phase_ends_dir"], "Project Context Markdowns")
+        self.assertEqual(pa["phase_ends_dir"], "phase-ends")
 
     def test_settings_json_written_fresh(self):
         """1-byte settings.json is replaced with a real settings file."""
@@ -194,7 +194,7 @@ class TestOnexMigration(OnexCase):
     def test_git_follow_on_renamed_phaseend(self):
         """git log --follow on a renamed PhaseEnd shows the original commit."""
         self.migrate(commit=True)
-        ped = "Project Context Markdowns"
+        ped = "phase-ends"
         r = git(self.repo, "log", "--follow", "--oneline", "--",
                 "%s/PhaseEnd_Phase11.5.7.md" % ped)
         self.assertIn("fixture", r.stdout, r.stderr)
@@ -234,7 +234,7 @@ class TestOnexMigration(OnexCase):
     def test_launch_dry_run_finds_plan_dir(self):
         """tools/launch.py --dry-run finds the plan directory through pa.json."""
         self.migrate(commit=False)
-        ped = "Project Context Markdowns"
+        ped = "phase-ends"
         plan_dir = os.path.join(self.repo, ped, "current")
         self.assertTrue(os.path.isdir(plan_dir),
                         "expected %s to exist" % plan_dir)
@@ -255,10 +255,8 @@ class TestOnexMigration(OnexCase):
     def test_paths_with_spaces_in_git_calls(self):
         """Paths with spaces pass through every git call as argument lists."""
         out = self.migrate(commit=True)
-        ped = "Project Context Markdowns"
-        # git log --follow should work on a path with spaces
-        r = git(self.repo, "log", "--follow", "--oneline", "--",
-                "%s/PhaseEnd_Phase9.3.5.md" % ped)
+        # git log --follow carries back to the path with spaces
+        r = git(self.repo, "log", "--follow", "--oneline", "--", "phase-ends/PhaseEnd_Phase9.3.5.md")
         self.assertIn("fixture", r.stdout,
                       "git follow failed on path with spaces: %s" % r.stderr)
 
@@ -326,7 +324,7 @@ class TestOnexDryRun(OnexCase):
         self.assertEqual(rc, 0, out)
         self.assertIn(
             'git mv "Project Context Markdowns/PhaseEnd_Phase11_5_7.md" '
-            '"Project Context Markdowns/PhaseEnd_Phase11.5.7.md"',
+            'phase-ends/PhaseEnd_Phase11.5.7.md',
             out)
 
     def test_dry_run_sort_check(self):
@@ -460,6 +458,269 @@ class TestOnexCookbookOpsSplit(OnexCase):
         ped = "Project Context Markdowns"
         self.assertFalse(_exists(self.repo, "%s/docs/Vantage_Ops_Setup.md" % ped))
         self.assertTrue(_exists(self.repo, "docs/retired/Vantage_Ops_Setup.md"))
+
+
+class TestOnexDocsIndex(OnexCase):
+    """3.32 B2: the docs index runs once, after the migration commit, in its own commit, no model."""
+
+    def test_intake_pending_on_a_first_install_with_a_past(self):
+        """3.32 B9: a PA2 layout marks the intake."""
+        self.migrate()
+        with open(_path(self.repo, ".claude", "pa.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.load(fh)[pj.INTAKE], "pending")
+        self.assertFalse(_exists(self.repo, "docs/PRE_PA3_STATE.md"))   # the mod's agent writes it, never the install
+
+    def test_has_past(self):
+        root = tempfile.mkdtemp(prefix="pa3-past-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+
+        class Env:
+            repo = root
+            phase_ends_dir = "phase-ends"
+            layout = "fresh"
+
+            @staticmethod
+            def path(rel):
+                return _path(root, *rel.split("/"))
+        self.assertFalse(pj._has_past(Env))
+        Env.layout = "pa3"
+        self.assertFalse(pj._has_past(Env))
+        Env.layout = "onex"
+        self.assertTrue(pj._has_past(Env))
+        Env.layout = "fresh"
+        os.makedirs(_path(root, "phase-ends"))
+        with open(_path(root, "phase-ends", "PhaseEnd_Phase1.md"), "w", encoding="utf-8") as fh:
+            fh.write("# end\n")
+        self.assertTrue(pj._has_past(Env))
+
+    def test_job_markers(self):
+        """3.32 B9: one intake, once: first run, past, PA3 layout; none else. The old card cap moves up, a changed one stays."""
+        root = tempfile.mkdtemp(prefix="pa3-jobs-")
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+
+        class Env:
+            repo = root
+            phase_ends_dir = "phase-ends"
+            layout = "pa3"
+
+            @staticmethod
+            def path(rel):
+                return _path(root, *rel.split("/"))
+        os.makedirs(_path(root, ".claude"))
+
+        def jobs(raw, layout="pa3"):
+            Env.layout = layout
+            with open(_path(root, ".claude", "pa.json"), "w", encoding="utf-8") as fh:
+                fh.write(raw)
+            return json.loads(pj.job_markers(Env, raw))
+        cap = '{\n  "card": { "max_chars": 7000 }\n}\n'
+        got = jobs(cap)
+        self.assertEqual(got, {"intake": "pending", "card": {"max_chars": 10000}})           # already on PA3
+        self.assertEqual(jobs('{\n  "card": { "max_chars": 8000 }\n}\n')["card"]["max_chars"], 8000)
+        self.assertEqual(jobs('{\n  "first_run": {"from": "gen3"}\n}\n', "fresh")["intake"], "pending")  # a first run
+        for marked in ("done", "incomplete", "pending"):                                     # once
+            self.assertEqual(jobs('{\n  "intake": "%s"\n}\n' % marked)["intake"], marked)
+        self.assertEqual(jobs('{\n  "mod": "on"\n}\n', "onex")["intake"], "pending")         # a past and no memories
+        self.assertEqual(jobs('{\n  "mod": "on"\n}\n', "fresh"), {"mod": "on"})               # no past, no first run: none
+
+    def test_index_once(self):
+        self.migrate()
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s").stdout.strip(), pj.DOCS_INDEX_MSG)
+        self.assertEqual(git(self.repo, "status", "--short", "--", pj.DOCS_INDEX_REL, ".claude/pa.json").stdout, "")
+        text = _read(self.repo, pj.DOCS_INDEX_REL)
+        self.assertRegex(text, r"(?m)^- \S+ `docs/retired/CLAUDE\.pa2\.md`")      # the install's move, under its old dates
+        self.assertIn("Vantage_Product_Thesis.md", text)
+        self.assertNotIn("`HOW_WE_WORK.md`", text)
+        self.assertIn("## Phases\n", _read(self.repo, pj.PHASE_HISTORY_REL))          # 3.32 B5: built and committed with it
+        self.assertEqual(git(self.repo, "status", "--short", "--", pj.PHASE_HISTORY_REL).stdout, "")
+        self.assertTrue(git(self.repo, "ls-files", pj.PHASE_HISTORY_REL).stdout.strip())
+        with open(_path(self.repo, ".claude", "pa.json"), encoding="utf-8") as fh:
+            self.assertTrue(json.load(fh)[pj.DOCS_INDEX])
+        self.assertTrue(git(self.repo, "ls-files", ".claude/pa.json").stdout.strip())
+        head = git(self.repo, "rev-parse", "HEAD").stdout
+        self.migrate()                  # an update: the marker holds it back
+        self.assertEqual(_read(self.repo, pj.DOCS_INDEX_REL), text)
+        self.assertNotIn(pj.DOCS_INDEX_MSG, git(self.repo, "log", head.strip() + "..HEAD", "--format=%s").stdout)
+
+    def test_dry_run_writes_nothing(self):
+        self.migrate("--dry-run")
+        self.assertFalse(_exists(self.repo, pj.DOCS_INDEX_REL))
+        self.assertEqual(git(self.repo, "status", "--short").stdout, "")
+
+    def test_update_of_a_project_already_on_pa3(self):
+        """The first update that has it runs it; a run without the marker is what an older project looks like."""
+        self.migrate()
+        with open(_path(self.repo, ".claude", "pa.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        del data[pj.DOCS_INDEX]
+        with open(_path(self.repo, ".claude", "pa.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, indent=2)
+        git(self.repo, "rm", "-q", pj.DOCS_INDEX_REL)
+        git(self.repo, "commit", "-qam", "as an older project")
+        self.migrate()
+        self.assertTrue(_exists(self.repo, pj.DOCS_INDEX_REL))
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s").stdout.strip(), pj.DOCS_INDEX_MSG)
+        self.assertEqual(git(self.repo, "status", "--short", "--", ".claude/pa.json").stdout, "")
+
+
+class TestOnexMigrationFixes(OnexCase):
+    """3.32 B3: what the Vantage dry run found."""
+
+    PED = "Project Context Markdowns"
+
+    def test_recent_doc_stays_put(self):
+        """A doc committed or edited in the last 30 days is never archived; an old one is, whatever its mtime."""
+        plan = "%s/Vantage_Gen3_5_Plan.md" % self.PED
+        with open(_path(self.repo, *plan.split("/")), "a", encoding="utf-8") as fh:
+            fh.write("\nthe live plan\n")
+        git(self.repo, "commit", "-qam", "edit the plan")
+        verdict = "%s/Vantage_Gen4_C_Verdict.md" % self.PED
+        os.utime(_path(self.repo, *verdict.split("/")))       # a clone's mtime: the checkout, no edit
+        with open(_path(self.repo, *("%s/Vantage_Gen6_Inbox.md" % self.PED).split("/")), "w", encoding="utf-8") as fh:
+            fh.write("# Inbox, not committed yet\n")
+        out = self.migrate()
+        self.assertTrue(_exists(self.repo, plan))
+        self.assertTrue(_exists(self.repo, "%s/Vantage_Gen6_Inbox.md" % self.PED))
+        self.assertFalse(_exists(self.repo, "docs/research-archive/Vantage_Gen3_5_Plan.md"))
+        self.assertTrue(_exists(self.repo, "docs/research-archive/Vantage_Gen4_C_Verdict.md"))
+        self.assertIn("kept in place (edited in the last 30 days): Vantage_Gen3_5_Plan.md, Vantage_Gen6_Inbox.md", out)
+
+    def test_interphase_id_is_no_real_phase(self):
+        out = self.migrate()
+        self.assertTrue(_exists(self.repo, "phase-ends/PhaseEnd_PhaseGen4.PA3.md"))
+        self.assertFalse(_exists(self.repo, "phase-ends/PhaseEnd_PhaseGen4.5.md"), out)
+        plan = _read(self.repo, "GENERATION_PLAN.md")
+        self.assertIn("- Gen4.PA3 PA3 migration | ", plan)
+        self.assertIn("status: closed | phase-end: phase-ends/PhaseEnd_PhaseGen4.PA3.md\n", plan)
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s", "HEAD~1").stdout.strip(),
+                         "chore: Project Architect 3.0 migration (Phase Gen4.PA3)")
+
+    def test_running_phase_row(self):
+        self.migrate()
+        plan = _read(self.repo, "GENERATION_PLAN.md")
+        row = [ln for ln in plan.splitlines() if ln.startswith("- Gen4.W ")]
+        self.assertEqual(row, ["- Gen4.W THE WEEKLY b13 ENGINES | milestone: — | scope: — | depends: — | status: open "
+                               "| phase-end: phase-ends/PhaseEnd_PhaseGen4.W.md"])
+
+    def test_closed_running_phase_has_no_open_row(self):
+        with open(_path(self.repo, self.PED, "PhaseEnd_PhaseGen4_W.md"), "w", encoding="utf-8") as fh:
+            fh.write("# PhaseEnd — Gen4.W\n")
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "closed")
+        self.migrate()
+        self.assertNotIn("status: open |", _read(self.repo, "GENERATION_PLAN.md"))
+
+    def test_claude_md(self):
+        self.migrate()
+        text = _read(self.repo, "CLAUDE.md")
+        self.assertIn("Live plan: `phase-ends/current/PHASE_PLAN.md`", text)
+        self.assertIn("never Read `phase-ends/*/logs/`", text)
+        self.assertNotIn(self.PED, text)
+        self.assertNotIn(pj.DEFAULT_TAGLINE, text)
+        self.assertNotIn("{{", text)
+        self.assertIn("Older documents: `docs/PRE_PA3_INDEX.md`", text)
+        self.assertIn("`.claude-state/memory/gen*.md`", text)
+        self.assertIn("Before you change something or explain why it's that way, check it for a doc on it.", text)
+        plan = _read(self.repo, "GENERATION_PLAN.md")
+        self.assertTrue(plan.startswith("# Generation 1 — before PA3\n"))
+        self.assertNotIn("Stdlib only", plan)
+
+    def test_update_takes_the_pointer(self):
+        """A project already on PA3: the pointer, its phase_ends_dir and no prompt, once; a developer's line stays."""
+        self.migrate()
+        with open(_path(self.repo, ".claude", "pa.json"), encoding="utf-8") as fh:
+            data = json.load(fh)
+        del data[pj.DOCS_INDEX]
+        data["phase_ends_dir"] = self.PED                     # a project an older PA3 migrated in place
+        with open(_path(self.repo, ".claude", "pa.json"), "w", encoding="utf-8", newline="\n") as fh:
+            json.dump(data, fh, indent=2)
+        text = _read(self.repo, "CLAUDE.md")
+        old = re.sub(r"Older documents:.*?\n\n", "\n", text, flags=re.S)
+        old = old.replace("\n\nRoles:", "\n%s\n\nRoles:" % pj.DEFAULT_TAGLINE, 1) + "My own line.\n"
+        with open(_path(self.repo, "CLAUDE.md"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(old)
+        git(self.repo, "commit", "-qam", "as an older project")
+        self.migrate()
+        self.assertEqual(_read(self.repo, "CLAUDE.md"), text.replace("`phase-ends/", "`%s/" % self.PED) + "My own line.\n")
+        self.assertEqual(git(self.repo, "status", "--short", "--", "CLAUDE.md").stdout, "")
+
+
+class TestOnexPhaseEndsHome(OnexCase):
+    """3.32 B10a: a migration moves PhaseEnds to phase-ends/, whatever the PA2 folder; its documents stay."""
+
+    PED = "Project Context Markdowns"
+
+    def tool(self, *argv):
+        """Run a tool the install copied, in the project: -> stdout; a non-zero exit fails the test."""
+        env = dict(os.environ, PA_LEDGER_DIR=os.path.join(self.tmp, "ledger"))
+        env.pop("PA_PROJECT_ROOT", None)
+        p = subprocess.run([PY, "-X", "utf8", _path(self.repo, *argv[0].split("/"))] + list(argv[1:]), cwd=self.repo,
+                           env=env, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        self.assertEqual(p.returncode, 0, (p.stdout or "") + (p.stderr or ""))
+        return p.stdout
+
+    def commit_doc(self, name, text):
+        with open(_path(self.repo, self.PED, name), "w", encoding="utf-8") as fh:
+            fh.write(text)
+        git(self.repo, "add", ".")
+        git(self.repo, "commit", "-qm", "add " + name)
+
+    def test_phaseend_with_no_rename_moves(self):
+        self.commit_doc("PhaseEnd_Phase7.md", "# PhaseEnd — Phase 7\n")
+        self.migrate()
+        self.assertTrue(_exists(self.repo, "phase-ends/PhaseEnd_Phase7.md"))
+        self.assertEqual([n for n in os.listdir(_path(self.repo, self.PED)) if n.startswith("PhaseEnd_")], [])
+
+    def test_generation_end_moves(self):
+        self.commit_doc("GenerationEnd_Gen3.md", "# GenerationEnd — Generation 3\n")
+        self.migrate()
+        self.assertTrue(_exists(self.repo, "phase-ends/GenerationEnd_Gen3.md"))
+        self.assertFalse(_exists(self.repo, "docs/research-archive/GenerationEnd_Gen3.md"))
+
+    def test_pa_json_and_working_folders(self):
+        self.migrate()
+        self.assertEqual(json.loads(_read(self.repo, ".claude/pa.json"))["phase_ends_dir"], "phase-ends")
+        for rel in ("phase-ends/current", "phase-ends/logs", "phase-ends/misc"):
+            self.assertTrue(os.path.isdir(_path(self.repo, rel)), rel)
+        for name in ("LEGACY_INDEX.md", "RESEARCH_INDEX.md", "README.md"):
+            self.assertTrue(_exists(self.repo, "phase-ends/" + name), name)
+        for name in ("current", "logs", "misc", "LEGACY_INDEX.md", "RESEARCH_INDEX.md", "README.md"):
+            self.assertFalse(os.path.exists(_path(self.repo, self.PED, name)), name)
+        self.assertIn("PhaseEnd_Phase11.5.7.md", _read(self.repo, "phase-ends/LEGACY_INDEX.md"))
+        self.assertEqual(git(self.repo, "status", "--short", "--", "phase-ends", self.PED).stdout, "")
+
+    def test_plan_phase_end_paths_exist(self):
+        self.migrate()
+        closed = re.findall(r"status: closed \| phase-end: (\S+)$", _read(self.repo, "GENERATION_PLAN.md"), flags=re.M)
+        self.assertGreater(len(closed), 5)
+        self.assertEqual([p for p in closed if not (p.startswith("phase-ends/") and _exists(self.repo, p))], [])
+
+    def test_a_doc_in_the_old_folder_stays(self):
+        self.commit_doc("README.md", "# The folder's own README\n")
+        self.migrate()
+        self.assertTrue(_exists(self.repo, "%s/Vantage_Product_Thesis.md" % self.PED))
+        self.assertEqual(_read(self.repo, "%s/README.md" % self.PED), "# The folder's own README\n")
+        self.assertFalse(_exists(self.repo, "docs/retired/phase-ends-README.pa2.md"))
+        self.assertIn("Vantage_Product_Thesis.md", _read(self.repo, pj.DOCS_INDEX_REL))
+
+    def test_the_tools_work_on_the_result(self):
+        self.migrate()
+        with open(_path(self.repo, "phase-ends", "current", "PHASE_PLAN.md"), "w", encoding="utf-8") as fh:
+            fh.write("# Phase 1 one\n\n## Tasks\n\n- T1 | title: the first | done-when: it runs\n")
+        self.assertIn("T1", self.tool("tools/plan_edit.py", "show", "--tasks"))
+        state = json.loads(self.tool("tools/launch.py", "--state-json"))
+        self.assertIsInstance(state, dict)
+        self.assertIn("phase-ends/PhaseEnd_Phase", self.tool("tools/phaseend_index.py", "state-sources"))
+
+    def test_phase_ends_already_home_sees_no_change(self):
+        """PhaseEnds already in phase-ends/: a rename stays a rename and no other PhaseEnd row appears."""
+        os.rename(_path(self.repo, self.PED), _path(self.repo, "phase-ends"))
+        git(self.repo, "add", "-A")
+        git(self.repo, "commit", "-qm", "the stock folder")
+        out = _run(self.repo, "--dry-run", commit=False)[1]
+        self.assertIn("git mv phase-ends/PhaseEnd_Phase11_5_7.md phase-ends/PhaseEnd_Phase11.5.7.md", out)
+        self.assertNotIn("move to phase-ends", out)
+        self.assertEqual(len(re.findall(r"git mv phase-ends/PhaseEnd_", out)), 7)
 
 
 class TestOnexPedDocsScanned(OnexCase):

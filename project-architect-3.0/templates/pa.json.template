@@ -8,7 +8,7 @@
   "handoff_ctx": { "expert": 350000, "coder": 300000 },
   "toast": "waiting",
   "discord_webhook": null,
-  "rhythm": "autonomous",
+  "drive": "autopilot",
   "tier": "max5",
   "mod": "on",
   "upgrade": "auto",
@@ -21,7 +21,7 @@
              "router_ctx_flag": 300000 },
   "install": { "source": "https://github.com/Druthulu/ProjectArchitect.git", "clone_dir": "pa3-src",
                "fetch_timeout_s": 8 },
-  "card": { "max_chars": 7000 },
+  "card": { "max_chars": 10000 },
   "guard": { "spilled_read": true, "whole_plan_roles": [], "tool_source_roles": ["expert"],
              "whole_read_chars": 20000 },
   "bench": { "window_max_pct": 80 }

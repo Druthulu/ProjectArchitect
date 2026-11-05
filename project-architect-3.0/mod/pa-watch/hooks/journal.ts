@@ -109,3 +109,16 @@ export function partnerIdOf(stateText: string | null): string {
     return ''
   }
 }
+
+/** 3.31 T2b: the router's state file says `agentId` is the partner and its hidden filing turn runs. */
+export function filingOf(stateText: string | null, agentId: string): boolean {
+  if (stateText === null) {
+    return false
+  }
+  try {
+    const doc = JSON.parse(stateText) as { partner?: { agentId?: unknown; filingInFlight?: unknown } | null }
+    return doc.partner?.agentId === agentId && doc.partner.filingInFlight === true
+  } catch {
+    return false
+  }
+}

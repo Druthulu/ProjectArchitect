@@ -1,15 +1,15 @@
-// The partner's seven tools `mcp__pa-watch__<name>` (agents/pa-claude.md, "The mod's tools"): their specs, input checks,
+// The partner's eight tools `mcp__pa-watch__<name>` (agents/pa-claude.md, "The mod's tools"): their specs, input checks,
 // and the inbox request each good call becomes. `requestName` is a copy of the router's mod/pa/hooks/inbox.ts naming,
 // kept identical (plugins never import across each other); the same test vectors pin both. Pure.
 
-export type ToolName = 'plan' | 'ask' | 'topic' | 'release' | 'plan_edit' | 'steer' | 'cleanup'
+export type ToolName = 'plan' | 'ask' | 'topic' | 'release' | 'plan_edit' | 'steer' | 'cleanup' | 'drive'
 
-export const TOOL_NAMES: readonly ToolName[] = ['plan', 'ask', 'topic', 'release', 'plan_edit', 'steer', 'cleanup']
+export const TOOL_NAMES: readonly ToolName[] = ['plan', 'ask', 'topic', 'release', 'plan_edit', 'steer', 'cleanup', 'drive']
 
 const LATER = 'Returns at once; the answer arrives later as a message, so end your turn after calling it.'
 /** 3.23 T13d.c3: release, plan_edit and steer send no confirmation that only says done. */
 const QUIET = 'Returns at once and is taken; a message follows only when it is refused or changes the outcome, so end your turn after calling it.'
-const QUIET_KINDS: readonly string[] = ['release', 'plan_edit', 'steer']
+const QUIET_KINDS: readonly string[] = ['release', 'plan_edit', 'steer', 'drive']
 const NO_REPLY = 'Returns at once; no reply follows.'
 
 /** What `$.tool.register` takes for each tool. */
@@ -37,15 +37,15 @@ export const TOOL_SPECS: readonly { name: ToolName; description: string; inputSc
   },
   {
     name: 'topic',
-    description: `The conversation has turned to a new subject; the next message goes to a fresh Claude seeded from the journal. ${NO_REPLY}`,
+    description: `The conversation has turned to a new subject; the mod files the topic you are leaving, then the next message goes to a fresh Claude seeded from the journal. ${NO_REPLY}`,
     inputSchema: { type: 'object', properties: { summary: { type: 'string' } } },
   },
   {
     name: 'release',
-    description: `Ends the hold you name (talk, review, question with a note for the expert, close with your phase report as the note, which the mod keeps as the phase's recap, stopped: the developer's stopped task resumed with the note, or started over with fresh: true; generation: the next generation's start, when the developer asks for it in this session; session: the loop waiting since this session began, when the developer wants it to go on; update: the PA3 update the mod found, installed after the current task, when the developer says in any words that they want it), so plan work may continue. ${QUIET}`,
+    description: `Ends the hold you name (talk, review, question with a note for the expert, close with your phase report as the note, which the mod keeps as the phase's recap, stopped: the developer's stopped task resumed with the note, or started over with fresh: true; generation: the next generation's start, when the developer asks for it in this session; session: the loop waiting since this session began, when the developer wants it to go on; update: the PA3 update the mod found, installed after the current task, when the developer says in any words that they want it; batch, in coop: the tasks in \`tasks\` run, once you and the developer have locked them in), so plan work may continue. ${QUIET}`,
     inputSchema: {
       type: 'object',
-      properties: { hold: { type: 'string', enum: ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update'] }, note: { type: 'string' }, fresh: { type: 'boolean' } },
+      properties: { hold: { type: 'string', enum: ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update', 'batch'] }, note: { type: 'string' }, fresh: { type: 'boolean' }, tasks: { type: 'array', items: { type: 'string' } } },
       required: ['hold'],
     },
   },
@@ -58,6 +58,11 @@ export const TOOL_SPECS: readonly { name: ToolName; description: string; inputSc
     name: 'steer',
     description: `A developer's correction for the running plan task \`task\` (T<n>), relayed to its expert, which tells its own coder what to stop, keep or undo; nothing is stopped. \`pause: true\` when the developer asks the work to pause (finish what runs, start nothing new): the pause is kept across a restart; \`pause: false\` when they want it to go on. Refused: a refused: line. ${QUIET}`,
     inputSchema: { type: 'object', properties: { task: { type: 'string' }, text: { type: 'string' }, pause: { type: 'boolean' } }, required: ['task', 'text'] },
+  },
+  {
+    name: 'drive',
+    description: `Sets the project's drive (.claude/pa.json), when the developer says so in any words: autopilot, tasks run up to the close question; coop, talk is the default and only a batch you two lock in runs. Read at the next task boundary, no restart. Refused: a refused: line. ${QUIET}`,
+    inputSchema: { type: 'object', properties: { value: { type: 'string', enum: ['autopilot', 'coop'] } }, required: ['value'] },
   },
   {
     name: 'cleanup',
@@ -119,10 +124,15 @@ export function validateInput(name: string, input: unknown): string | null {
       if (o['fresh'] !== undefined && typeof o['fresh'] !== 'boolean') {
         return 'fresh must be a boolean'
       }
-      return ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update'].includes(String(o['hold'])) ? field(o, 'note', false) : 'hold must be talk, review, question, close, stopped, generation, session or update'
+      if (o['hold'] === 'batch' && !(Array.isArray(o['tasks']) && o['tasks'].length > 0 && o['tasks'].every(x => typeof x === 'string' && x.trim() !== ''))) {
+        return 'tasks must be a non-empty list of task ids'
+      }
+      return ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update', 'batch'].includes(String(o['hold'])) ? field(o, 'note', false) : 'hold must be talk, review, question, close, stopped, generation, session, update or batch'
     }
     case 'plan_edit':
       return field(o, 'command', true) ?? field(o, 'why', false)
+    case 'drive':
+      return o['value'] === 'autopilot' || o['value'] === 'coop' ? null : 'value must be autopilot or coop'
     case 'cleanup':
       return field(o, 'summary', false)
     case 'steer':

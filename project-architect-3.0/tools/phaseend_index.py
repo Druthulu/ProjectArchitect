@@ -4,6 +4,9 @@
     phaseend_index.py assemble <N>     build phase-ends/PhaseEnd_Phase<N>.md
     phaseend_index.py --archive [<N>]  git mv current/ -> phase-<N>/, fresh current/
     phaseend_index.py legacy-index     one line per pre-PA3 PhaseEnd
+    phaseend_index.py history          rewrite docs/PHASE_HISTORY.md: every phase, this generation's recaps
+    phaseend_index.py history-seed [--budget-chars N]   the seed's `## This generation`
+    phaseend_index.py state-sources                     what the pre-PA3 state page reads (3.32 B6)
 
 The PhaseEnd's `## Agent runs` section is generated from the usage ledger (agent_runs rows
 stamped with this phase, else this project's runs since approval), capped at 40 lines.
@@ -36,6 +39,7 @@ except Exception:
 LABELS = ("Status:", "Done:", "Files:", "Decisions:", "Deviations:", "Findings:",
           "Gotchas:", "Research:", "Rule candidate:", "Next task needs:",
           "Recommended:", "Verified:", "Full log:", "Tags:")
+STATE_PHASEENDS = 3     # 3.32 B6: the newest PhaseEnds the pre-PA3 state page reads
 RECAP_PH = "{{AUTHORED:recap}}"     # an older assembled PhaseEnd may still hold these; never carried forward
 BIND_PH = "{{AUTHORED:binding}}"
 TASK_HEADER = ("# Tasks -- cumulative\n"
@@ -47,6 +51,15 @@ DISC_HEADER = ("# Discussions -- cumulative\n"
 LEGACY_HEADER = ("# Legacy PhaseEnds (pre-PA3)\n"
                  "# phase | title | milestone | date | path\n")
 RUNS_CAP = 40
+HISTORY_REL = "docs/PHASE_HISTORY.md"
+HISTORY_HEAD = ("# Phase history\n\nBuilt by `tools/phaseend_index.py history` from the PhaseEnds and rebuilt at each "
+                "close; never edited by hand. Each phase's PhaseEnd holds the rest.\n\n")
+# 3.32 B5: older PhaseEnds call it `## Plain-English summary (...)` or `## What this phase was, ... (plain English)`
+RECAP_RE = re.compile(r"(?mi)^##+[^\n]*plain[- ]english[^\n]*\n(.*?)(?=^## |\Z)", re.S)
+MIGRATION = "PA3 migration"     # the migration phase's name (pa/install/migrate.py)
+RECAPS_IN_SEED = 3
+TITLE_IN_SEED = 90
+SENTENCE_CAP = 200
 
 
 def die(msg):
@@ -165,7 +178,9 @@ def plan_bits(root, conf=None, phase=None):
     name = (m.group(2) or "").strip() if m else ""
     gen = ""
     if m and m.group(3):
-        g = re.search(r"([0-9]+(?:\.[0-9]+)*)", m.group(3))
+        # 3.32 B5b: `phase Gen5.4.6` first: bare digits gave `5.4.6`, which gen-close can't find
+        g = (re.search(r"\bphase\s+(" + PE._genplan.PHASE_ID + ")", m.group(3))
+             or re.search(r"([0-9]+(?:\.[0-9]+)*)", m.group(3)))
         gen = g.group(1) if g else ""
     milestone = ""
     approved = planner = "-"
@@ -871,6 +886,11 @@ def cmd_archive(a, root, conf):
         root, conf, phase, os.path.join(dst, "discussions"))
     out.append("DISCUSSION_INDEX.md += %d line(s)" % ndrows)
 
+    if write_history(root, conf):                       # 3.32 B5: this close joins docs/PHASE_HISTORY.md
+        res = _git(root, "add", "--", HISTORY_REL)
+        if res is None or res.returncode != 0:          # silent when it worked: the archive prints ≤ 5 lines
+            out.append("note: git add %s failed" % HISTORY_REL)
+
     gen = bits["gen"]
     if gen:
         py = "python"
@@ -905,6 +925,17 @@ def _other_open_phases(root, gen):
     path = os.path.join(root, "GENERATION_PLAN.md")
     if not os.path.isfile(path):
         return []
+    out = []
+    for f in _phase_rows(path):
+        if f["id"] == gen or f["id"].split(".")[0] != gen.split(".")[0]:
+            continue
+        if f["status"] != "closed":
+            out.append(f["id"])
+    return out
+
+
+def _phase_rows(path):
+    """-> the `## Phases` phase lines of GENERATION_PLAN.md that carry `status:`, as _genplan fields."""
     section, inside = [], False
     for raw in PE.read_text(path).split("\n"):
         b = PE.split_eol(raw)[0]
@@ -913,16 +944,169 @@ def _other_open_phases(root, gen):
             continue
         if inside:
             section.append(b)
-    out = []
-    for line in PE._genplan.phase_lines("\n".join(section)):
-        if not re.search(r"\|\s*status:", line):
-            continue
-        f = PE._genplan.fields(line)
-        if f["id"] == gen or f["id"].split(".")[0] != gen.split(".")[0]:
-            continue
-        if f["status"] != "closed":
-            out.append(f["id"])
-    return out
+    return [PE._genplan.fields(line) for line in PE._genplan.phase_lines("\n".join(section))
+            if re.search(r"\|\s*status:", line)]
+
+
+def phaseend_label(name):
+    """``PhaseEnd_Phase11_2.md`` -> ``11.2``."""
+    label = re.sub(r"^Phase[_\-]?", "", name[len("PhaseEnd_"):-3])
+    return re.sub(r"[_\-]+", ".", label).strip(".")
+
+
+def _clip(text, cap):
+    return text if len(text) <= cap else text[:cap - 1].rstrip() + "…"
+
+
+def _phaseend_title(text, label):
+    """The first heading without its ``PhaseEnd``, ``Phase <id>`` and ``(implements ...)``."""
+    head = next((ln for ln in text.split("\n")[:40] if ln.startswith("#")), "")
+    full = head.lstrip("#").strip()
+    t = re.sub(r"(?i)^PhaseEnd\W*", "", full)
+    t = re.sub(r"(?i)^(?:Phase\s+)?%s(?![\w.])\W*" % re.escape(label), "", t)
+    t = re.sub(r"\s*\(implements [^)]*\)\s*$", "", t)
+    return t or full or label
+
+
+def _phaseend_recap(text):
+    """The first plain-English section with a body; '' when there is none (a `-` is none)."""
+    for m in RECAP_RE.finditer(text):
+        body = re.sub(r"(?:\s*^---\s*)+\Z", "", m.group(1).strip(), flags=re.M).strip()
+        if body and body != "-":
+            return body
+    return ""
+
+
+def _first_sentence(recap):
+    para = " ".join(recap.split("\n\n")[0].split()).replace("**", "")
+    m = re.match(r"^(.+?[.!?])(?:\s|$)", para)
+    return _clip(m.group(1) if m else para, SENTENCE_CAP)
+
+
+def phaseend_rows(root, conf):
+    """One dict per PhaseEnd (id, date, title, recap), in natural order."""
+    pdir = PE.phase_dir(root, conf)
+    rows = []
+    for name in os.listdir(pdir) if os.path.isdir(pdir) else ():
+        if name.startswith("PhaseEnd_") and name.endswith(".md"):
+            text = PE.read_text(os.path.join(pdir, name)).replace("\r\n", "\n")
+            label = phaseend_label(name)
+            rows.append({"id": label, "date": PE._genplan.phaseend_date(text) or "-",
+                         "title": _phaseend_title(text, label), "recap": _phaseend_recap(text)})
+    rows.sort(key=lambda r: (natural_key(r["id"]), r["id"]))
+    return rows
+
+
+def _generation(root, rows):
+    """-> (family, [phase dict]) of this generation: the family of GENERATION_PLAN.md's newest phase, the first dotted
+    part of its id, because a migrated plan lists every legacy phase under one header. Plan order, then any PhaseEnd
+    of the family the plan doesn't list; a plan phase with no PhaseEnd yet takes its status for its date."""
+    path = os.path.join(root, "GENERATION_PLAN.md")
+    plan = []
+    if os.path.isfile(path):
+        inside = False
+        for raw in PE.read_text(path).split("\n"):
+            b = PE.split_eol(raw)[0]
+            if b.startswith("## "):
+                inside = b[3:].strip().lower().startswith("phases")
+            elif inside and re.match(r"^\s*-\s+\S+\s+[^|]*\|.*\|\s*status:", b):
+                plan.append(PE._genplan.fields(b))
+    plan = [f for f in plan if f["name"] != MIGRATION]           # older migrations: `12.5 PA3 migration` closes Gen5
+    if not plan:
+        return "", []
+    family = plan[-1]["id"].split(".")[0]
+    ends = dict((r["id"], r) for r in rows if r["id"].split(".")[0] == family)
+    phases = []
+    for f in plan:
+        if f["id"].split(".")[0] == family:
+            phases.append(ends.pop(f["id"], None)
+                          or {"id": f["id"], "date": f["status"] or "-", "title": f["name"], "recap": ""})
+    return family, phases + sorted(ends.values(), key=lambda r: (natural_key(r["id"]), r["id"]))
+
+
+def _newest_recaps(phases):
+    """The phases with a recap, newest first; the migration's one generated line is no recap."""
+    told = [r for r in phases if r["recap"] and r["title"] != MIGRATION]
+    return sorted(told, key=lambda r: (r["date"], natural_key(r["id"]), r["id"]), reverse=True)
+
+
+def render_history(root, conf):
+    """The text of docs/PHASE_HISTORY.md; '' for a project with no PhaseEnd."""
+    rows = phaseend_rows(root, conf)
+    if not rows:
+        return ""
+    lines = []
+    for r in rows:
+        lines.append(" | ".join([r["id"], r["date"], r["title"]] + ([_first_sentence(r["recap"])] if r["recap"] else [])))
+    family, phases = _generation(root, rows)
+    out = [HISTORY_HEAD, "## Phases\n\n", "".join("- %s\n" % ln for ln in lines)]
+    recaps = _newest_recaps(phases)
+    if recaps:
+        out.append("\n## This generation's recaps (%s, newest first)\n\n" % family)
+        out += ["### %s: %s (%s)\n\n%s\n\n" % (r["id"], r["title"], r["date"], r["recap"]) for r in recaps]
+    return "".join(out).rstrip("\n") + "\n"
+
+
+def write_history(root, conf):
+    """Rewrite docs/PHASE_HISTORY.md when it changed. True when the file exists afterwards."""
+    text = render_history(root, conf)
+    if not text:
+        return False
+    path = os.path.join(root, *HISTORY_REL.split("/"))
+    if not os.path.isfile(path) or PE.read_text(path) != text:
+        PE.write_text(path, text)
+        PE._cnote(path, script="phaseend_index.py", sub="history", whole=True, root=root)
+    return True
+
+
+def render_history_seed(root, conf, budget_chars):
+    """The seed's `## This generation`: one line per phase, then the newest recaps that fit, whole; '' with no phases."""
+    family, phases = _generation(root, phaseend_rows(root, conf))
+    if not phases:
+        return ""
+    head = "## This generation (%s)\n\n" % family
+    lines = "".join("- %s | %s | %s\n" % (r["id"], r["date"], _clip(r["title"], TITLE_IN_SEED)) for r in phases)
+    tail = "All phases, and this generation's recaps: %s\n" % HISTORY_REL
+    used = len(head) + len(lines) + len(tail)
+    recaps = []
+    for r in _newest_recaps(phases)[:RECAPS_IN_SEED]:
+        block = "### %s: %s (%s)\n\n%s\n\n" % (r["id"], r["title"], r["date"], r["recap"])
+        if used + len(block) > budget_chars:
+            break
+        recaps.append(block)
+        used += len(block)
+    return head + lines + "\n" + "".join(recaps) + tail
+
+
+def cmd_history(a, root, conf):
+    if write_history(root, conf):
+        sys.stdout.write("%s\n" % HISTORY_REL)
+    return 0
+
+
+def cmd_history_seed(a, root, conf):
+    sys.stdout.write(render_history_seed(root, conf, a.budget_chars))
+    return 0
+
+
+def state_sources(root, conf):
+    """3.32 B6: what the pre-PA3 state page reads, as root-relative paths: a PA2 project's CURRENT_PHASE.md (or its log
+    after the migration), the plans, the newest STATE_PHASEENDS PhaseEnds, newest first."""
+    pdir = PE.phase_dir(root, conf)
+    logs = os.path.join(pdir, "logs")
+    names = sorted(os.listdir(logs)) if os.path.isdir(logs) else []
+    found = [os.path.join(root, "CURRENT_PHASE.md"), os.path.join(pdir, "CURRENT_PHASE.md")]
+    found += [os.path.join(logs, n) for n in names if n.startswith("PhaseLog_") and n.endswith(".partial.md")]
+    found += [os.path.join(pdir, "current", "PHASE_PLAN.md"), os.path.join(root, "GENERATION_PLAN.md")]
+    ends = [n for n in os.listdir(pdir) if n.startswith("PhaseEnd_") and n.endswith(".md")] if os.path.isdir(pdir) else []
+    ends.sort(key=lambda n: (natural_key(phaseend_label(n)), n), reverse=True)
+    found += [os.path.join(pdir, n) for n in ends[:STATE_PHASEENDS]]
+    return [PE.rel(root, p).replace(os.sep, "/") for p in found if os.path.isfile(p)]
+
+
+def cmd_state_sources(a, root, conf):
+    sys.stdout.write("".join("%s\n" % p for p in state_sources(root, conf)))
+    return 0
 
 
 def cmd_legacy(a, root, conf):
@@ -933,9 +1117,7 @@ def cmd_legacy(a, root, conf):
     for name in os.listdir(pdir):
         if not (name.startswith("PhaseEnd_") and name.endswith(".md")):
             continue
-        label = name[len("PhaseEnd_"):-3]
-        label = re.sub(r"^Phase[_\-]?", "", label)
-        label = re.sub(r"[_\-]+", ".", label).strip(".")
+        label = phaseend_label(name)
         path = os.path.join(pdir, name)
         title = milestone = date = "-"
         for raw in PE.read_text(path).split("\n")[:40]:
@@ -1024,11 +1206,16 @@ def main(argv=None):
     sub.add_parser("legacy-index", help="index pre-PA3 PhaseEnd files")
     s = sub.add_parser("scratch", help="delete .run/<N>/ once the plan's phase-cleanup task is done")
     s.add_argument("phase", nargs="?")
+    sub.add_parser("history", help="rewrite docs/PHASE_HISTORY.md")
+    s = sub.add_parser("history-seed", help="print the seed's `## This generation`")
+    s.add_argument("--budget-chars", type=int, default=8550)    # ~3k real tokens; the mod passes it
+    sub.add_parser("state-sources", help="print what the pre-PA3 state page reads")
     a = p.parse_args(argv)
     root = PE.find_root()
     conf = PE.cfg(root)
     return {"assemble": cmd_assemble, "archive": cmd_archive, "--archive": cmd_archive,
-            "legacy-index": cmd_legacy, "scratch": cmd_scratch}[a.cmd](a, root, conf)
+            "legacy-index": cmd_legacy, "scratch": cmd_scratch, "history": cmd_history,
+            "history-seed": cmd_history_seed, "state-sources": cmd_state_sources}[a.cmd](a, root, conf)
 
 
 if __name__ == "__main__":

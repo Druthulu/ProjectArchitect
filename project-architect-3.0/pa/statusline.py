@@ -1643,6 +1643,8 @@ def _line_session(payload, ctx, cfg, sl, now):
 
     if not segments:
         return ""
+    if _mod_on(ctx):        # 3.32 B8: the project's drive, the line's last word
+        segments.append(_seg("coop" if ctx["pa_json"].get("drive") == "coop" else "autopilot", DIM, colors))
     return _join(_fit_fold(segments, sl["max_width"], colors, fold_idx, fold_seg), colors)
 
 

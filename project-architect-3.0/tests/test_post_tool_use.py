@@ -15,7 +15,7 @@ from pa import hooks  # noqa: E402
 from pa.hooks import post_tool_use  # noqa: E402
 
 SID = "credit-test-sid-0000"
-AGENT_ID = "aaaa111100000001f"
+AGENT_ID = "aaaa1111000000020"
 ACCOUNT = "credit@example.com"
 
 

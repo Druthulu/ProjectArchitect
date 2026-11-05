@@ -39,15 +39,14 @@ class TestRender(unittest.TestCase):
         self.assertIsNone(ladder.row("expert-fable", "max20"))       # 3.25 T6a: pa-expert@high replaced it
         self.assertIsNone(ladder.row("pa-expert@low", "max20"))      # a variant the table lacks
         self.assertEqual(ladder.row("auditor", "max5"),
-                         {"model": "claude-fable-5-1[1m]", "effort": "medium"})
+                         {"model": "claude-opus-5-5[1m]", "effort": "medium"})   # 3.32: no Fable on Max 5x
         self.assertEqual(ladder.row("memory-curator", "pro"),
                          {"model": "claude-opus-5-5[1m]", "effort": "medium"})
-        # 3.24 T17e: the curator is Opus 5.5 at medium on every tier; the auditor keeps Fable on the Max tiers
+        # 3.24 T17e: the curator is Opus 5.5 at medium on every tier; the auditor keeps Fable on Max 20x only (3.32)
         for preset in ("max20", "max5"):
             self.assertEqual(ladder.row("memory-curator", preset),
                              {"model": "claude-opus-5-5[1m]", "effort": "medium"}, preset)
-            self.assertEqual(ladder.row("auditor", preset),
-                             {"model": "claude-fable-5-1[1m]", "effort": "medium"}, preset)
+        self.assertEqual(ladder.row("auditor", "max20"), {"model": "claude-fable-5-1[1m]", "effort": "medium"})
         self.assertIsNone(ladder.row("coder-opus55", "max20"))
         self.assertIsNone(ladder.row("retriever-code@high", "max20"))  # an unmanaged type's variant
 
@@ -117,11 +116,11 @@ class TestMismatches(unittest.TestCase):
     def test_mismatches(self):
         self.place("max5")
         self.assertEqual(ladder.mismatches(self.dir, "max5"), [])
-        self.assertEqual(ladder.mismatches(self.dir, "max20"), ["pa-planner"])  # 3.24 T17f: planner max5 high, max20 max
+        self.assertEqual(ladder.mismatches(self.dir, "max20"), ["auditor", "pa-planner"])  # 3.24 T17f: planner max5 high, max20 max; 3.32: auditor
         self.assertEqual(ladder.mismatches(self.dir, "pro"),   # 3.24 T17e: the curator is Opus at medium on every tier
-                         ["pa-expert", "pa-coder", "pa-thinker", "auditor", "pa-planner"])  # 3.27 T11: Pro's role rows
+                         ["pa-expert", "pa-coder", "pa-thinker", "pa-planner"])  # 3.27 T11: Pro's role rows; 3.32: the auditor matches
         self.place("max20")
-        self.assertEqual(ladder.mismatches(self.dir, "max5"), ["pa-planner"])
+        self.assertEqual(ladder.mismatches(self.dir, "max5"), ["auditor", "pa-planner"])
         os.remove(os.path.join(self.dir, "pa-coder.md"))
         self.assertEqual(ladder.mismatches(self.dir, "max20"), ["pa-coder"])   # a missing base-row file
 

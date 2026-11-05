@@ -96,7 +96,7 @@ class DefaultsTest(unittest.TestCase):
         self.assertEqual(d["install"]["fetch_timeout_s"], 8)
 
         self.assertIn("card", d)
-        self.assertEqual(d["card"]["max_chars"], 7000)
+        self.assertEqual(d["card"]["max_chars"], 10000)
 
         self.assertIn("guard", d)
         self.assertTrue(d["guard"]["spilled_read"])
@@ -116,7 +116,7 @@ class DefaultsTest(unittest.TestCase):
         self.assertIn("install", data)
         self.assertEqual(data["install"]["clone_dir"], "pa3-src")
         self.assertIn("card", data)
-        self.assertEqual(data["card"]["max_chars"], 7000)
+        self.assertEqual(data["card"]["max_chars"], 10000)
         self.assertIn("guard", data)
         self.assertTrue(data["guard"]["spilled_read"])
 
@@ -354,7 +354,7 @@ class LadderPinTest(unittest.TestCase):
         self.assertEqual(config.pinned_model_for("retriever-code", self.cfg), "claude-haiku-5-5")
         config._set_ladder_tier("max5")
         self.assertEqual(config.pinned_model_for("memory-curator", self.cfg), "claude-opus-5-5")  # 3.24 T17e
-        self.assertEqual(config.pinned_model_for("auditor", self.cfg), "claude-fable-5-1")
+        self.assertEqual(config.pinned_model_for("auditor", self.cfg), "claude-opus-5-5")   # 3.32: no Fable on Max 5x
 
     def test_user_pin_and_override(self):
         config._set_ladder_tier("pro")

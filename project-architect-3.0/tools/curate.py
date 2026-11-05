@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """curate.py -- generation-start curator: demote memories, cookbook, rules; trim HOW_WE_WORK.
 
-Subcommands: memory, cookbook, rules, claude-md, card, how-we-work, discussions, ops.
+Subcommands: memory, cookbook, rules, claude-md, card, living-docs, how-we-work, discussions, ops.
 memory --route FILE=STORE: write each memory's fact to its store (developer and
 how-we-work: a bullet in that HOW_WE_WORK.md section, within card.max_chars; rule:
 rules_add.py; cookbook: cookbook_add.sh; ops: docs/ops/<stem>.md + its index row;
@@ -129,18 +129,19 @@ _ROUTE_STORES = ("developer", "how-we-work", "rule", "cookbook", "ops", "archive
 # 3.24 T7b: the first-run marker, mirroring pa/install/project.py FIRST_RUN / FIRST_RUN_DONE
 FIRST_RUN = "first_run"
 FIRST_RUN_DONE = ("migrated", "3.2")
+LIVING_HEADING = "## Living docs <!-- roles: claude expert planner curator -->\n"
 _ARCHIVE_SRC_RE = re.compile(r"^(gen[\w.-]*\.md)#(.+)$")
 _CARD_SECTIONS = {"developer": r"^## Developer\b",
                   "how-we-work": r"^## Conventions & house style\b"}
 
 
 def _card_cap(root):
-    """card.max_chars from .claude/pa.json, default 7000 (mirrors card.py:_max_chars)."""
+    """card.max_chars from .claude/pa.json, default 10000 (mirrors card.py:_max_chars)."""
     try:
         with open(os.path.join(root, ".claude", "pa.json"), encoding="utf-8") as fh:
-            return json.load(fh).get("card", {}).get("max_chars", 7000)
+            return json.load(fh).get("card", {}).get("max_chars", 10000)     # 3.32 B7: was 7000
     except (OSError, ValueError, AttributeError):
-        return 7000
+        return 10000
 
 
 def _split_frontmatter(text):
@@ -520,7 +521,8 @@ def cmd_memory(args, root):
 
 def _mark_routed(root, gen):
     """The marker a real `memory --route` run leaves: `memory_routed` for legacy (3.14),
-    `migrated: "3.2"` with `first_run` dropped for 3.2 (3.24 T7b); none for other gens."""
+    `migrated: "3.2"` with `first_run` dropped for 3.2 (3.24 T7b), and `memory_routed` with it, or launch.py seeds a
+    second curator for a sort that is done (3.32); none for other gens."""
     if str(gen) == "legacy":
         _mark_memory_routed(root)
     elif str(gen) == FIRST_RUN_DONE[1]:
@@ -531,6 +533,7 @@ def _mark_routed(root, gen):
             conf = json.load(fh)
         conf[FIRST_RUN_DONE[0]] = FIRST_RUN_DONE[1]
         conf.pop(FIRST_RUN, None)
+        conf["memory_routed"] = _pa_version(conf)
         write_text(path, json.dumps(conf, indent=2) + "\n")
 
 
@@ -1075,6 +1078,58 @@ def _standing_candidates(text, before_date):
                 i = j
 
 
+LIVING_HELP = """procedure (the memory curator, agents/memory-curator.md):
+1. Read the old read order (docs/retired/CLAUDE.pa2.md, when there is one), the memories, docs/PRE_PA3_INDEX.md, the list
+   of docs/retired/, then the docs those point to that may still be in use: a setup guide, a data format, a design
+   everyone works from. Headings and the first page are enough for most. A doc that only records the past (a closed
+   phase, a report, a superseded plan) stays out.
+2. One line per living doc: the doc, what it answers, when to update it, as in
+   `docs/BOOK_MAP.md`: what the book is; update in the same change as the book
+   Name a doc where it is now, under docs/retired/ too. No doc is moved, renamed or edited.
+3. --dry-run first. A refusal means the card or Claude's slice of it is too long: shorten the lines, or keep only the
+   docs a change would have to keep current.
+4. Run it for real. A project with no living doc still gets the run, with one line saying so.
+5. Commit HOW_WE_WORK.md alone:
+   bash tools/commit_task.sh curate "Living docs on the card" HOW_WE_WORK.md
+"""
+
+
+def _living_section(text, entries):
+    """``text`` with `## Living docs` holding ``entries``: its old lines replaced, else the section added at the end."""
+    body = "".join("- %s\n" % e.strip().lstrip("-").strip() for e in entries)
+    m = re.search(r"(?m)^## Living docs\b[^\n]*\n", text)
+    if m is None:
+        return "%s\n\n%s%s" % (text.rstrip("\n"), LIVING_HEADING, body)
+    nxt = re.search(r"(?m)^## ", text[m.end():])
+    tail = "" if nxt is None else "\n" + text[m.end() + nxt.start():]
+    return text[:m.end()] + body + tail
+
+
+def cmd_living_docs(args, root):
+    """3.32 B7: the card's `## Living docs` from --entry lines; refused past card.max_chars, or when Claude's slice would
+    pass the seed's card cap."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import card as card_tool
+    path = os.path.join(root, "HOW_WE_WORK.md")
+    new = _living_section(read_text(path), args.entry)
+    cap, seen = _card_cap(root), len(card_tool.slice_text(new, "claude"))
+    if len(new) > cap:
+        sys.stdout.write("refused: HOW_WE_WORK.md would be %d/%d chars\n" % (len(new), cap))
+        return 1
+    if seen > card_tool.SEED_CARD_CAP:
+        sys.stdout.write("refused: Claude's slice would be %d/%d chars, the seed's card cap: fewer or shorter lines\n"
+                         % (seen, card_tool.SEED_CARD_CAP))
+        return 1
+    sys.stdout.write("living docs: %d lines, card %d/%d chars, Claude's slice %d/%d\n"
+                     % (len(args.entry), len(new), cap, seen, card_tool.SEED_CARD_CAP))
+    if args.dry_run:
+        sys.stdout.write("dry-run: no changes\n")
+        return 0
+    write_text(path, new)
+    _cnote(path, script="curate.py", sub="living-docs", whole=True, root=root)
+    return 0
+
+
 def cmd_how_we_work(args, root):
     hww = _hww_path(root)
     if not os.path.isfile(hww):
@@ -1489,6 +1544,12 @@ def main(argv=None):
                    help="the same for the Tools, Rhythm and Docs map sections and the "
                         "role-tagged headings; refused past card.max_chars")
 
+    s = sub.add_parser("living-docs", help="write the card's ## Living docs section", epilog=LIVING_HELP,
+                       formatter_class=argparse.RawDescriptionHelpFormatter)
+    _add_dry_run(s)
+    s.add_argument("--entry", action="append", required=True, metavar="LINE",
+                   help="`doc`: what it answers; when to update it (repeat per doc)")
+
     s = sub.add_parser("how-we-work", help="report or retire HOW_WE_WORK.md lines")
     _add_dry_run(s)
     s.add_argument("--report", action="store_true",
@@ -1523,6 +1584,7 @@ def main(argv=None):
         "rules": cmd_rules,
         "claude-md": cmd_claude_md,
         "card": cmd_card,
+        "living-docs": cmd_living_docs,
         "how-we-work": cmd_how_we_work,
         "discussions": cmd_discussions,
         "ops": cmd_ops,

@@ -364,6 +364,19 @@ describe('router route', () => {
     expect((await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))).result.answer).toBe(SENT)
   })
 
+  test('3.32.1 T5: a hand-back whose child the list gives no parent is forwarded to the one in parents.json', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior, [`${BASE}/S1/parents.json`]: '{"C1":"P1"}' }, {})
+    const n = net(on)
+    n.list = [{ id: 'C1', status: 'completed' }, { id: 'P1', status: 'idle' }]
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: '<task-notification><task-id>C1</task-id>done</task-notification>', origin: { kind: 'task-notification' }, wait: false })
+    await clock.advance(1_000)
+    await clock.advance(1_000)
+    expect(n.sends.map(s => [String(s.to).includes('P1'), s.text.startsWith('Hand-back from your background agent C1:\n')])).toEqual([[true, true]])
+  })
+
   test('T8d: a partner hand-back before turn.complete answers its turn, and no marker follows', async ($, on) => {
     const clock = mock.clock(on, { now: 1_000 })
     const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
@@ -444,6 +457,31 @@ describe('router route', () => {
     const noted = await band()
     expect(noted).toContain('conversation only: the loop runs in OTHERSID')
     expect(noted).not.toContain('working')
+  })
+
+  test('3.31 T2b: the partner\'s filing turn draws no Claude row and no working line', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1', filingInFlight: true } })
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'running' }]
+    w.files.set(`${BASE}/S1/agents/P1.json`, JSON.stringify({ line: 'Read .claude-state/journal/x.md' }))
+    const band = async (): Promise<string> => {
+      try {
+        return JSON.stringify(await (await $.ui.mount({
+          plugin: 'pa', surface: 'terminal', component: 'AbovePrompt',
+          props: { hasSurvey: false, isWorking: false, maxRows: 10, bodyColumns: 80, scroll: { offset: 0, bodyRows: 9 }, view: {} },
+        })).drawn())
+      } catch {
+        return ''
+      }
+    }
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    const drawn = await band()
+    expect(drawn).not.toContain('Claude')
+    expect(drawn).not.toContain('working')
+    expect(drawn).not.toContain('.claude-state/journal')
   })
 
   test('3.29 T3: a developer message shows Claude as received at once; Claude\'s own row once it runs', async ($, on) => {
@@ -614,6 +652,39 @@ describe('router journal, rotation, warming, toast', () => {
     expect(stateOf(w).partner?.agentId).toBe('P1')
     expect(stateOf(w).partner?.topic).toBe(false)
     expect(w.files.get(entries(w, 'mod-start')[0] ?? '')).toMatch(/Fresh partner P1 \(rotate\); seed ~\d+ tokens\. Replaces OLD\./)
+  })
+
+  test('3.32 B4, B5: the seed asks for its records and this generation in characters; no history file, no call', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [rp, rt] = entryFile('2026-10-14', '085900-001r-claude-record.md', '2026-10-14T08:59:00.000Z', '(nothing to file)')
+    const [qp, qt] = entryFile('2026-10-14', '090000-002r-dev-msg.md', '2026-10-14T09:00:00.000Z', 'What is 2+2?')
+    const [ip, it] = request('S1', OCT - 500, 1, 'topic')
+    const w = world(on, {
+      [`${ROOT}/.claude/pa.json`]: PY, [qp]: qt, [ip]: it.replace('"caller":"a1"', '"caller":"OLD"'),
+      [rp]: rt.replace('session: S0', 'through: 2026-10-14T08:58:00.000Z'),
+      [`${JDIR}/TOPICS.md`]: '# Journal records\n# filed through: 2026-10-14T08:58:00.000Z\n# id | date\n',
+      [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', lastTurnAt: OCT - 1_000, ctx: 5_000 }),
+      [`${ROOT}/docs/PHASE_HISTORY.md`]: '# Phase history\n',
+      [`${ROOT}/docs/PRE_PA3_STATE.md`]: '# Pre-PA3 state\n', // 3.32 B6
+    }, { USERPROFILE: 'H' })
+    const n = net(on)
+    n.list = [{ id: 'OLD', status: 'idle' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' }
+      : argv[1] === 'tools/phaseend_index.py' ? { exitCode: 0, stdout: '## This generation (3)\n\n- 3.1 | 2026-10-01 | first\n', stderr: '' }
+        : argv[1] === 'tools/records.py' && argv[2] === 'state' ? { exitCode: 0, stdout: '## Pre-PA3 state\n\nGen5.4.6 is in flight.\n', stderr: '' }
+          : argv[1] === 'tools/records.py' ? { exitCode: 0, stdout: '## Outcomes in force\n\n### a (2026-10-14) · b\n- R1 decision: c\n', stderr: '' }
+            : { exitCode: 0, stdout: '', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    await $.prompt.submit({ text: 'new subject', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    const seed = n.spawns[0] ?? ''
+    expect(n.runs.filter(r => r[1] === 'tools/phaseend_index.py').map(r => r.slice(2).join(' '))).toEqual(['history-seed --budget-chars 8550'])
+    expect(n.runs.filter(r => r[1] === 'tools/records.py' && r[2] === 'seed').map(r => r.slice(2).join(' '))).toEqual(['seed --budget-chars 28500'])
+    expect(n.runs.filter(r => r[1] === 'tools/records.py' && r[2] === 'state').map(r => r.slice(2).join(' '))).toEqual(['state --budget-chars 8550'])
+    expect(seed).toContain('Gen5.4.6 is in flight.\n\n## Outcomes in force')
+    expect(seed).toContain('## Recent exchanges (word for word, newest first)')
+    expect(seed).toContain('- R1 decision: c\n\n## This generation (3)\n\n- 3.1 | 2026-10-01 | first\n\n## Running work')
   })
 
   test('PA_MOD_ROTATE_AT forces fresh at that ctx', async ($, on) => {
@@ -1168,10 +1239,10 @@ describe('router journal, rotation, warming, toast', () => {
     expect(seed).toContain('## LOOP\n\n- phase: 4.1; state: boundary\n- task: T3 add flag (attempt 2)\n- holds: review\n- open stop: review T3\n')
     expect(seed).toContain('## MEMORY\n\n- [Dev](dev.md) — prefers terse\n- [Repo](repo.md) — monorepo\n')
     expect(seed).toContain('## CARD\n\n## Developer <!-- roles: claude -->\n- plain words\n\n## MEMORY\n')
-    expect(seed).not.toContain('first run in PA 3.2')
+    expect(seed).not.toContain('PA3 intake')
   })
 
-  test('3.24 T7b-2c: a pending first run (pa.json) puts its one line in the seed', async ($, on) => {
+  test('3.32 B9: the intake due (a first run owed, no marker) puts its one line in the seed', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
     world(on, {
       [`${ROOT}/.claude/pa.json`]: ON.replace(/}$/, ',"first_run":{"from":"gen3","at":"3.24"}}'),
@@ -1182,7 +1253,7 @@ describe('router journal, rotation, warming, toast', () => {
     await $.session.start(ISTART)
     await $.prompt.submit({ text: 'go on', origin: { kind: 'composer' }, wait: false })
     await clock.advance(1_000)
-    expect(n.spawns[0] ?? '').toContain("The project's first run in PA 3.2 sorts its memories first")
+    expect(n.spawns[0] ?? '').toContain('The PA3 intake is reading this project once, in the background.')
   })
 })
 
@@ -1860,12 +1931,12 @@ describe('plans via the loop (T6a1)', () => {
     expect((JSON.parse(w.files.get(`${BASE}/S1/state.json`) ?? '{}') as { present: unknown[] }).present).toEqual([])
   })
 
-  test('3.24 T7b-2c: a pending first run: a plan is not presented nor sent to install; Claude is told why; an ask still shows', async ($, on) => {
+  test('3.32 B9: the intake due: a plan is not presented nor sent to install; Claude is told why; an ask still shows', async ($, on) => {
     const clock = mock.clock(on, { now: OCT })
     const [r1, b1] = callerReq(OCT - 500, 1, 'plan', 'P1', { path: '.run/plans/p.md', kind: 'phase', title: 'Phase 1.1' })
     const [r2, b2] = callerReq(OCT - 500, 2, 'ask', 'loop', { question: 'Run it now?', options: ['Run it now (Recommended)', 'Pause'] })
     const w = world(on, {
-      [`${ROOT}/.claude/pa.json`]: ON.replace(/}$/, ',"first_run":{"from":"gen3","at":"3.24"}}'), [`${BASE}/S1/state.json`]: P1(),
+      [`${ROOT}/.claude/pa.json`]: ON.replace(/}$/, ',"intake":"pending"}'), [`${BASE}/S1/state.json`]: P1(),
       [PLAN_MD]: '# Phase 1.1\n', [r1]: b1, [r2]: b2,
     }, { PA_MOD_TRIAL_APPROVE: '1' })
     const n = net(on)
@@ -1878,7 +1949,7 @@ describe('plans via the loop (T6a1)', () => {
     expect(inboxOf(w, 'install')).toEqual([])
     expect(entries(w, 'mod-plan').length).toBe(0)
     expect(n.sends.map(s => s.text)).toEqual([
-      "Not presented: The project's first run in PA 3.2 sorts its memories first: no plan is presented or installed until the memory curator has run. The mod asks the developer itself, in its own picker; do not ask about the curator yourself. If they pause it, the mod asks again at the next session start. Relay the curator's recap when it arrives.",
+      "Not presented: The PA3 intake is reading this project once, in the background. The planner builds on what it writes, so no plan is drafted, presented or installed until it is done. Talk goes on as usual; the developer sees its card. Don't mention it unless they ask for a plan.",
     ])
     expect(inboxOf(w, 'answer')).toMatchObject([{ input: { line: 'Answer: Run it now (Recommended)' } }])
   })
@@ -2660,7 +2731,7 @@ describe('external coders (3.3 T7)', () => {
     await clock.advance(1_000)
     const first = n.spawns[0] ?? ''
     expect(first).toContain('\n\nPA3: external coders are available (OpenRouter')
-    expect(first.endsWith('--remind off).\n\nPA3: the developer ran the external-coder setup: saved: OpenRouter, deepseek. ' +
+    expect(first.endsWith('--remind on.\n\nPA3: the developer ran the external-coder setup: saved: OpenRouter, deepseek. ' +
       'If it failed, explain why and the fix from the pa-external-agents skill\'s troubleshooting table. If it saved, load ' +
       'that skill, lay out the config, run PY tools/pa_ext.py check, and ask how and when they want external coders used ' +
       'in this project.\n\nhello')).toBe(true)
@@ -2669,5 +2740,248 @@ describe('external coders (3.3 T7)', () => {
     await $.prompt.submit({ text: 'more', origin: { kind: 'composer' }, wait: false })
     await clock.advance(1_000)
     expect(n.sends.map(s => s.text)).toEqual(['more'])
+  })
+
+  test('3.32.1 T5: the reminder goes once per project: pa_ext.py set --remind off runs once; a later session has none', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000_000_000 })
+    const PAJ = `${ROOT}/.claude/pa.json`
+    const w = world(on, { [PAJ]: '{"mod":"on","warmer":"off","upgrade":"ask","python":"py"}' }, {})
+    const n = net(on)
+    const offRuns = () => n.runs.filter(r => r.slice(1).join(' ') === 'tools/pa_ext.py set --remind off')
+    const inner = n.run
+    n.run = argv => { // pa_ext.py writes the block as it does for real
+      if (argv.slice(1).join(' ') === 'tools/pa_ext.py set --remind off') {
+        w.files.set(PAJ, '{"mod":"on","warmer":"off","upgrade":"ask","python":"py","external":{"remind":false}}')
+      }
+      return inner(argv)
+    }
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect((n.spawns[0] ?? '').includes('PA3: external coders are available')).toBe(true)
+    expect(offRuns().length).toBe(1)
+    w.sid.now = 'S2' // a later session
+    n.list = []
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'next day', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    const later = [...n.spawns.slice(1), ...n.sends.map(s => s.text)]
+    expect([later.some(t => t.includes('next day')), later.some(t => t.includes('external coders are available')), offRuns().length]).toEqual([true, false, 1])
+  })
+})
+
+describe('3.31 T2: the hidden filing turn', () => {
+  type Fs = { partner: { agentId: string; filingInFlight: boolean; summary: string; topic: boolean } | null; filedThrough: string; filingThrough: string; todo: string[] }
+  const fsOf = (w: World): Fs => JSON.parse(w.files.get(`${BASE}/S1/state.json`) ?? '{}') as Fs
+  const LAST = OCT - 20 * 60_000
+  const THROUGH = new Date(LAST).toISOString()
+  const REPLY = 'topic: alpha\nidea: "ship it"\ndecision: ship alpha\nheadline: alpha ships'
+  const TODO = 'land R2 (binds work) in the plan or the card\'s expert part'
+  /** A partner quiet for 20 minutes with an unfiled exchange; records.py and the ledger answered. */
+  const filing = async ($: Engine, on: On): Promise<{ w: World; n: Net; clock: ReturnType<typeof mock.clock>; logs: string[] }> => {
+    const clock = mock.clock(on, { now: OCT })
+    const w = world(on, {
+      [`${ROOT}/.claude/pa.json`]: PY,
+      [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', lastExchangeAt: LAST,
+        partner: { agentId: 'P1', model: 'claude-opus-5-5', ctx: 50_000, lastTurnAt: LAST, spawnedAt: OCT - 40 * 60_000 } }),
+    }, { USERPROFILE: 'H' })
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    const out: Record<string, string> = { inforce: 'R1 decision: ship beta.\n', index: 'indexed: 2 outcomes in 2 topics\n', todo: `${TODO}\n`, headlines: 'alpha: alpha ships\n' }
+    n.run = argv => (argv[1] === 'tools/records.py' ? { exitCode: 0, stdout: out[argv[2] ?? ''] ?? '', stderr: '' }
+      : argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '{}', stderr: '' })
+    const logs: string[] = []
+    on('ui.log', async ($, e) => {
+      logs.push(e.text)
+      return { value: undefined }
+    })
+    await $.session.start(ISTART)
+    await clock.advance(60_000)
+    return { w, n, clock, logs }
+  }
+  const step = async ($: Engine, turnId: string, text: string): Promise<string> => {
+    await $.turn.start({ text, turnId })
+    return (await drain($.turn.step({ turnId, index: 0, model: 'opus', messageCount: 1 }))).result.answer
+  }
+
+  test('the warm tick sends the request with the hold; the reply is a record, the to-do goes once, the hand-back draws nothing', async ($, on) => {
+    const { w, n, clock, logs } = await filing($, on)
+    expect(n.sends.length).toBe(1)
+    const req = n.sends[0]?.text ?? ''
+    expect(n.sends[0]?.to).toBe('P1')
+    expect(req.startsWith('‹pa› file: the exchanges from ')).toBe(true)
+    expect(req).toContain(`(the entries after ${new Date(OCT - 40 * 60_000).toISOString()})`)
+    expect(req.endsWith('In force now (supersede or retire by id):\nR1 decision: ship beta.')).toBe(true)
+    expect(n.order).not.toContain('send:.')
+    expect([fsOf(w).partner?.filingInFlight, fsOf(w).filingThrough]).toEqual([true, THROUGH])
+    // the next tick sends nothing while it runs
+    await clock.advance(60_000)
+    expect(n.sends.length).toBe(1)
+
+    await $.turn.complete({ turnId: 'F1', agentId: 'P1', answer: REPLY, durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    const recs = entries(w, 'claude-record')
+    expect(recs.length).toBe(1)
+    const rec = w.files.get(recs[0] ?? '') ?? ''
+    expect(rec).toContain(`through: ${THROUGH}`)
+    expect(rec).toContain('agentId: P1')
+    expect(rec).toContain(REPLY)
+    expect(entries(w, 'claude-answer')).toEqual([])
+    const rel = (recs[0] ?? '').slice(ROOT.length + 1)
+    const recordRuns = n.runs.filter(r => r[1] === 'tools/records.py').map(r => r.slice(2).join(' '))
+    expect(recordRuns).toEqual(['inforce --ids --max-tokens 4000', 'index', `todo ${rel}`, `headlines ${rel}`])
+    const ev = libRuns(n).find(r => r[3] === 'journal_filing') ?? []
+    expect(ev.slice(0, 8)).toEqual(['py', 'H/.claude/pa3/pa_ledger.py', 'event', 'journal_filing', '--session', 'S1', '--run', 'P1'])
+    const detail = JSON.parse(ev[9] ?? '{}') as Record<string, unknown>
+    expect([detail['why'], detail['through'], detail['chars']]).toEqual(['quiet', THROUGH, REPLY.length])
+    expect(logs).toEqual(['Filed: alpha: alpha ships'])
+    const s = fsOf(w)
+    expect([s.partner?.filingInFlight, s.filedThrough, s.filingThrough, s.todo]).toEqual([false, THROUGH, '', [TODO]])
+
+    // its hand-back after the turn end: the stub, no marker, no reply card
+    const hb = handback('P1', REPLY)
+    await $.prompt.submit({ text: hb, origin: { kind: 'peer' }, wait: false })
+    expect(await step($, 'T1', hb)).toBe(SENT)
+    await clock.advance(7_000)
+    expect(n.submits).toEqual([])
+    expect(entries(w, 'claude-answer')).toEqual([])
+
+    // the to-do rides the developer's next message once
+    await $.prompt.submit({ text: 'next', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    const first = n.sends[n.sends.length - 1]?.text ?? ''
+    expect(first).toContain(`‹pa› to-do (from the last filing):\n- ${TODO}`)
+    expect(first.endsWith('next')).toBe(true)
+    expect(fsOf(w).todo).toEqual([])
+    await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: 'ok', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    await clock.advance(7_000)
+    await $.prompt.submit({ text: 'again', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    const second = n.sends[n.sends.length - 1]?.text ?? ''
+    expect(second.endsWith('again')).toBe(true)
+    expect(second).not.toContain('to-do')
+  })
+
+  test('the hand-back first: kept, filed at an empty turn end; nothing to file is filed too', async ($, on) => {
+    const { w, n, logs } = await filing($, on)
+    const hb = handback('P1', 'Nothing to file.')
+    await $.prompt.submit({ text: hb, origin: { kind: 'peer' }, wait: false })
+    expect(await step($, 'T1', hb)).toBe(SENT)
+    expect(entries(w, 'claude-record')).toEqual([])
+    await $.turn.complete({ turnId: 'F1', agentId: 'P1', answer: '', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    const recs = entries(w, 'claude-record')
+    expect(recs.length).toBe(1)
+    expect(w.files.get(recs[0] ?? '')).toContain('(nothing to file)')
+    expect(entries(w, 'claude-answer')).toEqual([])
+    expect(n.submits).toEqual([])
+    expect(logs).toEqual(['Filed: alpha: alpha ships']) // the stub's headlines output, as given
+    expect([fsOf(w).partner?.filingInFlight, fsOf(w).filedThrough]).toEqual([false, THROUGH])
+  })
+
+  test('an empty turn end first: the hold lifts; the late hand-back files it and draws nothing', async ($, on) => {
+    const { w, n } = await filing($, on)
+    await $.turn.complete({ turnId: 'F1', agentId: 'P1', answer: '', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    expect([fsOf(w).partner?.filingInFlight, fsOf(w).filedThrough]).toEqual([false, ''])
+    expect(entries(w, 'claude-record')).toEqual([])
+    const hb = handback('P1', REPLY)
+    await $.prompt.submit({ text: hb, origin: { kind: 'peer' }, wait: false })
+    expect(await step($, 'T1', hb)).toBe(SENT)
+    expect(entries(w, 'claude-record').length).toBe(1)
+    expect(entries(w, 'claude-answer')).toEqual([])
+    expect(fsOf(w).filedThrough).toBe(THROUGH)
+    expect(n.submits).toEqual([])
+  })
+
+  test('T2b: the session start reads filedThrough from TOPICS.md\'s header, never the journal', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [rp, rt] = entryFile('2026-10-15', '110000-001r-claude-record.md', '2026-10-15T11:00:00.000Z', '(nothing to file)')
+    const w = world(on, {
+      [`${ROOT}/.claude/pa.json`]: ON, [rp]: rt.replace('session: S0', 'through: 2026-10-15T10:59:00.000Z'),
+      [`${BASE}/S1/state.json`]: prior({ agentId: 'P1', lastTurnAt: OCT - 1_000 }),
+    }, {})
+    net(on).list = [{ id: 'P1', status: 'idle' }]
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    expect(fsOf(w).filedThrough).toBe('') // no TOPICS.md: no record, no scan
+    w.files.set(`${JDIR}/TOPICS.md`, '# Journal records\n# filed through: 2026-10-15T10:59:00.000Z\n# id | date\n')
+    w.sid.now = 'S1'
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    expect(fsOf(w).filedThrough).toBe('2026-10-15T10:59:00.000Z')
+  })
+
+  test('the topic call keeps its summary; the filing names it at once, then drops it', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [ip, it] = inboxReq(OCT - 500, 1, 'topic', { summary: 'the alpha plan' })
+    const w = world(on, {
+      [`${ROOT}/.claude/pa.json`]: PY, [ip]: it,
+      [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', lastExchangeAt: OCT - 60_000,
+        partner: { agentId: 'P1', model: 'claude-opus-5-5', ctx: 50_000, lastTurnAt: OCT - 60_000, spawnedAt: OCT - 40 * 60_000 } }),
+    }, { USERPROFILE: 'H' })
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    expect([fsOf(w).partner?.topic, fsOf(w).partner?.summary]).toEqual([true, 'the alpha plan'])
+    await clock.advance(60_000)
+    const req = n.sends[0]?.text ?? ''
+    expect(req.split('\n')[0]).toContain('are not filed yet; you called topic: "the alpha plan".')
+    expect(req.endsWith('In force now (supersede or retire by id):\n(none)')).toBe(true)
+    await $.turn.complete({ turnId: 'F1', agentId: 'P1', answer: 'nothing to file', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    expect([fsOf(w).partner?.summary, fsOf(w).partner?.topic]).toEqual(['', true])
+  })
+
+  test('T2c: a reply with the topic flag set files at its turn end; a message routed then waits, then goes fresh', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [ip, it] = inboxReq(OCT - 500, 1, 'topic', { summary: 'the alpha plan' })
+    const w = world(on, {
+      [`${ROOT}/.claude/pa.json`]: PY, [ip]: it.replace('"caller":"P1"', '"caller":"OLD"'),
+      [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', lastExchangeAt: OCT - 60_000,
+        partner: { agentId: 'OLD', model: 'claude-opus-5-5', ctx: 50_000, lastTurnAt: OCT - 60_000, spawnedAt: OCT - 40 * 60_000 } }),
+    }, { USERPROFILE: 'H' })
+    const n = net(on)
+    n.list = [{ id: 'OLD', status: 'running' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    expect([fsOf(w).partner?.topic, n.sends.length]).toEqual([true, 0])
+    n.list = [{ id: 'OLD', status: 'idle' }]
+    await $.turn.complete({ turnId: 'A1', agentId: 'OLD', answer: 'the alpha plan, done', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    expect(n.sends.length).toBe(1)
+    expect(n.sends[0]?.to).toBe('OLD')
+    expect((n.sends[0]?.text ?? '').startsWith('‹pa› file: ')).toBe(true)
+    expect(fsOf(w).partner?.filingInFlight).toBe(true)
+    // the developer's next message waits for the filing turn's end
+    await $.prompt.submit({ text: 'new subject', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect([n.sends.length, n.spawns.length]).toEqual([1, 0])
+    await $.turn.complete({ turnId: 'F1', agentId: 'OLD', answer: 'nothing to file', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    await clock.advance(1_000)
+    expect(entries(w, 'claude-record').length).toBe(1)
+    expect([n.sends.length, n.spawns.length]).toEqual([1, 1])
+    expect((n.spawns[0] ?? '').endsWith('new subject')).toBe(true)
+    expect(fsOf(w).partner?.agentId).toBe('P1')
+  })
+
+  /** 3.31 T6: a partner quiet 3 minutes by the tick; the filing requests sent. */
+  const quiet = async ($: Engine, on: On, env: Record<string, string>): Promise<number> => {
+    const clock = mock.clock(on, { now: OCT })
+    world(on, {
+      [`${ROOT}/.claude/pa.json`]: PY,
+      [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', lastExchangeAt: OCT - 2 * 60_000,
+        partner: { agentId: 'P1', model: 'claude-opus-5-5', ctx: 50_000, lastTurnAt: OCT - 2 * 60_000, spawnedAt: OCT - 40 * 60_000 } }),
+    }, { USERPROFILE: 'H', ...env })
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(60_000)
+    return n.sends.filter(s => s.text.startsWith('‹pa› file:')).length
+  }
+  test('3.31 T6: 3 quiet minutes file nothing under the default 15', async ($, on) => {
+    expect(await quiet($, on, {})).toBe(0)
+  })
+  test('3.31 T6: PA_MOD_FILE_QUIET_MS=60000 overrides journal.file_quiet_min', async ($, on) => {
+    expect(await quiet($, on, { PA_MOD_FILE_QUIET_MS: '60000' })).toBe(1)
   })
 })

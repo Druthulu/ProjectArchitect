@@ -2,7 +2,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  type BandAgent, bandCells, bandHex, bandRole, bandRows, bandStepOf, bandView, acceptedCard, claudeCard, claudeRows, receivedRow, elapsedText, borderOf, cardStyleOf, cardText, loopNoteOf, coderIdOf, FILES_MAX, finishCardOf, firstLine, noteCardOf, numstatOf, parseCard, ROLE_HEX, type Sender,
+  type BandAgent, bandCells, bandHex, bandRole, bandRows, bandStepOf, bandView, acceptedCard, intakeCard, intakeDoneCard, claudeCard, claudeRows, receivedRow, elapsedText, borderOf, cardStyleOf, cardText, loopNoteOf, coderIdOf, FILES_MAX, finishCardOf, firstLine, noteCardOf, numstatOf, parseCard, ROLE_HEX, type Sender,
 } from './card'
 import { parseCoderReturn, parseExpertContract } from './contract'
 import { classify, isNote, noteBody } from './route'
@@ -29,6 +29,19 @@ describe('card text', () => {
   test('the first meaningful line skips blanks, fences, headings marks and KEY: lines', async () => {
     expect(firstLine('\n```\nSTATUS: done\n## Did the thing.\nmore')).toBe('Did the thing.')
     expect(coderIdOf('LOG: phase-ends/current/logs/T13a.c2.md')).toBe('c2')
+  })
+})
+
+describe('the PA3 intake card (3.32 B9)', () => {
+  test('the steps this try was given, numbered from 1; a rerun says its try; the end line; both draw', async () => {
+    const one = intakeCard(['state page'], 2)
+    expect(one).toBe('**PA3 intake** · one agent reads this project once, in the background · try 2 of 3\n\n' +
+      '1. Write where the project stands: `docs/PRE_PA3_STATE.md`\n\nKeep talking as usual. A new plan waits until this is done.')
+    expect(parseCard(one)).toMatchObject({ role: 'claude', title: 'PA3 intake · one agent reads this project once, in the background · try 2 of 3' })
+    const end = intakeDoneCard(['living docs', 'state page'], 'M')
+    expect(end).toBe('**PA3 intake** done · living docs on the card, docs/PRE_PA3_STATE.md written')
+    expect(parseCard(end)).toMatchObject({ role: 'claude', title: 'PA3 intake done · living docs on the card, docs/PRE_PA3_STATE.md written', body: '' })
+    expect(intakeDoneCard(['memories'], 'M')).toBe('**PA3 intake** done · memories sorted (archive: M/gen3.2.md)')
   })
 })
 

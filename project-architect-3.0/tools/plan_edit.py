@@ -562,6 +562,10 @@ def cmd_show(a, root, path, text, explicit):
 def cmd_next(a, root, path, text, explicit):
     lines, tasks, headings = parse(text)
     by_id = dict((t.id, t) for t in tasks)
+    only = getattr(a, "only", None)
+    if only:        # 3.32 B8: coop's batch; a reopened T3 stays in it as T3.1, T3.2
+        roots = set(x.strip().split(".")[0] for x in only.split(","))
+        tasks = [t for t in tasks if t.id.split(".")[0] in roots]
     order = sorted(tasks, key=lambda t: (t.key(), t.index))
     brief = getattr(a, "brief", False)
     as_json = brief and getattr(a, "json", False)
@@ -702,9 +706,12 @@ def cmd_reopen(a, root, path, text, explicit):
         die(locked)
     _old_tl = lines[parent.index]
     _anch = _anchor(lines, parent.index)
-    kids = [t for t in tasks if t.id.startswith(parent.id + ".")]
-    k = 1 + max([id_key(t.id)[-1] for t in kids] or [0])
-    new_id = "%s.%d" % (parent.id, k)
+    # 3.32 B8: a reopened T3 is T3.1, a reopened T3.1 is T3.2, never T3.1.1 (the same level counts up)
+    base = parent.id if "." not in parent.id else parent.id.rsplit(".", 1)[0]
+    depth = len(id_key(base)) + 1
+    kin = [t for t in tasks if t.id.startswith(base + ".") and len(id_key(t.id)) == depth]
+    k = 1 + max([id_key(t.id)[-1] for t in kin] or [0])
+    new_id = "%s.%d" % (base, k)
     fields = dict(parent.fields)
     fields["title"] = a.title
     fields["done-when"] = a.done_when
@@ -1114,6 +1121,7 @@ def build_parser():
                    help="one-line summary: id | status | agent | coder | effort | review | wait-for | title")
     s.add_argument("--json", action="store_true",
                    help="with --brief: {kind: task|none, task|reason, promoted|waiting_on} on one line")
+    s.add_argument("--only", help="only these tasks (comma list) and their reopened ids; the rest of the plan waits")
 
     s = sub.add_parser("set-status", help="change one task's status",
                        description="done needs tasks/<id>.md; a --file plan "
@@ -1127,7 +1135,7 @@ def build_parser():
     s.add_argument("text")
     s.add_argument("--by", default="router")
 
-    s = sub.add_parser("reopen", help="supersede T3 and create T3.1 (status next)")
+    s = sub.add_parser("reopen", help="supersede T3 and create T3.1, T3.1 and create T3.2 (status next)")
     s.add_argument("task")
     s.add_argument("--title", required=True)
     s.add_argument("--done-when", dest="done_when", required=True)

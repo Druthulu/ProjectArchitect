@@ -4,10 +4,10 @@ import type { LoopState, LoopTask } from '../types'
 import {
   agentFor, effortFor, effortHint, bandLine, closeNotice, plannerIdOf, defaultLoop, keepSummary, summariesOf, editIsDecision, FORWARD_TTL_MS, NO_CONTRACT_QUIET_MS, OWNER_STALE_MS, ownsLoop, parseLoop, popHold, pushHold, queuedTo, releaseHold, routeStatus,
   runEnded, RUN_QUIET_MS, serializeLoop, silenceReleases, takesOver, taskPosIn, taskPosOf, topHold, waitSpec, windowResumes, planCounts, projectName, sessionTitle,
-  quietReply, nextPhaseOf, recalcSessions, withPhaseSid, archiveOf, curateQuestion, firstRunLine,
+  quietReply, nextPhaseOf, recalcSessions, withPhaseSid, archiveOf, bgJobOf, curateQuestion, firstRunLine, intakeCapNotice, intakeDue, intakeOwed, intakeTriesOf,
   markerOf, modFilesKey, externalReminder, setupNotice, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
   extHealthOf, extHealthNotice, generalizableCount, bankQuestion, bankTask, bankNotice, startCheckOffline, startCheckState,
-  doneInName, STALL_NOTICE_MS,
+  batchDoneNotice, batchOf, driveOf, talkLine, withDrive, doneInName, STALL_NOTICE_MS,
 } from './loop'
 
 describe('the one-time cookbook banking (3.30)', () => {
@@ -429,14 +429,56 @@ describe('the first run in 3.2 (3.24 T7b)', () => {
     }
   })
 
-  test('the ask names the first run; the archive is gen3.2.md; the generation start and legacy lines unchanged', async () => {
+  test('the archive is gen3.2.md; the generation start and legacy lines unchanged', async () => {
     const fr = 'curate: migration 3.2 -> gen 3.2 · FROM: gen3 · MEMORY: .claude-state/memory'
-    expect(curateQuestion(fr)).toContain("This project's first run in PA 3.2: the memory curator sorts its memories once (")
     expect(curateQuestion('curate: closing gen 3 -> opening gen 4')).toBe(
       'The memory curator runs at every generation start (curate: closing gen 3 -> opening gen 4). Run it now?')
     expect(archiveOf(fr)).toBe('.claude-state/memory/gen3.2.md')
     expect(archiveOf('curate: migration -> gen legacy')).toBe('.claude-state/memory/genlegacy.md')
     expect(archiveOf('curate: closing gen 3 -> opening gen 4')).toBe('.claude-state/memory/gen3.md')
+  })
+})
+
+describe('the PA3 intake (3.32 B9)', () => {
+  const pa = (o: Record<string, unknown>): string => JSON.stringify(o)
+  const FIRST = { first_run: { from: 'pa2', at: '3.24' } }
+  test('intakeDue: from pa.json alone', async () => {
+    const rows: [string | null, boolean][] = [
+      [pa({ intake: 'pending' }), true], [pa({ intake: 'done' }), false], [pa({ intake: 'incomplete' }), false], [pa({}), false],
+      [pa({ ...FIRST }), true], [pa({ ...FIRST, intake: 'pending' }), true], [pa({ ...FIRST, intake: 'done' }), true],
+      [pa({ ...FIRST, intake: 'incomplete' }), false], [pa({ ...FIRST, migrated: '3.2' }), false],
+      [pa({ ...FIRST, migrated: '3.2', intake: 'pending' }), true], ['{', false], [null, false],
+    ]
+    for (const [t, want] of rows) {
+      expect([t, intakeDue(t)]).toEqual([t, want])
+    }
+  })
+
+  test('intakeOwed: in order, from the files', async () => {
+    const yes = '## Living docs <!-- x -->\n- `a.md`: a; with a\n\n## Next\n- other\n'
+    const crlf = '## Living docs\r\n- `a.md`: a\r\n'
+    const none = '## Living docs <!-- x -->\n- (none yet: `doc`: what it answers; when to update it)\n\n## Next\n- other\n'
+    const rows: [string, string | null, boolean, string[]][] = [
+      [pa(FIRST), null, false, ['memories', 'living docs', 'state page']],
+      [pa({ ...FIRST, migrated: '3.2' }), none, false, ['living docs', 'state page']],
+      [pa({}), '# no section\n- x\n', true, ['living docs']],
+      [pa({}), yes, false, ['state page']],
+      [pa({}), crlf, true, []],
+      [pa(FIRST), yes, true, ['memories']],
+    ]
+    for (const [paText, card, page, want] of rows) {
+      expect(intakeOwed({ paText, card, page })).toEqual(want as never)
+    }
+  })
+
+  test('the count and the job survive loop.json; a lost one is harmless', async () => {
+    expect(intakeTriesOf({} as never)).toBe(0)
+    expect(intakeTriesOf({ intakeTries: 2 } as never)).toBe(2)
+    expect(bgJobOf({} as never)).toBe(null)
+    expect(bgJobOf({ bgJob: { steps: ['state page', 'nope'], agentId: 'A', sid: 'S', spawnedAt: 1, lastCompleteAt: 0 } } as never))
+      .toEqual({ steps: ['state page'], agentId: 'A', sid: 'S', spawnedAt: 1, lastCompleteAt: 0 })
+    expect(intakeCapNotice(['living docs', 'state page'])).toBe(
+      '‹pa› The PA3 intake stopped after 3 tries; planning goes ahead without: living docs, state page. Tell the developer that in one line.')
   })
 })
 
@@ -453,7 +495,7 @@ describe('external coders (3.3 T7)', () => {
   test('externalReminder: absent, the line; coder set, remind: false, use: false or bad JSON, none', async () => {
     const line = externalReminder('{"mod":"on"}')
     expect(line.startsWith('PA3: external coders are available (OpenRouter or local models do the coding;')).toBe(true)
-    expect(line.endsWith('(PY tools/pa_ext.py set --remind off).')).toBe(true)
+    expect(line.endsWith('shown once per project and not again; to have it back, run PY tools/pa_ext.py set --remind on.')).toBe(true)
     expect(externalReminder('{"mod":"on","external":{"use":true}}')).toBe(line)
     expect(externalReminder('{"external":{"coder":"deepseek"}}')).toBe('')
     expect(externalReminder('{"external":{"remind":false}}')).toBe('')
@@ -486,5 +528,38 @@ describe('the start check (3.30.2)', () => {
     expect(startCheckOffline(t({ state: 'offline', session: 'S0' }), 'S1', 100_000)).toBe(false)
     expect(startCheckOffline(null, 'S1', 100_000)).toBe(false)
     expect(startCheckState(t({ state: 'offline' }), 'S1', 100_000, 100_000)).toBe('done')
+  })
+})
+
+describe('the drive (3.32 B8)', () => {
+  test('driveOf: only `coop` is coop; a missing key or a bad file is autopilot', () => {
+    expect(driveOf('{"drive": "coop"}')).toBe('coop')
+    for (const t of ['{"drive": "autopilot"}', '{"drive": "x"}', '{}', 'null', 'bad', '', null]) {
+      expect(driveOf(t)).toBe('autopilot')
+    }
+  })
+  test('withDrive: the one line changes, the rest of the file stays; a new key parses; a bad file is null', () => {
+    expect(withDrive('{ "a": [1,  2],\n  "drive": "autopilot" }\n', 'coop')).toBe('{ "a": [1,  2],\n  "drive": "coop" }\n')
+    expect(JSON.parse(withDrive('{"a": 1}', 'coop') ?? '')).toEqual({ a: 1, drive: 'coop' })
+    expect(withDrive('bad', 'coop')).toBe(null)
+    expect(withDrive('[]', 'coop')).toBe(null)
+  })
+  test('batchOf and the batch\'s end: its tasks and their reopened ids', () => {
+    expect(batchOf(defaultLoop())).toEqual([])
+    expect(batchOf({ ...defaultLoop(), batch: ['T1', 3, ''] } as never)).toEqual(['T1'])
+    expect(batchDoneNotice(['T3'], { 'T3.2': { title: 'a', summary: 'b\nc' }, T4: { title: 'x', summary: 'y' } }))
+      .toBe("‹pa› The batch is done (T3). Each task's summary:\nT3.2 a: b c\n Bring the results to the developer.")
+  })
+  test('talkLine: coop has no line, session or talk; autopilot keeps both', () => {
+    const on = { ...defaultLoop(), state: 'running' } as LoopState
+    expect(talkLine(on, true)).toBe(null)
+    expect(talkLine({ ...on, holds: ['session'] }, true)).toBe(null)
+    expect(talkLine(on)).toContain('the queue is held')
+    expect(talkLine({ ...on, holds: ['session'] })).toContain('the loop is waiting for you')
+  })
+  test('the batch release and the drive confirmation are quiet; a refusal is not', () => {
+    expect(quietReply('released: batch')).toBe(true)
+    expect(quietReply('drive: coop')).toBe(true)
+    expect(quietReply('drive: coop (not committed: x)')).toBe(false)
   })
 })

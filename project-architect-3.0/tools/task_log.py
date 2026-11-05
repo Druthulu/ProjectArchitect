@@ -23,6 +23,9 @@ import os
 import re
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _genplan                                                 # noqa: E402
+
 try:                          # UTF-8 output even when not started with -X utf8
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -140,7 +143,7 @@ def field(lines, label):
     return None
 
 
-_PHASE_RE = re.compile(r"Phase\s+([0-9]+(?:\.[0-9]+)*)")
+_PHASE_RE = re.compile(r"Phase\s+(" + _genplan.PHASE_ID + r"|[0-9]+)")     # 3.32 B8a: was numeric ids only
 _APPROVED_RE = re.compile(r"Approved:\s*([0-9]{4}-[0-9]{2}-[0-9]{2})")
 
 

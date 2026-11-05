@@ -984,6 +984,8 @@ def bash_read_deny(cmd, role, cfg, root=None):
     if stat_path is None:
         return None
     fp = stat_path if (os.path.isabs(stat_path) or not root) else os.path.join(root, stat_path)
+    if not os.path.isfile(fp):      # 3.32: `/` from a quoted sed expression split at its `|` is the drive's root
+        return None
     try:
         size = os.path.getsize(fp)
     except OSError:

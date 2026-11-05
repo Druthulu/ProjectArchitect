@@ -13,6 +13,7 @@ Nothing touches the filesystem at import time; stdlib only.
 
 import json
 import os
+import re
 import shutil
 import time
 from collections import namedtuple
@@ -117,7 +118,8 @@ def _unmapped_md(env, mapping):
         if row.dst:
             named.add(row.dst)
     result = []
-    ped = getattr(env, "phase_ends_dir", "phase-ends")
+    # 3.32 B10a: onex keeps the old folder's documents in place, so it is the one scanned
+    ped = getattr(env, "phase_ends_src", None) or getattr(env, "phase_ends_dir", "phase-ends")
     scan_dirs = ["", "docs", "phase-ends"]
     if ped != "phase-ends" and ped not in scan_dirs:
         scan_dirs.append(ped)
@@ -387,7 +389,8 @@ def _do_generate(env, row):
     if gen == "generation_plan":
         p = row.params or {}
         text = _generation_plan_text(env, p.get("gen_number", 1),
-                                     p.get("gen_name", ""))
+                                     p.get("gen_name", ""), p.get("interphase"),
+                                     p.get("running"))
         place(env, dst, text=text)
         return "DONE", dst
 
@@ -432,8 +435,27 @@ def _do_generate(env, row):
 
 # --------------------------------------------------------------------------- generators
 
-def _generation_plan_text(env, gen_number, gen_name):
-    """GENERATION_PLAN.md from the template, with legacy index rows as closed phases."""
+def interphase_id(family):
+    """The migration's own phase id (3.32 B3): ``<family>.PA3``, a name no real phase takes. ``<family>.5`` took the
+    id of the project's next phase."""
+    return "%s.PA3" % family
+
+
+_RUNNING_RE = re.compile(r"^#\s*CURRENT[ _]PHASE\s*(?:—|--|-|:)\s*(?:Phase\s+)?([A-Za-z0-9][\w.\-]*?):?\s+(.+)$", re.I)
+
+
+def running_phase(env, rel):
+    """(id, title) of the phase in flight, from the first heading of the ``CURRENT_PHASE.md`` at ``rel``, else None."""
+    for line in fsutil.read_text(env.path(rel), "").splitlines():
+        if line.startswith("# "):
+            m = _RUNNING_RE.match(line.strip())
+            return (m.group(1), m.group(2).strip()) if m else None
+    return None
+
+
+def _generation_plan_text(env, gen_number, gen_name, interphase=None, running=None):
+    """GENERATION_PLAN.md from the template, with legacy index rows as closed phases, the migration's
+    own row and (3.32 B3) the phase in flight, open, unless a PhaseEnd has closed it."""
     from .project import _template_text, _fill
     gen_str = str(gen_number)
 
@@ -463,11 +485,11 @@ def _generation_plan_text(env, gen_number, gen_name):
             highest = max(highest, int(float(parts[0])))
         except (ValueError, IndexError):
             pass
-    interphase = "%d.5" % highest
+    interphase = interphase or interphase_id(highest)
     interphase_pe = "%s/PhaseEnd_Phase%s.md" % (ped, interphase)
 
     out = []
-    out.append("# Generation %s — %s" % (gen_str, gen_name or gen_str))
+    out.append("# Generation %s — %s" % (gen_str, gen_name or "before PA3"))
     out.append("")
     out.append("Goal: legacy project layout, migrated to PA3.")
     out.append("Done-criteria: PA3 migration commit present; LEGACY_INDEX.md has entries.")
@@ -490,6 +512,10 @@ def _generation_plan_text(env, gen_number, gen_name):
     out.append("- %s PA3 migration | milestone: migration complete "
                "| scope: — | depends: — | status: closed "
                "| phase-end: %s" % (interphase, interphase_pe))
+    if running and running[0] not in [parts[0] for parts in entries]:
+        out.append("- %s %s | milestone: — | scope: — | depends: — | status: open "
+                   "| phase-end: %s/PhaseEnd_Phase%s.md"
+                   % (running[0], running[1][:60], ped, running[0]))
     out.append("")
     out.append("## Ordering rationale")
     out.append("")
@@ -497,7 +523,7 @@ def _generation_plan_text(env, gen_number, gen_name):
     out.append("")
     out.append("## Standing constraints")
     out.append("")
-    out.append("- Stdlib only.")
+    out.append("- None recorded at the migration.")
     out.append("")
     out.append("## Changes")
     out.append("")
@@ -726,4 +752,6 @@ def run(env, layout_mod):
 
     if result == "FAIL":
         return 1
+    from .project import docs_index
+    docs_index(env)
     return 0

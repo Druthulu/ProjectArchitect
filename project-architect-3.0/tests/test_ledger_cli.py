@@ -820,6 +820,15 @@ class ModCommandsTest(unittest.TestCase):
         self.assertEqual(run_cli("event", "toast", "--session", "s1")[0], 2)
         self.assertEqual(run_cli("event", "warm_ping", "--session", "s1", "--detail", "[1]")[0], 2)
 
+    def test_event_spools_a_journal_filing(self):
+        detail = {"run_id": "a1", "session_id": "s1", "why": "quiet", "through": "2026-10-30T10:00:00.000Z",
+                  "chars": 120, "usage": {"input": 1, "cacheRead": 90000, "cacheWrite": 200, "output": 80}}
+        rc, text, errs = run_cli("event", "journal_filing", "--session", "s1", "--run", "a1",
+                                 "--detail", json.dumps(detail))
+        self.assertEqual(rc, 0, errs)
+        row = json.loads(text)
+        self.assertEqual((row["kind"], row["run_id"], row["detail"]), ("journal_filing", "a1", detail))
+
     def test_toast_waiting(self):
         proj = os.path.join(self.dir, "proj")
         os.makedirs(os.path.join(proj, ".claude"))

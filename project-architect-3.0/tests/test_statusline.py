@@ -812,6 +812,17 @@ class SavingsLineTest(LedgerCase):
         project_lines = [l for l in self.lines() if "Project:" in l]
         self.assertEqual(len(project_lines), 0)
 
+    def test_session_line_ends_with_the_drive(self):
+        """3.32 B8: pa.json `drive`, autopilot by default; only a 3.2 project shows it."""
+        self.summary()
+        session = lambda: [l for l in self.lines() if "Session:" in l][0]
+        self.make_project(pa_json={"project": "demo", "mod": "on"})
+        self.assertTrue(session().endswith("autopilot"), session())
+        self.make_project(pa_json={"project": "demo", "mod": "on", "drive": "coop"})
+        self.assertTrue(session().endswith("coop"), session())
+        self.make_project(pa_json={"project": "demo"})
+        self.assertNotIn("autopilot", session())
+
     def test_live_savings_are_provisional(self):
         self.summary()
         write_json(paths.running_path(), {"schema": 1, "sessions": {self.sid: {

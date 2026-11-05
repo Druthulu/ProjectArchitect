@@ -323,6 +323,7 @@ class FirstRun32Test(unittest.TestCase):
         self.assertEqual(self.text(".claude-state", "memory", "genlegacy.md"), GENLEGACY)
         conf = self.conf()
         self.assertEqual(conf["migrated"], "3.2")
+        self.assertIn("memory_routed", conf)
         self.assertNotIn("first_run", conf)
         self.assertEqual(conf["card"], {"max_chars": 7000})
 
@@ -493,6 +494,67 @@ class FirstRun32Test(unittest.TestCase):
         self.assertEqual(self.text("HOW_WE_WORK.md"), card)
 
 
+class LivingDocsTest(unittest.TestCase):
+    """3.32 B7: `curate.py living-docs`: the section, its refusals, the job's marker."""
+
+    CARD = "# How we work\n\n## Project <!-- roles: claude expert -->\nDemo.\n"
+    HEAD = "## Living docs <!-- roles: claude expert planner curator -->\n"
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pa3-living-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        _write(os.path.join(self.tmp, "HOW_WE_WORK.md"), self.CARD)
+        self._pa({"intake": "pending"})
+
+    def _pa(self, conf):
+        _write(os.path.join(self.tmp, ".claude", "pa.json"), json.dumps(conf))
+
+    def _run(self, *extra):
+        p = subprocess.run([sys.executable, os.path.join(PKG, "tools", "curate.py"), "living-docs"] + list(extra),
+                           cwd=self.tmp, capture_output=True, text=True, encoding="utf-8",
+                           env=dict(os.environ, PA_PROJECT_ROOT=self.tmp))
+        return p.returncode, p.stdout + p.stderr
+
+    def card(self):
+        return _read(os.path.join(self.tmp, "HOW_WE_WORK.md")).decode("utf-8")
+
+    def marker(self):
+        return json.loads(_read(os.path.join(self.tmp, ".claude", "pa.json")).decode("utf-8")).get("intake")
+
+    def test_adds_the_section_and_leaves_pa_json_alone(self):
+        line = "`docs/BOOK_MAP.md`: what the book is; update in the same change as the book"
+        rc, out = self._run("--entry", line, "--dry-run")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual((self.card(), self.marker()), (self.CARD, "pending"))
+        self.assertEqual(self._run("--entry", line)[0], 0)
+        self.assertEqual(self.card(), self.CARD + "\n" + self.HEAD + "- " + line + "\n")
+        self.assertEqual(self.marker(), "pending")      # 3.32 B9: the mod ends the intake
+
+    def test_help_is_the_curators_procedure(self):
+        rc, out = self._run("--help")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("docs/retired/CLAUDE.pa2.md", out)
+        self.assertIn("update in the same change as the book", out)
+
+    def test_replaces_the_section_and_keeps_what_follows(self):
+        _write(os.path.join(self.tmp, "HOW_WE_WORK.md"), self.CARD + "\n" + self.HEAD + "- (none yet)\n\n## Later\nkept\n")
+        self.assertEqual(self._run("--entry", "`a.md`: a; with a")[0], 0)
+        self.assertEqual(self.card(), self.CARD + "\n" + self.HEAD + "- `a.md`: a; with a\n\n## Later\nkept\n")
+
+    def test_refused_past_the_cap(self):
+        self._pa({"intake": "pending", "card": {"max_chars": 120}})
+        rc, out = self._run("--entry", "`a.md`: " + "x" * 100)
+        self.assertEqual(rc, 1)
+        self.assertIn("refused: HOW_WE_WORK.md would be", out)
+        self.assertEqual((self.card(), self.marker()), (self.CARD, "pending"))
+
+    def test_refused_past_the_seeds_card_cap(self):
+        rc, out = self._run("--entry", "`a.md`: " + "x" * 6100)
+        self.assertEqual(rc, 1)
+        self.assertIn("refused: Claude's slice would be", out)
+        self.assertEqual((self.card(), self.marker()), (self.CARD, "pending"))
+
+
 class CuratorAgentTest(unittest.TestCase):
     def test_first_run_carries_the_developers_rules(self):
         # 3.24 T7a (developer 2026-10-09): the 3.2 first-run sort replaces 3.14's PA2 -> PA3 migration. The curator
@@ -505,7 +567,7 @@ class CuratorAgentTest(unittest.TestCase):
         self.assertIn("plain-English recaps", policy)
         self.assertIn("capture knowledge before a fresh session", policy)
         self.assertIn("stale items", policy)
-        first = body.split("\n## First run in 3.2\n", 1)[1].split("\n## ", 1)[0]
+        first = body.split("\n## The PA3 intake\n", 1)[1].split("\n## ", 1)[0]
         self.assertIn("`gen3`", first)
         self.assertIn("genlegacy.md", first)
         self.assertIn("--gen 3.2", first)

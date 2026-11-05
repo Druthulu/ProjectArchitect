@@ -13,6 +13,9 @@ import shutil
 import sys
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _genplan                                                 # noqa: E402
+
 try:                          # UTF-8 output even when not started with -X utf8
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -132,7 +135,7 @@ def plan_facts(root, task_id=None):
                      lines[0].strip())
         if m:
             phase, name = m.group(1), m.group(2).strip()
-        g = re.search(r"phase\s+([0-9]+(?:\.[0-9]+)*)", lines[0])
+        g = re.search(r"phase\s+(" + _genplan.PHASE_ID + r"|[0-9]+)", lines[0])     # 3.32 B8a: was numeric ids only
         if g:
             gen = g.group(1)
     if task_id:

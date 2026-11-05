@@ -54,6 +54,14 @@
   "HOW_WE_WORK.template.md": [
     [
       [
+        "     card.max_chars in .claude/pa.json (default 7000), enforced by the archive."
+      ],
+      [
+        "     card.max_chars in .claude/pa.json (default 10000), enforced by the archive."
+      ]
+    ],
+    [
+      [
         "## Build / run / test"
       ],
       [
@@ -198,12 +206,36 @@
     ],
     [
       [
-        "## Rhythm <!-- roles: router planner review discuss auditor curator -->",
-        "{{RHYTHM}}  <!-- autonomous: the loop (the mod; under mod off the router) runs the phase end to end, stopping"
+        "## Rhythm <!-- roles: planner review auditor curator -->",
+        "{{RHYTHM}}  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping",
+        "                  only at the two gates. review: tasks marked `review: yes` stop the queue with REVIEW.md. -->",
+        "Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the",
+        "developer at the close question)."
       ],
+      []
+    ],
+    [
       [
         "## Rhythm <!-- roles: planner review auditor curator -->",
-        "{{RHYTHM}}  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping"
+        "{{RHYTHM}}  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping",
+        "                  only at the two gates. review: tasks marked `review: yes` stop the queue with REVIEW.md. -->",
+        "Gates: plan approval (in the plan-mode view) and the milestone (verified by the",
+        "closer expert)."
+      ],
+      []
+    ],
+    [
+      [
+        "## Rhythm <!-- roles: router planner review discuss auditor curator -->",
+        "{{RHYTHM}}  <!-- autonomous: the loop (the mod; under mod off the router) runs the phase end to end, stopping",
+        "                  only at the two gates. review: tasks marked `review: yes` stop the queue with REVIEW.md. -->",
+        "Gates: plan approval (in the plan-mode view; under mod off the planner session) and the milestone (verified by the",
+        "closer expert).",
+        "",
+        "## Tools <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+      ],
+      [
+        "## Tools <!-- roles: expert coder planner review auditor curator -->"
       ]
     ],
     [
@@ -211,14 +243,12 @@
         "## Rhythm <!-- roles: router planner review discuss auditor curator -->",
         "{{RHYTHM}}  <!-- autonomous: the router runs the phase end to end, stopping only at the two gates.",
         "                  review: tasks marked `review: yes` end the turn with REVIEW.md and wait. -->",
-        "Gates: plan approval (planner session) and the milestone (verified by the closer expert)."
+        "Gates: plan approval (planner session) and the milestone (verified by the closer expert).",
+        "",
+        "## Tools <!-- roles: expert coder router planner review critic discuss auditor curator -->"
       ],
       [
-        "## Rhythm <!-- roles: planner review auditor curator -->",
-        "{{RHYTHM}}  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping",
-        "                  only at the two gates. review: tasks marked `review: yes` stop the queue with REVIEW.md. -->",
-        "Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the",
-        "developer at the close question)."
+        "## Tools <!-- roles: expert coder planner review auditor curator -->"
       ]
     ],
     [
@@ -236,10 +266,24 @@
     ],
     [
       [
-        "## Tools <!-- roles: expert coder router planner review critic discuss auditor curator -->"
+        "- Scratch: `.run/<phase>/` holds the phase's temp work (gitignored; never the system temp). It is a temp folder only,",
+        "  never storage: what the project needs lives in its proper place in the repo. The phase's cleanup task checks it and"
       ],
       [
-        "## Tools <!-- roles: expert coder planner review auditor curator -->"
+        "- Scratch: all of a phase's work in `.run/` goes under `.run/<phase>/` (gitignored; never the system temp), nowhere",
+        "  else in `.run/`. It is a temp folder only, never a home for long-term content: what the project needs lives in its",
+        "  proper place in the repo. The phase's cleanup task checks it and"
+      ]
+    ],
+    [
+      [
+        "- Scratch: `.run/` (gitignored; never the system temp)"
+      ],
+      [
+        "- Scratch: all of a phase's work in `.run/` goes under `.run/<phase>/` (gitignored; never the system temp), nowhere",
+        "  else in `.run/`. It is a temp folder only, never a home for long-term content: what the project needs lives in its",
+        "  proper place in the repo. The phase's cleanup task checks it and",
+        "  the close deletes it; a tool deletes its own temp folders when it finishes."
       ]
     ],
     [
@@ -252,7 +296,7 @@
       ],
       [
         "<!-- The card: standing facts for every agent. Never appended to; the cap is",
-        "     card.max_chars in .claude/pa.json (default 7000), enforced by the archive.",
+        "     card.max_chars in .claude/pa.json (default 10000), enforced by the archive.",
         "     Each role prints its slice with `tools/card.py slice <role>`.",
         "     Written at install (interview) and edited in the same task as whatever changed it (H7). -->"
       ]
@@ -263,26 +307,6 @@
       ],
       [
         "<!-- project-specific only; the general house style is in the project-architect skill -->"
-      ]
-    ],
-    [
-      [
-        "Gates: plan approval (in the plan-mode view) and the milestone (verified by the",
-        "closer expert)."
-      ],
-      [
-        "Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the",
-        "developer at the close question)."
-      ]
-    ],
-    [
-      [
-        "Gates: plan approval (in the plan-mode view; under mod off the planner session) and the milestone (verified by the",
-        "closer expert)."
-      ],
-      [
-        "Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the",
-        "developer at the close question)."
       ]
     ],
     [
@@ -312,10 +336,19 @@
     ],
     [
       [
-        "| expert_ttl | `PY tools/expert_ttl.py --coder <coder>` | prints `1h` or `5m`: a task's expert agent or its `-5m` twin |"
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `how-we-work --retire`; `--dry-run` first |"
       ],
       [
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `living-docs --entry`, `how-we-work --retire`; `--dry-run` first |"
+      ]
+    ],
+    [
+      [
+        "| job | `PY tools/job.py` | `start -- <cmd>`: a command that may run longer than a few minutes, detached; `status <id>` |",
         "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `how-we-work --retire`; `--dry-run` first |"
+      ],
+      [
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `living-docs --entry`, `how-we-work --retire`; `--dry-run` first |"
       ]
     ],
     [
@@ -376,11 +409,19 @@
     ],
     [
       [
+        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd |"
+      ],
+      [
+        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd; `history` rebuilds `docs/PHASE_HISTORY.md` |"
+      ]
+    ],
+    [
+      [
         "| phaseend_index | `PY tools/phaseend_index.py` | assemble, lint and archive a PhaseEnd |",
         "| genend_index | `PY tools/genend_index.py` | assemble and lint a GenerationEnd |"
       ],
       [
-        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd |",
+        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd; `history` rebuilds `docs/PHASE_HISTORY.md` |",
         "| genend_index | `PY tools/genend_index.py` | assemble a GenerationEnd |"
       ]
     ],
@@ -390,8 +431,37 @@
         "| genend_index | `{{PY}} tools/genend_index.py` | assemble and lint a GenerationEnd |"
       ],
       [
-        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd |",
+        "| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd; `history` rebuilds `docs/PHASE_HISTORY.md` |",
         "| genend_index | `PY tools/genend_index.py` | assemble a GenerationEnd |"
+      ]
+    ],
+    [
+      [
+        "| run | `bash tools/run.sh` | any command that may print >40 lines; `--bg` / `--wait` for long compute |"
+      ],
+      [
+        "| run | `bash tools/run.sh` | any command that may print >40 lines |",
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `living-docs --entry`, `how-we-work --retire`; `--dry-run` first |"
+      ]
+    ],
+    [
+      [
+        "| run | `bash tools/run.sh` | any command that may print >40 lines; `--bg` / `--wait` for long compute |",
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `how-we-work --retire`; `--dry-run` first |"
+      ],
+      [
+        "| run | `bash tools/run.sh` | any command that may print >40 lines |",
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `living-docs --entry`, `how-we-work --retire`; `--dry-run` first |"
+      ]
+    ],
+    [
+      [
+        "| run | `bash tools/run.sh` | any command that may print >40 lines; `--bg` / `--wait` for long compute |",
+        "| expert_ttl | `PY tools/expert_ttl.py --coder <coder>` | prints `1h` or `5m`: a task's expert agent or its `-5m` twin |"
+      ],
+      [
+        "| run | `bash tools/run.sh` | any command that may print >40 lines |",
+        "| curate | `PY tools/curate.py` | `memory --route\\|--reindex`, `rules --reseed\\|--demote`, `cookbook --demote`, `claude-md\\|card --refresh`, `living-docs --entry`, `how-we-work --retire`; `--dry-run` first |"
       ]
     ],
     [

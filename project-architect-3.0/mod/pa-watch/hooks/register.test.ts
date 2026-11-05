@@ -503,6 +503,20 @@ describe('the live feed records (3.23 T13d)', () => {
     expect(records(m)).toEqual([expect.objectContaining({ agent: 'A1', type: '', text: 'Looking.' })])
   })
 
+  test('3.31 T2b: the partner\'s filing turn feeds nothing and sets no band line; its thinking entry stays', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [STATE]: '{"partner":{"agentId":"A1","filingInFlight":true}}' }, {}, LIST)
+    steps(on, [{ kind: 'thinking', index: 0, text: 'Which span?' }, T('Reading the journal.'), TOOL('Read')], 'Reading the journal.', [{ name: 'Read', input: {} }])
+    await $.session.start(START)
+    await run($, 'A1')
+    expect(records(m)).toEqual([])
+    expect((JSON.parse(m.get(`${ROOT}/.run/mod/S1/agents/A1.json`) ?? '{}') as Record<string, unknown>)['line']).toBe('')
+    expect([...m.keys()].filter(p => /\/\.claude-state\/journal\/.*-thinking\.md$/.test(p)).length).toBe(1)
+    // another agent's step is fed as before
+    await run($, 'E1')
+    expect(records(m).map(r => r['agent'])).toEqual(['E1'])
+  })
+
   test('the folder follows state.json\'s feed.dir', async ($, on) => {
     mock.clock(on)
     const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [STATE]: '{"feed":{"dir":".run/mod/S0/feed"}}' }, {}, LIST)
@@ -785,6 +799,25 @@ describe('background shells (3.28.1 T15)', () => {
     expect(got['C1']?.map(s => [s.id, s.name, s.moved])).toEqual([['m7', 'python', true], ['m8', 'make', true]])
     await append($, notice('m7', 'completed', 'Background command "python -" completed (exit code 0)'))
     expect(shells(m)['C1']?.map(s => s.id)).toEqual(['m8'])
+  })
+
+  test('3.32.1 T5: an agent\'s Agent call records its new helper\'s parent; an empty parentId in the facts is filled', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
+    const PARENTS = `${ROOT}/.run/mod/S1/parents.json`
+    on('agent.spawn', async () => ({ model: 'claude-opus-5-5', agentId: 'C9' })) // no parentAgentId, as Claude Code leaves it out
+    let res: unknown = 'Async agent launched successfully.\nagentId: C9 (internal ID - do not mention to user.)'
+    on('tool.call', { tool: 'Agent' }, async () => ({ result: res, text: typeof res === 'string' ? res : undefined }) as never)
+    await $.session.start(START)
+    await $.agent.spawn({ subagentType: 'pa-coder', prompt: 'x', description: 'T1.c2' })
+    const parentOfC9 = (): unknown => (JSON.parse(m.get(`${ROOT}/.run/mod/S1/agents/C9.json`) ?? '{}') as { parentId?: unknown }).parentId
+    expect(parentOfC9()).toBe('')
+    await $.tool.call({ tool: 'Agent', subagent_type: 'pa-coder', prompt: 'x', run_in_background: true, agentId: 'E1' } as never)
+    expect([JSON.parse(m.get(PARENTS) ?? '{}'), parentOfC9()]).toEqual([{ C9: 'E1' }, 'E1'])
+    res = { status: 'async_launched', agentId: 'C10' }
+    await $.tool.call({ tool: 'Agent', subagent_type: 'pa-coder', prompt: 'y', agentId: 'E1' } as never)
+    await $.tool.call({ tool: 'Agent', subagent_type: 'pa-coder', prompt: 'z' } as never) // the main session's: no caller, not recorded
+    expect(JSON.parse(m.get(PARENTS) ?? '{}')).toEqual({ C9: 'E1', C10: 'E1' })
   })
 
   test('a failed shell keeps its record with the exit code until its agent reports', async ($, on) => {

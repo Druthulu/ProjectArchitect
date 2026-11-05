@@ -29,7 +29,7 @@ from pa import paths  # noqa: E402
 
 SID = "11111111-0000-4000-8000-000000000017"
 SLUG = "Z--Test-Proj"
-AGENT = "a1b2c3d4000000007"
+AGENT = "a1b2c3d4000000008"
 TOOL_USE_ID = "toolu_01SYNTH00000000000000159"
 PENDING_AGENT = "b9c8d7e6f5a403121"
 CWD = "Z:/Test/Proj"
@@ -426,7 +426,7 @@ class RecalcTest(CliTestCase):
     def test_recalc_tool_use_stop_is_interrupted(self):
         """A subagent transcript ending on tool_use -> recalc writes status='interrupted'."""
         # create a subagent whose last stop_reason is tool_use
-        agent_id = "aaa1111100000001e"
+        agent_id = "aaa1111100000001f"
         sub_path = os.path.join(self.projects, SLUG, SID, "subagents",
                                 "agent-%s.jsonl" % agent_id)
         records = [
@@ -2200,12 +2200,12 @@ class DoctorInstallRowsTest(CliTestCase):
     def test_card_over_cap_warns(self):
         project = self._project()
         with open(os.path.join(project, "HOW_WE_WORK.md"), "w", encoding="utf-8") as fh:
-            fh.write("x" * 8000)
+            fh.write("x" * 11000)
         rc, text, errs = run_cli("doctor", "--skip-hooks", "--project", project)
         lines = [ln for ln in text.splitlines() if ln.strip().startswith(("OK", "WARN")) and "card:" in ln]
         self.assertTrue(lines, text)
         self.assertTrue(lines[0].strip().startswith("WARN"), lines)
-        self.assertIn("8000 chars", lines[0])
+        self.assertIn("11000 chars", lines[0])
 
     def test_card_placeholders_warn(self):
         project = self._project()

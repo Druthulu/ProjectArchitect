@@ -15,6 +15,10 @@ export type Partner = {
   pingInFlight: boolean
   /** The context of its first answered turn (seed + fixed prompt): what a fresh start costs to write; 0 unknown. */
   firstCtx: number
+  /** 3.31 T2: a hidden filing turn is running: messages wait in `outbox` until its turn.complete. */
+  filingInFlight: boolean
+  /** 3.31 T2: the `topic` call's summary, kept for the filing request ('' none). */
+  summary: string
 }
 
 export type Child = { parent: string; type: string; startedAt: number; status: string }
@@ -191,6 +195,14 @@ export type RouterState = {
   /** 3.23 T13d: the live feed's folder, project-relative (`.run/mod/<sid>/feed`, the sid the monitor started under);
    * kept across a `/clear`, so the writers keep using the folder the running monitor reads. */
   feed: { dir: string }
+  /** 3.31 T2: ms of the newest `dev/msg` or `claude/answer` entry filed (0 none this session). */
+  lastExchangeAt: number
+  /** 3.31 T2: ISO `through` of the newest `claude/record` entry ('' none; read from the journal at a session's start). */
+  filedThrough: string
+  /** 3.31 T2: the ISO time the filing request in flight covers ('' none). */
+  filingThrough: string
+  /** 3.31 T2: `records.py todo` lines owed to the developer's next message to Claude. */
+  todo: string[]
 }
 
 /** A model's prices as `pa_ledger.py prices --json` gave them: a table and the key to look up in it. */
@@ -294,6 +306,9 @@ export type LoopState = {
   /** 3.30.1: tasks the plan set back while held or cut off, by id: the attempt cut short. Their next start is a relaunch
    * with the progress parked at `logs/<T>.aside.md` (task_log.py aside). Cleared at the close. */
   setAside?: Record<string, { attempt: number }>
+  /** 3.32.1 T5 (#6): the pick's spawn Claude Code's auto-mode check refused with no verdict: that task attempt, the
+   * refusals so far, the last one's ms. The pick runs again after SPAWN_RETRY_MS; null or absent none. */
+  spawnRetry?: { task: string; attempt: number; n: number; at: number } | null
 }
 
 /** 3.28.1 T15: a background shell (Bash `run_in_background`) an agent started (`.run/mod/<sid>/shells.json`): Claude

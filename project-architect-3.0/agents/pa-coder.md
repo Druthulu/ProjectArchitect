@@ -1,7 +1,7 @@
 ---
 name: pa-coder
 role: coder
-version: 3.30.9
+version: 3.32.6
 description: Edit-build-test loop for one briefed change. Commits when green. Returns a plain report. Default coder.
 model: claude-opus-5-5[1m]
 effort: medium

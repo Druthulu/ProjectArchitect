@@ -30,7 +30,7 @@ import re
 import sys
 
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
-_PHASE_RE = re.compile(r"^\s*-\s+[0-9]+(?:\.[0-9]+)+\s+[^|]*\|")
+_PHASE_RE = re.compile(r"^\s*-\s+(?:[A-Za-z]{2,}[0-9]*|[0-9]+)(?:\.[0-9A-Za-z]+)+\s+[^|]*\|")
 
 
 def _planner_effort(project):

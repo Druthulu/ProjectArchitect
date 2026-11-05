@@ -5,8 +5,9 @@ Public:
 
 The mapping drives :func:`migrate.run`: every row is a step with its own
 check/execute/verify cycle.  The folder holding the registry, context and
-PhaseEnd files becomes the ``phase_ends_dir`` in ``pa.json``; ``current/``,
-``misc/`` and ``logs/`` live inside it.
+PhaseEnd files is only the source: its PhaseEnds move to ``phase-ends/``, the
+``phase_ends_dir`` in ``pa.json``, with ``current/``, ``misc/`` and ``logs/``
+inside it; its other documents stay where they are (3.32 B10a).
 
 Stdlib only; nothing touches the filesystem at import time.
 """
@@ -14,10 +15,11 @@ Stdlib only; nothing touches the filesystem at import time.
 import fnmatch
 import os
 import re
+import time
 
 from . import natural_sort
 from . import phaseend_normalize
-from .migrate import Row, readme_rows
+from .migrate import Row, interphase_id, readme_rows, running_phase
 from .howwework import _CLAUDE_RE
 
 # glob patterns for research-archive documents (legacy; see _is_research_doc)
@@ -44,13 +46,17 @@ _GEN_PREFIX_RE = re.compile(r"\w+_Gen\d", re.IGNORECASE)
 _PHASE_PREFIX_RE = re.compile(r"\w+\s+Phase\s+\d", re.IGNORECASE)
 
 
+# a doc edited this recently is live: it stays put (3.32 B3; `*_Plan.md` took the live Gen5 plan and Gen6 inbox)
+RECENT_DAYS = 30
+
+
 # --------------------------------------------------------------------------- helpers
 
 def _phase_ends_dir(env):
-    """Derive the phase-ends directory from detect.signals.
+    """Derive the project's PA2 folder from detect.signals.
 
     The folder holding ``registry_like``, ``context_like`` or
-    ``loose_phaseends`` paths is the phase-ends dir.
+    ``loose_phaseends`` paths is the migration's source.
     """
     sig = env.signals
     candidates = []
@@ -139,6 +145,31 @@ def _is_research_doc(name):
         return True
 
     return False
+
+
+def _recently_edited(env, ped):
+    """The file names directly in *ped* edited in the last RECENT_DAYS days: by commit date, since a clone's
+    files all carry the checkout's mtime; by mtime for what git has not seen yet (or with no git)."""
+    from .project import _git
+    cut = time.time() - RECENT_DAYS * 86400
+
+    def recent(name):
+        path = env.path("%s/%s" % (ped, name))
+        return os.path.isfile(path) and os.path.getmtime(path) >= cut
+
+    if not env.git_top:
+        abs_ped = env.path(ped)
+        return {n for n in os.listdir(abs_ped) if recent(n)} if os.path.isdir(abs_ped) else set()
+    prefix = ped + "/"
+    _rc, log = _git(env.repo, "-c", "core.quotepath=off", "log", "--since=%d.days.ago" % RECENT_DAYS,
+                    "--name-only", "--format=", "--", ped, timeout=300)
+    names = {p[len(prefix):] for p in log.splitlines() if p.startswith(prefix) and "/" not in p[len(prefix):]}
+    _rc, status = _git(env.repo, "status", "--porcelain", "-z", "--", ped, timeout=300)
+    for entry in status.split("\0"):
+        rel = entry[3:]
+        if rel.startswith(prefix) and "/" not in rel[len(prefix):] and recent(rel[len(prefix):]):
+            names.add(rel[len(prefix):])
+    return names
 
 
 def _research_index_text(files, env, phase_dir):
@@ -249,9 +280,11 @@ def mapping(env):
 
     rows = []
 
-    # -- determine phase-ends dir and set it on env -------------------------
+    # -- the PA2 folder (ped) is the source; PA3's home is always phase-ends --
+    # 3.32 B10a: the mod and the agents name `phase-ends`; a PhaseEnd or a PA3 working file goes there, the rest stays
     ped = _phase_ends_dir(env)
-    env.phase_ends_dir = ped
+    home = env.phase_ends_dir = "phase-ends"
+    env.phase_ends_src = ped
 
     # -- PhaseEnd renames per phaseend_normalize.plan -----------------------
     pe_names = _phaseend_files(env, ped)
@@ -266,20 +299,33 @@ def mapping(env):
 
     newest_family = _newest_family(sorted(normalized))
     interphase_label = getattr(env, "interphase", None) or "PA3 migration"
-    phase_n = newest_family + ".5"
+    phase_n = interphase_id(newest_family)
 
     for old, new, kind in renames:
         src = "%s/%s" % (ped, old)
-        dst = "%s/%s" % (ped, new)
+        dst = "%s/%s" % (home, new)
         rows.append(Row("move", src, dst, "normalize PhaseEnd name"))
+
+    # -- PhaseEnds with no rename and GenerationEnds move to phase-ends ------
+    abs_ped = env.path(ped)
+    gen_ends = []
+    if ped != home:
+        if os.path.isdir(abs_ped):
+            gen_ends = sorted(n for n in os.listdir(abs_ped) if fnmatch.fnmatch(n, "GenerationEnd*.md"))
+        renamed = {old for old, _new, _kind in renames}
+        for name in [n for n in pe_names if n not in renamed] + gen_ends:
+            rows.append(Row("move", "%s/%s" % (ped, name), "%s/%s" % (home, name), "move to phase-ends"))
 
     # -- research docs -> docs/research-archive/ ----------------------------
     research_docs = []
-    abs_ped = env.path(ped)
     if os.path.isdir(abs_ped):
+        live = _recently_edited(env, ped)
         for name in sorted(os.listdir(abs_ped)):
-            if name.endswith(".md") and _is_research_doc(name):
+            if name.endswith(".md") and _is_research_doc(name) and name not in live and name not in gen_ends:
                 research_docs.append(name)
+        kept = [n for n in sorted(live) if _is_research_doc(n)]
+        if kept:
+            note("kept in place (edited in the last %d days): %s" % (RECENT_DAYS, ", ".join(kept)))
 
     for name in research_docs:
         rows.append(Row("move", "%s/%s" % (ped, name),
@@ -295,7 +341,7 @@ def mapping(env):
         legacy_line = ("\n## Legacy\n\n"
                        "Pre-PA3 research documents: "
                        "see `docs/research-archive/INDEX.md`.\n")
-        rows.append(Row("generate", None, "%s/RESEARCH_INDEX.md" % ped,
+        rows.append(Row("generate", None, "%s/RESEARCH_INDEX.md" % home,
                          "legacy pointer in RESEARCH_INDEX",
                          {"generator": "text", "text": legacy_line,
                           "mode": "append"}))
@@ -320,13 +366,13 @@ def mapping(env):
     cp_rel = "%s/CURRENT_PHASE.md" % ped
     if os.path.isfile(env.path(cp_rel)):
         rows.append(Row("move", cp_rel,
-                         "%s/logs/PhaseLog_%s.partial.md" % (ped, newest_family),
+                         "%s/logs/PhaseLog_%s.partial.md" % (home, newest_family),
                          "archive current phase"))
 
     # -- move phase-logs/* -> logs/ (D10: collision check first) -------------
     logs_src = env.path("%s/phase-logs" % ped)
     if os.path.isdir(logs_src):
-        logs_dst_dir = env.path("%s/logs" % ped)
+        logs_dst_dir = env.path("%s/logs" % home)
         phase_log_names = sorted(n for n in os.listdir(logs_src)
                                  if n.endswith(".md"))
         if os.path.isdir(logs_dst_dir):
@@ -340,7 +386,7 @@ def mapping(env):
         for name in phase_log_names:
             rows.append(Row("move",
                              "%s/phase-logs/%s" % (ped, name),
-                             "%s/logs/%s" % (ped, name),
+                             "%s/logs/%s" % (home, name),
                              "move phase log"))
 
     # -- retire effort map ---------------------------------------------------
@@ -401,21 +447,23 @@ def mapping(env):
                      {"generator": "how_we_work", "found": hw_found}))
 
     # -- P9: generate LEGACY_INDEX.md ----------------------------------------
-    rows.append(Row("generate", "", "%s/LEGACY_INDEX.md" % ped,
+    rows.append(Row("generate", "", "%s/LEGACY_INDEX.md" % home,
                      "from PhaseEnd files",
-                     {"generator": "legacy_index", "phase_dir": ped}))
+                     {"generator": "legacy_index", "phase_dir": home}))
 
     # -- P9: generate GENERATION_PLAN.md -------------------------------------
     rows.append(Row("generate", "", "GENERATION_PLAN.md",
                      "from template + legacy index",
                      {"generator": "generation_plan",
-                      "gen_number": 1, "gen_name": ""}))
+                      "gen_number": 1, "gen_name": "",
+                      "interphase": phase_n,
+                      "running": running_phase(env, "%s/CURRENT_PHASE.md" % ped)}))
 
     # -- phase-ends README: retire 2.0, generate PA3 -------------------------
     rows.extend(readme_rows(env))
 
     # -- P9: interphase PhaseEnd ---------------------------------------------
-    interphase_path = "%s/PhaseEnd_Phase%s.md" % (ped, phase_n)
+    interphase_path = "%s/PhaseEnd_Phase%s.md" % (home, phase_n)
     mapping_table = _mapping_table(rows)
     counts = _counts_line(rows, env)
     rows.append(Row("generate", "", interphase_path,

@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.30.9: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.32.1: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -112,7 +112,8 @@ which runs with `--yes`), then:
   session), permissions (`defaultMode: auto`) and env added, thinking summaries on, auto-compact,
   recaps and the Task tools off — **no hooks**: those are per machine, from step 1. `.claude/pa.json`
   gets `mod: on` (the switch that makes the mod active in this repository) and
-  `upgrade: auto` unless it already says `ask`;
+  `upgrade: auto` unless it already says `ask`. `CLAUDE.md` names the project's real `phase_ends_dir`, the memory
+  archive, and `docs/PRE_PA3_INDEX.md`, the index of older documents, which this step builds by script;
 - **memory link** — creates `.claude-state/memory/` in the repo with a `MEMORY.md`
   index, then junctions (Windows) or symlinks (elsewhere) `~/.claude/projects/<slug>/memory`
   to point there so Claude Code's auto-memory reads and writes go to the repo. If a real
@@ -124,8 +125,8 @@ which runs with `--yes`), then:
 It asks for one line describing the project (or pass `--tagline`; the default is the
 `**Project:**` line of your `PROJECT_CONTEXT.md` when there is one), and for confirmation
 (skipped by `--yes`, by `--dry-run`, and when stdin is not a terminal). At a terminal it also
-asks the card's short interview: your name, experience, domain, autonomy posture, notification
-channel and rhythm for `HOW_WE_WORK.md`, and your plan tier (max20, max5 or pro; default max5).
+asks the card's short interview: your name, experience, domain, autonomy posture and notification
+channel for `HOW_WE_WORK.md`, and your plan tier (max20, max5 or pro; default max5).
 
 Useful switches: `--dry-run` · `--yes` · `--name NAME` · `--tagline TEXT` · `--python EXE` ·
 `--no-commit` · `--force` (overwrite project-edited copies of the packaged files).
@@ -237,15 +238,44 @@ work to go on and Claude lets it. Claude drafts each plan and the mod shows it i
 view for your approval; then the tasks run in the same session while you keep talking with
 Claude.
 
-**The first run in 3.2.** If the project already had memories when it entered 3.2 (from plain
-Claude Code, PA2 or PA3 3.15.x), the mod asks you once, together with your first message,
-whether the memory curator sorts them now or you pause it. No plan is drafted or started until
-the sort is done or paused; a paused sort is asked again in a later session. The curator sorts
-by your policy, card first: your preferences go to the card's `## Developer` section
+**The PA3 intake.** Once per project, one agent reads the project in the background: at the first
+session after an install, or after the update on a project already on PA3. It starts with your
+first message, and a card lists its steps. No plan is drafted or started until it is done; talk
+goes on as usual. If it is stopped it starts again with your next message and does only what is
+missing; after three tries planning goes ahead and Claude tells you what's missing.
+
+If the project already had memories when it entered 3.2 (from plain Claude Code, PA2 or PA3
+3.15.x), the first step sorts them by your policy, card first: your preferences go to the card's `## Developer` section
 (`HOW_WE_WORK.md`) and standing facts to its other sections, norms to `rules/`, traps and
 techniques to the cookbook, and memory keeps only what fits none of these. Stale items and items
 that contradict PA3's way of working are archived in the memory folder's `gen3.2.md`. Nothing is
-deleted. Claude then tells you what went where.
+deleted, and the line at the end of the intake names the archive.
+
+**The project's past.** A fresh Claude starts small and looks up the rest. The past stays where
+it is, and PA3 makes it findable:
+
+- `docs/PRE_PA3_INDEX.md` lists the older documents, a project's own `docs/history/` included,
+  one line each, then where the transcripts and the memory archive are. A script builds it once,
+  at install or after the update on a project already on PA3. One line in `CLAUDE.md` points to
+  it; no agent loads it.
+- The intake writes `docs/PRE_PA3_STATE.md`, one page on where the project stands. Every fresh
+  Claude starts with it until the project's own records replace it, and the planner reads it too.
+- The phase history file holds one line per phase and this generation's recaps in full, added to at
+  each close. A fresh Claude sees this generation's lines and the three newest recaps.
+- The intake reads `docs/retired/` and the project's docs, and writes `## Living docs` on the
+  card: the doc, what it answers, when to update it.
+
+Save claude.ai chats and other notes as files under `docs/history/` before you install, so the
+index lists them. The
+[wiki page](https://github.com/Druthulu/ProjectArchitect/wiki/Project-past) has the details.
+
+**`drive`.** `.claude/pa.json` `drive` says how work runs. `autopilot`, the default, runs a plan's
+tasks one after another up to the close question. In `coop` nothing runs while you and Claude talk:
+a batch you lock in goes on the plan and runs on its own, never interrupted, and when it ends
+everything stops and Claude brings the results. There are no reminders, no close question and no
+nudge toward the next plan, and the phase closes on your word. Tell Claude to switch, or edit the
+key. The value is read at the next task boundary, and it shows at the end of the statusline's
+Session line.
 
 ## Updating and healing
 
@@ -330,16 +360,18 @@ migrates it in one commit: the registry is split into `rules/` (one file per `##
 the cookbook into `cookbook/`, ops-setup into `docs/ops/`.  `CLAUDE.md`, effort-map, the phase
 templates and `docs/project-architect.md` move to `docs/retired/`.  `CURRENT_PHASE.md`
 becomes `phase-ends/logs/PhaseLog_<N>.partial.md` (where N is the next phase number), and
-an interphase `PhaseEnd_Phase<N-1>.5.md` is generated with a summary table.
+an interphase `PhaseEnd_Phase<N-1>.PA3.md` is generated with a summary table.
 `HOW_WE_WORK.md`, `GENERATION_PLAN.md` and `LEGACY_INDEX.md` are written from templates.
 The SessionEnd backup hook is removed from `.claude/settings.json` (the script stays in
-place).  Nothing is deleted; everything retired is under `docs/retired/`.
+place).  Nothing is deleted; everything retired is under `docs/retired/`.  A document edited
+in the last 30 days stays where it is.
 
 Use `--interphase NAME` to override the interphase PhaseEnd label (default: "PA3 migration").
 
 The **1.x layout** (a `Project Context Markdowns`-style folder holding registry, context and
-PhaseEnds) keeps that folder as `phase_ends_dir` in `pa.json`; PhaseEnds are renamed in place,
-research documents archived to `docs/research-archive/`, and the registry split into `rules/`.
+PhaseEnds) moves its PhaseEnds to `phase-ends/`, renamed where needed; research documents are
+archived to `docs/research-archive/`, the registry split into `rules/`, and the folder's other
+documents stay where they are.
 
 The **overlay** layout (a `*-architect` or `*-kit` directory beside the project) follows the
 same pattern: rules come from both `DIGEST.md` bullets and the kit's registry templates, ops

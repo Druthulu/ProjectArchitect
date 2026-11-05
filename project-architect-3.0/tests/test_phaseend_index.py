@@ -575,6 +575,110 @@ print("exported: %s" % p)
 """
 
 
+class TestStateSources(unittest.TestCase):
+    """3.32 B6: what the pre-PA3 state page reads, in the project's own phase_ends_dir."""
+
+    def test_checkpoint_plans_and_the_newest_phaseends(self):
+        tmp = tempfile.mkdtemp(prefix="pa3-state-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        ped = "docs/phases"
+        _write(os.path.join(tmp, "GENERATION_PLAN.md"), "# gen\n")
+        _write(os.path.join(tmp, ped, "current", "PHASE_PLAN.md"), "# plan\n")
+        _write(os.path.join(tmp, ped, "logs", "PhaseLog_Gen5.partial.md"), "# checkpoint\n")
+        for pid in ("Gen5.2", "Gen5.9", "Gen5.10", "Gen5.4.6"):
+            _write(os.path.join(tmp, ped, "PhaseEnd_Phase%s.md" % pid), "# end\n")
+        self.assertEqual(PI.state_sources(tmp, {"phase_ends_dir": ped}), [
+            ped + "/logs/PhaseLog_Gen5.partial.md", ped + "/current/PHASE_PLAN.md", "GENERATION_PLAN.md",
+            ped + "/PhaseEnd_PhaseGen5.10.md", ped + "/PhaseEnd_PhaseGen5.9.md", ped + "/PhaseEnd_PhaseGen5.4.6.md"])
+        _write(os.path.join(tmp, "CURRENT_PHASE.md"), "# live\n")
+        self.assertEqual(PI.state_sources(tmp, {"phase_ends_dir": ped})[0], "CURRENT_PHASE.md")
+
+
+class TestPhaseHistory(unittest.TestCase):
+    """3.32 B5: docs/PHASE_HISTORY.md and the seed's `## This generation`."""
+
+    PED = "Project Context Markdowns"
+    PLAN = ("# Generation 1 — 1\n\n## Phases\n\n<!-- - <G>.<n> <name> | status: open -->\n\n"
+            "- 8 PhaseEnd — Phase 8 Paper | milestone: — | status: closed | phase-end: x.md\n"
+            "- Gen5.1 PhaseEnd — Gen5.1: the labels | milestone: — | status: closed | phase-end: x.md\n"
+            "- Gen5.2 PhaseEnd — Gen5.2: the floors | milestone: — | status: closed | phase-end: x.md\n"
+            "- Gen5.3 Exits | milestone: exits | status: open | phase-end: x.md\n"
+            "- 12.5 PA3 migration | milestone: m | status: closed | phase-end: x.md\n\n"
+            "## Ordering rationale\n\n- not a phase | status: open\n")
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="pa3-history-")
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        _write(os.path.join(self.root, ".claude", "pa.json"), json.dumps({"phase_ends_dir": self.PED}))
+        self.conf = {"phase_ends_dir": self.PED}
+
+    def _end(self, name, text):
+        _write(os.path.join(self.root, self.PED, name), text)
+
+    def _beds(self):
+        _write(os.path.join(self.root, "GENERATION_PLAN.md"), self.PLAN)
+        self._end("PhaseEnd_Phase8.md", "# PhaseEnd — Phase 8 Paper\n**Date:** 2026-01-02\n\n## Build Log\nx\n")
+        self._end("PhaseEnd_Phase9_1.md", "# PhaseEnd — Phase 9.1 Chain data\n**Date:** 2026-02-03\n\n"
+                  "## What this phase was, why it was needed, and what it did (plain English)\n\n"
+                  "**Chain data** came in. It took a week.\n\n---\n\n## Next\nz\n")
+        self._end("PhaseEnd_PhaseGen5.1.md", "# PhaseEnd — Gen5.1: the labels\nClosed: 2026-10-05\n\n"
+                  "## Plain-English summary (what / why / what it did)\n\nThe labels held.\n\nSecond paragraph.\n")
+        self._end("PhaseEnd_PhaseGen5.2.md", "# PhaseEnd — Phase Gen5.2: the floors (implements Gen Gen5.2)\n"
+                  "Approved: 2026-10-07 | Closed: 2026-10-09 | Planner: p\n\n## Plain-English Recap\nFloors rose.\n")
+        self._end("PhaseEnd_PhaseGen5.PA3.md", "# PhaseEnd -- Phase Gen5.PA3: PA3 migration\n\nClosed: 2026-10-31\n\n"
+                  "## Plain-English Recap\n\nMigration produced 91 rules.\n")
+
+    def test_file_every_phaseend_then_this_generations_recaps(self):
+        self._beds()
+        text = PI.render_history(self.root, self.conf)
+        self.assertIn("\n- 8 | 2026-01-02 | Paper\n", text)                         # no recap: its title
+        self.assertIn("\n- 9.1 | 2026-02-03 | Chain data | Chain data came in.\n", text)
+        self.assertIn("\n- Gen5.1 | 2026-10-05 | the labels | The labels held.\n", text)
+        self.assertIn("\n- Gen5.2 | 2026-10-09 | the floors | Floors rose.\n", text)  # Closed, not Approved
+        self.assertLess(text.index("- 8 |"), text.index("- 9.1 |"))
+        recaps = text[text.index("## This generation's recaps (Gen5, newest first)"):]
+        self.assertLess(recaps.index("### Gen5.2: the floors (2026-10-09)"), recaps.index("### Gen5.1: the labels"))
+        self.assertIn("Second paragraph.\n", recaps)
+        for out in ("Chain data", "Migration produced"):                             # another family; the migration
+            self.assertNotIn(out, recaps)
+
+    def test_write_is_idempotent_and_stays_away_with_no_past(self):
+        self.assertFalse(PI.write_history(self.root, self.conf))
+        self.assertFalse(os.path.exists(os.path.join(self.root, "docs")))
+        self._beds()
+        self.assertTrue(PI.write_history(self.root, self.conf))
+        path = os.path.join(self.root, "docs", "PHASE_HISTORY.md")
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), PI.render_history(self.root, self.conf))
+        os.utime(path, ns=(10**18, 10**18))
+        self.assertTrue(PI.write_history(self.root, self.conf))
+        self.assertEqual(os.stat(path).st_mtime_ns, 10**18)                          # unchanged: not rewritten
+
+    def test_seed_this_generation_only_newest_three_pointing_at_the_file(self):
+        self._beds()
+        for n in (3, 4, 5):
+            self._end("PhaseEnd_PhaseGen5.%d.5.md" % n,
+                      "# PhaseEnd — Gen5.%d.5: more\nClosed: 2026-10-2%d\n\n## Plain-English Recap\nRecap %d.\n" % (n, n, n))
+        s = PI.render_history_seed(self.root, self.conf, 8550)
+        self.assertTrue(s.startswith("## This generation (Gen5)\n\n- Gen5.1 | 2026-10-05 | the labels\n"))
+        self.assertIn("- Gen5.3 | open | Exits\n", s)                                # a phase not closed yet
+        self.assertNotIn("Paper", s)
+        self.assertEqual(s.count("### "), 3)
+        self.assertLess(s.index("### Gen5.5.5"), s.index("### Gen5.3.5"))
+        self.assertNotIn("Floors rose", s)
+        self.assertTrue(s.endswith("All phases, and this generation's recaps: docs/PHASE_HISTORY.md\n"))
+
+    def test_seed_budget_drops_recaps_whole_and_empty_without_a_plan(self):
+        self.assertEqual(PI.render_history_seed(self.root, self.conf, 8550), "")
+        self._beds()
+        whole = PI.render_history_seed(self.root, self.conf, 8550)
+        self.assertIn("Floors rose.\n", whole)
+        tight = PI.render_history_seed(self.root, self.conf, len(whole) - 20)
+        self.assertEqual(tight.count("### "), 1)
+        self.assertIn("### Gen5.2", tight)
+        self.assertLessEqual(len(tight), len(whole) - 20)
+
+
 class TestLedgerSliceStaged(TestPhaseendOutputLimits):
     """3.10 T1: archive stages the ledger slice."""
 
@@ -610,6 +714,9 @@ class TestLedgerSliceStaged(TestPhaseendOutputLimits):
         out = buf.getvalue()
         self.assertIn("stage: .claude-state/ledger/phase-3.8.jsonl.gz", out)
         self.assertIn("ledger slice:", out)
+        self.assertIn("A  docs/PHASE_HISTORY.md", self._git_out("status", "--short", "--", "docs/PHASE_HISTORY.md"))
+        with open(os.path.join(self.tmp, "docs", "PHASE_HISTORY.md"), encoding="utf-8") as fh:
+            self.assertIn("- 3.8 | ", fh.read())
         self.assertIn(".claude-state/ledger/phase-3.8.jsonl.gz",
                       self._git_out("diff", "--cached", "--name-only"))
 

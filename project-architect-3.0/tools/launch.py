@@ -56,7 +56,7 @@ def gen_phases(root):
             continue
         if not inside:
             continue
-        m = re.match(r"^\s*-\s+([0-9]+(?:\.[0-9]+)*)\s+([^|]*)", body)
+        m = re.match(r"^\s*-\s+(" + PE._genplan.PHASE_ID + r"|[0-9]+)\s+([^|]*)", body)
         if m:
             st = re.search(r"status:\s*(\S+)", body)
             out.append((m.group(1), m.group(2).strip(),
@@ -100,7 +100,7 @@ def phase_id(root, conf):
 def generation_id(root, conf):
     plan = PE.plan_path(root, conf)
     if os.path.isfile(plan):
-        m = re.search(r"phase\s+([0-9]+(?:\.[0-9]+)*)",
+        m = re.search(r"phase\s+(" + PE._genplan.PHASE_ID + r"|[0-9]+)",     # 3.32 B8a: was numeric ids only
                       PE.read_text(plan).split("\n")[0])
         if m:
             return m.group(1).split(".")[0]

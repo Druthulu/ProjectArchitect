@@ -1,7 +1,7 @@
 # How we work — {{PROJECT_NAME}}
 
 <!-- The card: standing facts for every agent. Never appended to; the cap is
-     card.max_chars in .claude/pa.json (default 7000), enforced by the archive.
+     card.max_chars in .claude/pa.json (default 10000), enforced by the archive.
      Each role prints its slice with `tools/card.py slice <role>`.
      Written at install (interview) and edited in the same task as whatever changed it (H7). -->
 
@@ -14,12 +14,6 @@ Who: {{DEVELOPER_NAME}}. Experience: {{DEVELOPER_EXPERIENCE}}. Domain: {{DEVELOP
 Preferences: recommendations, not questions. Plain-English recaps at phase end. A notification
 whenever anything waits on them. Autonomy: {{AUTONOMY_POSTURE}}. Notification channel: {{NOTIFY_CHANNEL}}.
 The developer pushes; agents never do. They ratify rules at the next plan approval.
-
-## Rhythm <!-- roles: planner review auditor curator -->
-{{RHYTHM}}  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping
-                  only at the two gates. review: tasks marked `review: yes` stop the queue with REVIEW.md. -->
-Gates: plan approval (in the plan-mode view) and the milestone (confirmed by the
-developer at the close question).
 
 ## Tools <!-- roles: expert coder planner review auditor curator -->
 PY = {{PY}}
@@ -34,11 +28,11 @@ PY = {{PY}}
 | rules_add | `PY tools/rules_add.py` | add, supersede, promote, retire a rule |
 | skill_add | `PY tools/skill_add.py` | turn a `workflow:` gotcha into `.claude/skills/<name>/SKILL.md` |
 | cookbook_add | `bash tools/cookbook_add.sh` | add a cookbook entry and its index line |
-| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd |
+| phaseend_index | `PY tools/phaseend_index.py` | assemble and archive a PhaseEnd; `history` rebuilds `docs/PHASE_HISTORY.md` |
 | genend_index | `PY tools/genend_index.py` | assemble a GenerationEnd |
 | commit_task | `bash tools/commit_task.sh` | the only commit path; explicit paths, no trailers, never pushes |
 | run | `bash tools/run.sh` | any command that may print >40 lines |
-| curate | `PY tools/curate.py` | `memory --route\|--reindex`, `rules --reseed\|--demote`, `cookbook --demote`, `claude-md\|card --refresh`, `how-we-work --retire`; `--dry-run` first |
+| curate | `PY tools/curate.py` | `memory --route\|--reindex`, `rules --reseed\|--demote`, `cookbook --demote`, `claude-md\|card --refresh`, `living-docs --entry`, `how-we-work --retire`; `--dry-run` first |
 | {{PROJECT_TOOL}} | `{{PROJECT_TOOL_COMMAND}}` | {{PROJECT_TOOL_PURPOSE}} |
 
 ## Skills <!-- roles: expert planner -->
@@ -79,3 +73,6 @@ Long gates go through `tools/run.sh` with a raised timeout, never a poll loop.
 - `phase-ends/TASK_INDEX.md`, `phase-ends/RESEARCH_INDEX.md` — what was done and what was learned
 - `docs/research-archive/` — migrated legacy reports
 - `docs/retired/` — everything moved out of the load order
+
+## Living docs <!-- roles: claude expert planner curator -->
+- (none yet: `doc`: what it answers; when to update it)

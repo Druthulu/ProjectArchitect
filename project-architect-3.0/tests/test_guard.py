@@ -13,6 +13,7 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -613,6 +614,13 @@ class RoleGuardTest(unittest.TestCase):
                     "cat missing.md", "cat > big.md <<'EOF'\nhi\nEOF"):
             with self.subTest(cmd=cmd):
                 self.assertIsNone(self._bash(cmd), cmd)
+
+    def test_a_directory_is_no_whole_read(self):
+        """A quoted sed expression cut at its `|` leaves a `/`: on Windows the drive's root, whose size read as a file's."""
+        threshold = self.cfg["guard"]["whole_read_chars"]
+        os.makedirs(os.path.join(self.root, "folder"))
+        with mock.patch("pa.guard.os.path.getsize", return_value=threshold + 1):
+            self.assertIsNone(self._bash("cat folder"))
 
     def test_shell_read_of_spill_denied(self):
         path = "C:/Users/you/.claude/projects/test/sess1/tool-results/abc123.txt"

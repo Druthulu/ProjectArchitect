@@ -28,7 +28,7 @@ and the ``additionalContext`` line says what broke and what was done.
 import re
 
 from .. import running
-from . import agent_of, governed, now_iso, project_config, sid_of, status_patch
+from . import agent_of, governed, now_iso, sid_of, status_patch
 
 _TAG_RE = re.compile(r"<([a-z-]+)>(.*?)</\1>", re.S)
 _STATUS_RE = re.compile(r"STATUS\s*[:=]\s*([A-Za-z-]+)", re.I)
@@ -127,12 +127,9 @@ def run(inp, cfg):
 
     root = governed(inp)
     if root and payload["contract"]:
-        pcfg = project_config(root)
         note = "%s: STATUS %s" % (agent_id or "agent", payload["contract"])
         fields_out = {"note": note}
         if payload["contract"] == "question":
             fields_out["waiting"] = "question"
         status_patch(root, fields_out)
-        if pcfg.get("rhythm") == "review" and payload["contract"] == "review":
-            status_patch(root, {"waiting": "REVIEW.md"})
     return None

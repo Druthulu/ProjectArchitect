@@ -15,7 +15,7 @@ import os
 import re
 
 from . import natural_sort
-from .migrate import Row, readme_rows
+from .migrate import Row, interphase_id, readme_rows, running_phase
 from .howwework import _OPS_RE, _CLAUDE_RE
 
 
@@ -69,7 +69,7 @@ def mapping(env):
     highest = _highest_closed_phase(env)
     n = highest + 1                                   # current phase number
     interphase_label = getattr(env, "interphase", None) or "PA3 migration"
-    phase_n = "%d.5" % highest                        # e.g. "23.5"
+    phase_n = interphase_id(highest)                  # e.g. "23.PA3"; was "%d.5"
 
     # -- P4: move CLAUDE.md -> docs/retired/ --------------------------------
     rows.append(Row("move", "CLAUDE.md", "docs/retired/CLAUDE.pa2.md",
@@ -148,7 +148,9 @@ def mapping(env):
     rows.append(Row("generate", "", "GENERATION_PLAN.md",
                      "from template + legacy index",
                      {"generator": "generation_plan",
-                      "gen_number": 1, "gen_name": ""}))
+                      "gen_number": 1, "gen_name": "",
+                      "interphase": phase_n,
+                      "running": running_phase(env, "phase-ends/CURRENT_PHASE.md")}))
 
     # -- phase-ends README: retire 2.0, generate PA3 -----------------------
     rows.extend(readme_rows(env))

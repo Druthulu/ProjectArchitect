@@ -76,13 +76,15 @@ describe('state file', () => {
     expect(s?.sid).toBe('S9')
     expect(s?.gen).toBe(2)
     expect(s?.inboxDone).toEqual({ '1-1-plan': 500 })
-    expect(s?.partner).toEqual({ agentId: 'a1', spawnedAt: 0, lastTurnAt: 0, model: 'opus', ctx: 0, topic: false, modelSwitchAt: 0, pingInFlight: false, firstCtx: 0 })
+    expect(s?.partner).toEqual({ agentId: 'a1', spawnedAt: 0, lastTurnAt: 0, model: 'opus', ctx: 0, topic: false, modelSwitchAt: 0, pingInFlight: false, firstCtx: 0, filingInFlight: false, summary: '' })
     expect(s?.warm).toEqual({ pings: 4, pingUsd: 0, avoidedUsd: 0, lastPingAt: 0, waitStart: 0, waitUsd: 0, waitPings: 0, waitCount: 0 })
     expect([s?.journal, s?.toasts]).toEqual([[], []])
     expect(s?.children).toEqual({})
     expect(s?.hold).toBe(null)
     expect(s?.pending).toEqual([])
     expect([s?.outbox, s?.pendingMarkers, s?.forwarded, s?.awaiting]).toEqual([[], [], {}, null])
+    // 3.31 T2: an older state file loads with no filing state
+    expect([s?.lastExchangeAt, s?.filedThrough, s?.filingThrough, s?.todo]).toEqual([0, '', '', []])
   })
 
   test('unreadable or newer state is refused', async () => {
@@ -128,7 +130,8 @@ describe('inbox', () => {
   test('an unhandled kind only logs; topic flags its caller, ask raises the input toast', async () => {
     expect(handle({ id: '1-1-note', kind: 'note', caller: '', input: null, at: 1 }))
       .toEqual([{ do: 'log', kind: 'inbox.drain', data: { id: '1-1-note', kind: 'note' } }])
-    expect(handle({ id: '1-2-topic', kind: 'topic', caller: 'P1', input: {}, at: 1 }).at(-1)).toEqual({ do: 'topic', agentId: 'P1' })
+    expect(handle({ id: '1-2-topic', kind: 'topic', caller: 'P1', input: {}, at: 1 }).at(-1)).toEqual({ do: 'topic', agentId: 'P1', summary: '' })
+    expect(handle({ id: '1-3-topic', kind: 'topic', caller: 'P1', input: { summary: 'the alpha plan' }, at: 1 }).at(-1)).toEqual({ do: 'topic', agentId: 'P1', summary: 'the alpha plan' })
     expect(handle({ id: '1-3-ask', kind: 'ask', caller: 'P1', input: { question: 'A or B?' }, at: 1 })[1])
       .toEqual({ do: 'toast', cause: 'input', body: 'A or B?' })
   })

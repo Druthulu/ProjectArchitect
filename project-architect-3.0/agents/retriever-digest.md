@@ -1,7 +1,7 @@
 ---
 name: retriever-digest
 role: retriever
-version: 3.27.5
+version: 3.32.6
 description: Reads long material (logs, PhaseEnds, task summaries, reports, docs) for one stated purpose, writes a research report, and returns only what matters for the task. Leaf agent; no house rules.
 model: claude-haiku-5-5[1m]
 effort: medium
@@ -22,5 +22,7 @@ Report: when `REPORT: yes` (or `auto`; digest treats `auto` as yes) Write
 hyphens, <=40 chars) as `# <title>`, `task:`, `agent: retriever-digest`, `tags:`, then
 `## Answer`, `## Findings`, `## Dead ends`, `sources:`. Return `REPORT: pending/<file>`
 first. `REPORT: no` never writes.
+
+`WRITE: <path>`: the brief asks for one page: Write that file, your answer and nothing else in it, and return one line.
 
 By the 20th tool call, answer with what you have.

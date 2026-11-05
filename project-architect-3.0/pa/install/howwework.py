@@ -8,7 +8,7 @@ Public:
 and CLAUDE.md for ``## Environment|Project-Specific Constraints|Constraints``.
 ``write`` fills the template with candidates from the migration sources, then
 from ``environment()`` (OS, shells, interpreter, build/test guesses), interview
-answers (name, experience, domain, autonomy, notify, rhythm) and the
+answers (name, experience, domain, autonomy, notify) and the
 constitution (``PROJECT_CONTEXT.md``: tagline from the first heading, path lines
 from a ``## Quick Reference Card`` section).  Migration inputs keep precedence;
 placeholders left untouched when nothing fills them; never appends.
@@ -159,7 +159,7 @@ def write(env, found, interview=None, constitution=None):
     """Fill HOW_WE_WORK.template.md with candidates and write the inputs record.
 
     *interview* is a dict with keys ``name, experience, domain, autonomy,
-    notify, rhythm`` (all optional, ``None`` values are skipped).
+    notify`` (all optional, ``None`` values are skipped).
     *constitution* is the text of ``PROJECT_CONTEXT.md`` (or ``None``).
 
     Returns the filled text (also written to ``HOW_WE_WORK.md`` via ``place``).
@@ -171,7 +171,6 @@ def write(env, found, interview=None, constitution=None):
         "PROJECT_NAME": env.name,
         "PROJECT_TAGLINE": getattr(env, "tagline", "") or "",
         "PY": env.py_exe,
-        "RHYTHM": "autonomous",
     }
     import sys
     from . import settings_merge as sm
@@ -202,7 +201,7 @@ def write(env, found, interview=None, constitution=None):
             for i, p in enumerate(paths[:len(_path_phs)]):
                 env_fills.setdefault(_path_phs[i], p[2:] if p.startswith("- ") else p)
 
-    # interview fills for ## Developer and ## Rhythm
+    # interview fills for ## Developer
     if interview:
         _iv_map = {
             "name": "DEVELOPER_NAME",
@@ -210,7 +209,6 @@ def write(env, found, interview=None, constitution=None):
             "domain": "DEVELOPER_DOMAIN",
             "autonomy": "AUTONOMY_POSTURE",
             "notify": "NOTIFY_CHANNEL",
-            "rhythm": "RHYTHM",
         }
         for key, ph in _iv_map.items():
             val = interview.get(key)

@@ -90,6 +90,65 @@ class FieldsTest(unittest.TestCase):
         self.assertEqual(_genplan.first_open(FIXTURE_GEN_PLAN), "3.7")
 
 
+class FamilyIdTest(unittest.TestCase):
+    """3.32 B5b: a project's own phase ids (`Gen5.x`) are phases; a task id is not."""
+
+    TEXT = ("- Gen5.PA3 PA3 migration | status: closed\n"
+            "- Gen5.4.6 The next one | status: open\n"
+            "- Alpha.PA3 A named family | status: closed\n"
+            "- 5.PA3 A numeric family | status: closed\n"
+            "- T3.1 | a task, not a phase | status: open\n")
+
+    def test_phase_lines_and_first_open(self):
+        self.assertEqual([_genplan.fields(l)["id"] for l in _genplan.phase_lines(self.TEXT)],
+                         ["Gen5.PA3", "Gen5.4.6", "Alpha.PA3", "5.PA3"])
+        self.assertEqual(_genplan.first_open(self.TEXT), "Gen5.4.6")
+
+    def test_other_open_phases_and_the_plan_header(self):
+        import phaseend_index as PI
+        tmp = tempfile.mkdtemp(prefix="pa3-genplan-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        write(os.path.join(tmp, "GENERATION_PLAN.md"), "## Phases\n" + self.TEXT)
+        self.assertEqual(PI._other_open_phases(tmp, "Gen5.PA3"), ["Gen5.4.6"])
+        self.assertEqual(PI._other_open_phases(tmp, "Gen5.4.6"), [])
+        cur = os.path.join(tmp, "phase-ends", "current")
+        write(os.path.join(cur, "PHASE_PLAN.md"),
+              "# Phase Gen5.4.6 — x        (implements GENERATION_PLAN.md phase Gen5.4.6)\n")
+        self.assertEqual(PI.plan_bits(tmp)["gen"], "Gen5.4.6")
+        write(os.path.join(cur, "PHASE_PLAN.md"), "# Phase 3.7 — x        (implements GENERATION_PLAN.md phase 3.7)\n")
+        self.assertEqual(PI.plan_bits(tmp)["gen"], "3.7")
+
+    def test_launch_gen_phases_sees_them(self):
+        import launch
+        tmp = tempfile.mkdtemp(prefix="pa3-genplan-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        write(os.path.join(tmp, "GENERATION_PLAN.md"), "## Phases\n" + self.TEXT)
+        self.assertEqual([p[0] for p in launch.gen_phases(tmp)[:2]], ["Gen5.PA3", "Gen5.4.6"])
+
+    def test_the_plan_header_readers_see_them(self):
+        """3.32 B8a: task_log, status and launch read a `Gen5.x` header's phase; a numeric one as before."""
+        import launch
+        import status
+        import task_log
+        tmp = tempfile.mkdtemp(prefix="pa3-genplan-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        plan = os.path.join(tmp, "phase-ends", "current", "PHASE_PLAN.md")
+        for phase, gen in (("Gen5.4.6", "Gen5"), ("3.7", "3")):
+            write(plan, "# Phase %s — x        (implements GENERATION_PLAN.md phase %s)\nApproved: 2026-10-31\n" % (phase, phase))
+            self.assertEqual(task_log._plan_header(tmp), (phase, "2026-10-31"))
+            self.assertEqual(status.plan_facts(tmp)[:2], (phase, phase))
+            self.assertEqual(launch.generation_id(tmp, {}), gen)
+
+    def test_gen_close_on_a_family_id(self):
+        tmp = tempfile.mkdtemp(prefix="pa3-genplan-")
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        write(os.path.join(tmp, "GENERATION_PLAN.md"), "## Phases\n" + self.TEXT + "\n## Changes\n")
+        res = subprocess.run([sys.executable, os.path.join(TOOLS, "plan_edit.py"), "gen-close", "Gen5.4.6", "--by", "router"],
+                             cwd=tmp, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertRegex(read(os.path.join(tmp, "GENERATION_PLAN.md")), r"- Gen5\.4\.6 .*status: closed")
+
+
 class ToolCase(unittest.TestCase):
     """A throw-away project tree for the plan_edit.py / research_add.py CLIs."""
 

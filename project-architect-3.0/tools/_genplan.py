@@ -11,7 +11,19 @@ Stdlib only; no imports from `pa/`.
 import os
 import re
 
-PHASE_RE = re.compile(r"^\s*-\s+([0-9]+(?:\.[0-9]+)+)\s+[^|]*\|")
+# 3.32 B5b: a dotted id, numeric (`3.31`) or a project's own family (`Gen5.4.6`, `Gen5.PA3`); two letters at least, so
+# a task id (`T3.1`) is no phase. Was `[0-9]+(?:\.[0-9]+)+`.
+PHASE_ID = r"(?:[A-Za-z]{2,}[0-9]*|[0-9]+)(?:\.[0-9A-Za-z]+)+"
+PHASE_RE = re.compile(r"^\s*-\s+(" + PHASE_ID + r")\s+[^|]*\|")
+CLOSED_RE = re.compile(r"(?i)\bclosed\W{0,6}(20[0-9]{2}-[0-9]{2}-[0-9]{2})\b")
+DATE_RE = re.compile(r"\b(20[0-9]{2}-[0-9]{2}-[0-9]{2})\b")
+
+
+def phaseend_date(text):
+    """3.32 B4: a PhaseEnd's date, `YYYY-MM-DD`, from its first 40 lines: its `Closed:` date, else the first date; ''."""
+    head = "\n".join(text.split("\n")[:40])
+    m = CLOSED_RE.search(head) or DATE_RE.search(head)
+    return m.group(1) if m else ""
 
 
 def phase_lines(text):

@@ -114,7 +114,7 @@ class ToolCase(unittest.TestCase):
             "pa_version": "3.0.0", "project": "demo", "python": "python",
             "phase_ends_dir": "phase-ends",
             "handoff_ctx": {"expert": 350000, "coder": 300000},
-            "rhythm": "autonomous"}, indent=1) + "\n")
+            }, indent=1) + "\n")
         write(os.path.join(self.root, "GENERATION_PLAN.md"), GENERATION_PLAN)
         write(os.path.join(self.root, "HOW_WE_WORK.md"), HOW_WE_WORK)
         write(os.path.join(self.root, ".claude", "skills", "project-architect", "SKILL.md"),
@@ -333,6 +333,32 @@ class TestPlanEdit(ToolCase):
         self.ok(self.tool("plan_edit.py", "reopen", "T3", "--title", "seams again",
                           "--done-when", "seams listed", "--by", "critic"))
         self.assertIn("- T3.2 | next", read(self.plan))
+
+    def test_next_only_picks_inside_the_batch(self):
+        """3.32 B8: coop's batch: the rest of the plan waits; a batch all done reads done; a reopened id stays in."""
+        last = self.ok(self.tool("plan_edit.py", "add-task", "--title", "later", "--done-when", "d",
+                                 "--by", "router")).split()[0]
+        got = json.loads(self.ok(self.tool("plan_edit.py", "next", "--brief", "--json", "--only", last)))
+        self.assertEqual(got["task"]["id"], last)
+        self.ok(self.tool("plan_edit.py", "set-status", last, "superseded"))
+        got = json.loads(self.ok(self.tool("plan_edit.py", "next", "--brief", "--json", "--only", last)))
+        self.assertEqual((got["kind"], got["reason"]), ("none", "done"))
+        self.ok(self.tool("plan_edit.py", "reopen", last, "--title", "t", "--done-when", "d", "--by", "router"))
+        got = json.loads(self.ok(self.tool("plan_edit.py", "next", "--brief", "--json", "--only", last)))
+        self.assertEqual(got["task"]["id"], last + ".1")
+
+    def test_reopen_counts_up_at_the_same_level(self):
+        """3.32 B8: reopening T1.1 gives T1.2, then T1.3; never T1.1.1."""
+        for parent, new in (("T1", "T1.1"), ("T1.1", "T1.2"), ("T1.2", "T1.3")):
+            out = self.ok(self.tool("plan_edit.py", "reopen", parent, "--title", "again",
+                                    "--done-when", "it builds", "--by", "router"))
+            self.assertIn("%s created (status next" % new, out)
+        text = read(self.plan)
+        self.assertNotIn("T1.1.1", text)
+        self.assertIn("- T1.1 | superseded", text)
+        self.assertIn("- T1.2 | superseded", text)
+        self.assertIn("- T1.3 | next", text)
+        self.assertIn("router: reopened T1.2 as T1.3", text)
 
     def test_add_task_allocates_the_next_free_integer_id(self):
         # a retired coder is refused in one line (3.9.5 T9); the plan is untouched
@@ -918,9 +944,9 @@ class TestLaunch(ToolCase):
         self.tool("status.py", "set", "--task", "T3.1", "--agent", "expert-fable", "--coder", "sonnet",
                   "--kind", "task", "--attempt", "1")
         write(os.path.join(self.root, ".run", "status.json"), read(
-            os.path.join(self.root, ".run", "status.json")).replace('"run_id": null', '"run_id": "a1b2c3d4000000008"'))
+            os.path.join(self.root, ".run", "status.json")).replace('"run_id": null', '"run_id": "a1b2c3d4000000009"'))
         self.assertEqual(self.state()["running"],
-                         {"task": "T3.1", "run_id": "a1b2c3d4000000008", "kind": "task"})
+                         {"task": "T3.1", "run_id": "a1b2c3d4000000009", "kind": "task"})
         self.tool("status.py", "clear")
         self.assertIsNone(self.state()["running"])
 
@@ -930,12 +956,12 @@ class TestLaunch(ToolCase):
                   "--kind", "task", "--attempt", "1")
         status_path = os.path.join(self.root, ".run", "status.json")
         st = json.loads(read(status_path))
-        st["run_id"] = "a1b2c3d4000000008"
+        st["run_id"] = "a1b2c3d4000000009"
         st["killed_at"] = "2026-09-20T22:01:39Z"
         write(status_path, json.dumps(st))
         doc = self.state()
         self.assertEqual(doc["run_in_flight"]["task"], "T3.1")
-        self.assertEqual(doc["run_in_flight"]["run_id"], "a1b2c3d4000000008")
+        self.assertEqual(doc["run_in_flight"]["run_id"], "a1b2c3d4000000009")
         self.assertEqual(doc["run_in_flight"]["killed_at"], "2026-09-20T22:01:39Z")
         self.assertIsNone(doc["running"])
         # without killed_at, the run_id alone is `running`
@@ -943,7 +969,7 @@ class TestLaunch(ToolCase):
         write(status_path, json.dumps(st))
         doc = self.state()
         self.assertIsNone(doc["run_in_flight"])
-        self.assertEqual(doc["running"]["run_id"], "a1b2c3d4000000008")
+        self.assertEqual(doc["running"]["run_id"], "a1b2c3d4000000009")
 
     def test_from_draft_writes_the_plan_only_before_approval(self):
         draft = os.path.join(self.root, "draft.md")
@@ -1059,7 +1085,7 @@ class TestShellTools(ToolCase):
         # coders share one tree); it is committed only when passed explicitly
         self.git_init()
         write(os.path.join(self.root, "HOW_WE_WORK.md"),
-              read(os.path.join(self.root, "HOW_WE_WORK.md")) + "\n## Rhythm\nauto\n")
+              read(os.path.join(self.root, "HOW_WE_WORK.md")) + "\n## Notes\nauto\n")
         self.make_summary("T1")
         write(os.path.join(self.root, "stray.py"), "print('hi')\n")
         p = self.sh("commit_task.sh", "T1", "mask builder green")

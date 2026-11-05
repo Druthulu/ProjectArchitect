@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import {
-  cacheTtlOf, decideRoute, expertStatus, isCold, partnerStatus, PING_AFTER_5M_MS, pingCount, pingDecision, pingUsd, ratesFrom, type Rates, tierRates,
+  cacheTtlOf, decideRoute, expertStatus, fileDecision, type FilingFacts, isCold, journalSettings, partnerStatus, PING_AFTER_5M_MS, pingCount, pingDecision, pingUsd, ratesFrom, type Rates, tierRates,
 } from './policy'
 
 // Sample `pa_ledger.py prices --json` output ($/MTok).
@@ -192,5 +192,48 @@ describe('ratesFrom on the real prices --json documents', () => {
   test('the whole table under prices', async () => {
     const doc = { LONG_CONTEXT_TOKENS: 200000, prices: { 'opus-5-5': { input: 4.0, output: 20.0, read: 0.2, write_1h: 8.0, write_5m: 5.0 } } }
     expect(close(ratesFrom(doc, 'claude-opus-5-5[1m]', 0)!.read, 0.2 / 1e6)).toBe(true)
+  })
+})
+
+describe('3.31 T2: the filing decision', () => {
+  const M = 60_000
+  // A partner spawned at 0, its last turn at 10 min, the last exchange at 10 min, nothing filed, 15 min quiet.
+  const F: FilingFacts = {
+    status: 'idle', busy: false, lastRequestAt: 10 * M, pingsLeft: true, spawnedAt: 0, lastTurnAt: 10 * M,
+    lastExchangeAt: 10 * M, filedThrough: 0, quietMs: 15 * M, topic: false, ctx: 50_000, modelSwitchAt: 0,
+  }
+  test('quiet: the quiet time passed since the last exchange; not before', async () => {
+    expect(fileDecision(F, 25 * M)).toEqual({ file: true, why: 'quiet' })
+    expect(fileDecision(F, 24 * M)).toEqual({ file: false, why: 'not quiet' })
+  })
+  test('a rotation due files at once: topic, size, model', async () => {
+    expect(fileDecision({ ...F, topic: true }, 11 * M)).toEqual({ file: true, why: 'topic' })
+    expect(fileDecision({ ...F, ctx: 300_000 }, 11 * M)).toEqual({ file: true, why: 'size' })
+    expect(fileDecision({ ...F, modelSwitchAt: 10 * M + 1 }, 11 * M)).toEqual({ file: true, why: 'model' })
+    expect(fileDecision({ ...F, modelSwitchAt: 9 * M }, 11 * M).file).toBe(false)
+  })
+  test('never busy, never a working partner, never without room in the cache', async () => {
+    expect(fileDecision({ ...F, busy: true }, 25 * M)).toEqual({ file: false, why: 'busy' })
+    expect(fileDecision({ ...F, status: 'running' }, 25 * M)).toEqual({ file: false, why: 'status running' })
+    expect(fileDecision({ ...F, status: undefined }, 25 * M).file).toBe(false)
+    expect(fileDecision({ ...F, status: 'completed' }, 25 * M).file).toBe(true)
+    // 1h cache: room until 55 min after the last request (the 5-minute margin); pings spent: until 50 min (55 - 5).
+    expect(fileDecision(F, 64 * M).file).toBe(true)
+    expect(fileDecision(F, 65 * M)).toEqual({ file: false, why: 'cold' })
+    expect(fileDecision({ ...F, pingsLeft: false }, 59 * M).file).toBe(true)
+    expect(fileDecision({ ...F, pingsLeft: false }, 60 * M)).toEqual({ file: false, why: 'cold' })
+  })
+  test('only unfiled exchanges: after the last record, else after the spawn', async () => {
+    expect(fileDecision({ ...F, filedThrough: 10 * M }, 25 * M)).toEqual({ file: false, why: 'filed' })
+    expect(fileDecision({ ...F, filedThrough: 9 * M }, 25 * M).file).toBe(true)
+    expect(fileDecision({ ...F, lastExchangeAt: 0 }, 25 * M)).toEqual({ file: false, why: 'filed' })
+    expect(fileDecision({ ...F, spawnedAt: 10 * M, lastExchangeAt: 10 * M }, 25 * M)).toEqual({ file: false, why: 'filed' })
+    expect(fileDecision({ ...F, topic: true, filedThrough: 10 * M }, 11 * M).file).toBe(false)
+  })
+  test('pa.json journal settings: defaults 15 min and shown', async () => {
+    expect(journalSettings(null)).toEqual({ quietMs: 15 * M, showFiled: true })
+    expect(journalSettings('{"journal": {"file_quiet_min": 2, "show_filed": false}}')).toEqual({ quietMs: 2 * M, showFiled: false })
+    expect(journalSettings('{"journal": {"file_quiet_min": "x"}}')).toEqual({ quietMs: 15 * M, showFiled: true })
+    expect(journalSettings('not json')).toEqual({ quietMs: 15 * M, showFiled: true })
   })
 })

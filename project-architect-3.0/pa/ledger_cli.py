@@ -3090,7 +3090,7 @@ def fetch_price_page(url=PRICING_URL, timeout=20):
         return fh.read(4000000).decode("utf-8", "replace")
 
 
-EVENT_KINDS = ("warm_ping",)     # 3.22: kinds the mod may spool through ``event``
+EVENT_KINDS = ("warm_ping", "journal_filing")  # 3.22: kinds the mod may spool through ``event``; 3.31: a filing turn
 
 
 def cmd_event(args):
@@ -4614,7 +4614,7 @@ def _doctor_card(doc, cfg, project):
         doc.warn("card: HOW_WE_WORK.md not found at %s" % path)
         return
     chars = len(text)
-    cap = int(config.get(cfg, "card.max_chars", 7000) or 7000)
+    cap = int(config.get(cfg, "card.max_chars", 10000) or 10000)
     placeholders = len(_CARD_PLACEHOLDER_RE.findall(text))
     line = "card: %d chars (cap %d), %d placeholders" % (chars, cap, placeholders)
     if chars > cap or placeholders:

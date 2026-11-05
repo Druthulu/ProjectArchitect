@@ -148,7 +148,7 @@ DEFAULTS = {
               "router_ctx_flag": 300000},
     "install": {"source": "https://github.com/Druthulu/ProjectArchitect.git", "clone_dir": "pa3-src",
                 "fetch_timeout_s": 8},  # 3.7: the package clone under the config dir
-    "card": {"max_chars": 7000},  # 3.7: HOW_WE_WORK.md cap, enforced by the archive (developer 2026-09-23)
+    "card": {"max_chars": 10000},  # 3.32 B7: was 7000 (3.7); HOW_WE_WORK.md cap, enforced by the archive
     # whole_plan_roles = [] (3.24 T3.6; was ["review", "critic"], agents gone with the Gen 3 loop; no 3.2 role is limited)
     "guard": {"spilled_read": True, "whole_plan_roles": [], "tool_source_roles": ["expert"],
               "whole_read_chars": 20000, "reread_deny": True},

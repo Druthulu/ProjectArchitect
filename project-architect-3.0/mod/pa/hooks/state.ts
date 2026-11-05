@@ -46,6 +46,10 @@ export function defaultState(sid: string, gen: number): RouterState {
     yourTurn: null,
     learning: false,
     feed: { dir: feedDirOf(sid) },
+    lastExchangeAt: 0,
+    filedThrough: '',
+    filingThrough: '',
+    todo: [],
   }
 }
 
@@ -77,6 +81,8 @@ function parsePartner(x: unknown): Partner | null {
     modelSwitchAt: num(x['modelSwitchAt'], 0),
     pingInFlight: x['pingInFlight'] === true,
     firstCtx: num(x['firstCtx'], 0),
+    filingInFlight: x['filingInFlight'] === true,
+    summary: str(x['summary'], ''),
   }
 }
 
@@ -250,6 +256,10 @@ export function parseState(text: string, sid: string, now: number): RouterState 
     learning: doc['learning'] === true,
     // 3.23 T13d: absent (a state from before the feed), the folder of the session that wrote it.
     feed: isObj(doc['feed']) && typeof doc['feed']['dir'] === 'string' && doc['feed']['dir'] !== '' ? { dir: doc['feed']['dir'] } : base.feed,
+    lastExchangeAt: num(doc['lastExchangeAt'], 0),
+    filedThrough: str(doc['filedThrough'], ''),
+    filingThrough: str(doc['filingThrough'], ''),
+    todo: Array.isArray(doc['todo']) ? doc['todo'].filter((x): x is string => typeof x === 'string') : [],
   }
 }
 

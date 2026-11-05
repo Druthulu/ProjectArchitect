@@ -33,6 +33,8 @@ export type ExpertOpts = {
   trialCoder?: boolean
   /** 3.24 T7b: `PY tools/card.py slice expert`'s output, carried after the fields; absent or '': none. */
   card?: string
+  /** 3.31 T4: `records.py inforce --binds-work --max-tokens 4000`'s output; absent or blank: no block. */
+  outcomes?: string
   /** 3.3 T7: pa.json's `external` object; absent or null: none. */
   external?: External | null
 }
@@ -93,6 +95,7 @@ export function expertBrief(task: PlanTask, opts: ExpertOpts = {}): string {
   }
   const done = [task.done_when ?? '', task.verify === null ? '' : `verify: ${task.verify}`].filter(x => x !== '').join(' · ')
   const card = (opts.card ?? '').trim()
+  const outcomes = (opts.outcomes ?? '').trim()
   return lines([
     ['TASK', `${task.id} ${task.title ?? ''}`.trim()],
     ['PLAN', planCommands(task.id)],
@@ -104,12 +107,32 @@ export function expertBrief(task: PlanTask, opts: ExpertOpts = {}): string {
     ['NOTE', notes.join(' · ')],
     ['DONE WHEN', done],
     ['RETURN', EXPERT_RETURN],
-  ]) + (card === '' ? '' : `\nCARD (PY tools/card.py slice expert; the card's expert sections, already read):\n${card}`)
+  ]) + (card === '' ? '' : `\nCARD (PY tools/card.py slice expert; the card's expert sections, already read):\n${card}`) +
+    (outcomes === '' ? '' : `\nOUTCOMES IN FORCE (PY tools/records.py inforce --binds-work; binding):\n${outcomes}`)
 }
 
 /** The memory-curator's brief from the seed's `curate:` line (3.24 T8b: no second MEMORY field when the line names it). */
 export function curatorBrief(curateLine: string, memoryDir: string): string {
   return lines([['CURATE', curateLine], ['MEMORY', / MEMORY:/.test(curateLine) ? undefined : memoryDir], ['RETURN', 'recap']])
+}
+
+/** 3.32 B9: the memory-curator's brief for the PA3 intake: `steps` are the ones still owed, `from` the first run's origin
+ * when one is owed, `sources` from `phaseend_index.py state-sources`. */
+export function intakeBrief(o: { memoryDir: string; from: string; steps: readonly string[]; page: string; sources: readonly string[] }): string {
+  const page = o.steps.includes('state page')
+  return lines([
+    ['CURATE', `intake · MEMORY: ${o.memoryDir} · PAGE: ${o.page}${o.from === '' ? '' : ` · FROM: ${o.from}`}`],
+    ['STEPS', o.steps.join(', ')],
+    ['WRITE', !page ? undefined : 'Where does this project stand? One page for a fresh Claude who has read nothing else: where the ' +
+      'project stands, what is in flight, what is next, and what has been decided that must not be undone. This is the ' +
+      'state the project is in, and PA3 builds from that. First line `# Pre-PA3 state`; state facts only, each from the ' +
+      'sources; a `path` where a detail lives.'],
+    ['FOR', !page ? undefined : 'every fresh Claude and the planner'],
+    ['SCOPE', !page ? undefined : `the living docs, git log, the roadmap files, then ${o.sources.join(', ')}. In a checkpoint file ` +
+      '(CURRENT_PHASE.md, a PhaseLog) only the newest checkpoint block counts.'],
+    ['CAP', !page ? undefined : 'one page, 7,000 characters at most'],
+    ['RETURN', 'recap'],
+  ])
 }
 
 /** The auditor's brief (agents/auditor.md:19): `AUDIT · PHASE · TABLES · PREVIOUS · RETURN`. */

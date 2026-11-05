@@ -39,7 +39,7 @@ EVENT_MAP = {
     "PostModelSwitch": "model_switch", "SessionEnd": "session_end",
 }
 PROBE1_SID = "a1b2c3d4-0000-4000-8000-00000000c0de"
-PROBE1_AGENT = "a5cf6117000000015"
+PROBE1_AGENT = "a5cf6117000000016"
 ACCOUNT = "probe@example.com"
 _PATH_KEYS = ("transcript_path", "agent_transcript_path")
 
@@ -293,8 +293,8 @@ class ProbeReplayTest(LedgerCase):
         self.replay("probe2.log")
         runs = dict((r[0], r[1]) for r in
                     self.rows("SELECT run_id, agent_type FROM agent_runs"))
-        self.assertIn("abc0135b000000024", runs)
-        self.assertEqual(runs["abc0135b000000024"], "Explore")
+        self.assertIn("abc0135b000000025", runs)
+        self.assertEqual(runs["abc0135b000000025"], "Explore")
 
     def test_summary_json_is_written(self):
         self.replay("probe1.log")
@@ -322,7 +322,7 @@ class HandoffTest(LedgerCase):
     """T7: the 350k crossing fires exactly once."""
 
     SID = "handoff-session"
-    AGENT = "a1111111000000004"
+    AGENT = "a1111111000000005"
 
     def _input(self):
         return {"session_id": self.SID, "agent_id": self.AGENT, "agent_type": "pa-expert",
@@ -513,11 +513,11 @@ class HandoffTest(LedgerCase):
         """The harness writes parentAgentId into meta.json; the child's first sample adopts it."""
         path = self._transcript(120_000)
         with open(path[:-6] + ".meta.json", "w", encoding="utf-8") as fh:
-            json.dump({"agentType": "expert-fable", "parentAgentId": "a222222200000000a",
+            json.dump({"agentType": "expert-fable", "parentAgentId": "a222222200000000b",
                        "spawnDepth": 2}, fh)
         post_tool_use.run(self._input(), self.cfg)
         entry = running.agent(self.SID, self.AGENT)
-        self.assertEqual(entry["parent"], "a222222200000000a")
+        self.assertEqual(entry["parent"], "a222222200000000b")
         self.assertEqual(entry["parent_source"], "meta")
 
     def test_agent_tool_acknowledgment_links_the_child_to_its_parent(self):
@@ -528,14 +528,14 @@ class HandoffTest(LedgerCase):
                "tool_input": {"subagent_type": "retriever-code", "description": "Interfaces"},
                "tool_response": {"content": [{"type": "text", "text":
                    "Async agent launched successfully. (internal metadata)\n"
-                   "agentId: a999999900000001b (internal ID - do not mention to user)"}]}}
+                   "agentId: a999999900000001c (internal ID - do not mention to user)"}]}}
         self.assertIsNone(post_tool_use.run(inp, self.cfg))
-        child = running.agent(self.SID, "a999999900000001b")
+        child = running.agent(self.SID, "a999999900000001c")
         self.assertEqual(child["parent"], self.AGENT)
         self.assertEqual(child["parent_source"], "agent_tool")
         self.assertEqual(child["agent_type"], "retriever-code")
         self.assertEqual(self.rows("SELECT parent_run_id, parent_source, agent_type FROM agent_runs "
-                                   "WHERE run_id=?", ("a999999900000001b",)),
+                                   "WHERE run_id=?", ("a999999900000001c",)),
                          [(self.AGENT, "agent_tool", "retriever-code")])
 
     def test_retriever_savings_flow_into_live_saved(self):
@@ -558,8 +558,8 @@ class RetrievalTest(LedgerCase):
     """SubagentStop of a retriever: kept_out_tokens and the parent's live entry."""
 
     SID = "retr-session"
-    PARENT = "a222222200000000a"
-    RETR = "a333333300000000e"
+    PARENT = "a222222200000000b"
+    RETR = "a333333300000000f"
 
     def test_kept_out_tokens_formula(self):
         from pa.hooks.subagent_stop import kept_out_tokens
@@ -646,7 +646,7 @@ class RetrievalTest(LedgerCase):
         comes empty; the report in its transcript is the answer, so the helper is not voided."""
         from pa.hooks import subagent_stop
 
-        coder = "a5555555000000012"
+        coder = "a5555555000000013"
         running.set_agent(self.SID, self.PARENT, {"agent_type": "pa-expert", "role": "expert"})
         running.set_expert(self.SID, self.PARENT)
         running.set_agent(self.SID, coder, {"agent_type": "pa-coder", "role": "coder",
@@ -667,7 +667,7 @@ class RetrievalTest(LedgerCase):
     def test_a_helper_cut_off_on_another_tool_call_stays_void(self):
         from pa.hooks import subagent_stop
 
-        coder = "a6666666000000016"
+        coder = "a6666666000000017"
         path = self._helper_transcript(coder, handback_line("msg_x2", "ls", read=50000, tool="Bash"),
                                        {"agentType": "pa-coder", "parentAgentId": self.PARENT,
                                         "spawnDepth": 2})
@@ -699,7 +699,7 @@ class RetrievalTest(LedgerCase):
     def test_the_liveness_sweep_reads_the_handback_too(self):
         from pa.hooks import subagent_stop
 
-        coder = "a7777777000000018"
+        coder = "a7777777000000019"
         running.set_agent(self.SID, coder, {"agent_type": "pa-coder", "role": "coder",
                                             "parent": self.PARENT})
         path = self._helper_transcript(coder, handback_line("msg_s2", "done. " * 200, read=50000),
@@ -713,11 +713,11 @@ class RetrievalTest(LedgerCase):
         """The harness fires SubagentStop for the router's own turns: no start, no transcript."""
         from pa.hooks import subagent_stop
 
-        inp = {"session_id": self.SID, "agent_id": "a9f9f9f900000001d", "agent_type": "pa-session",
+        inp = {"session_id": self.SID, "agent_id": "a9f9f9f900000001e", "agent_type": "pa-session",
                "cwd": self.root, "last_assistant_message": "T3 done."}
         self.assertIsNone(subagent_stop.run(inp, self.cfg))
         self.assertEqual(self.rows("SELECT COUNT(*) FROM agent_runs WHERE run_id=?",
-                                   ("a9f9f9f900000001d",)), [(0,)])
+                                   ("a9f9f9f900000001e",)), [(0,)])
 
     def test_parent_stop_orphans_its_running_children(self):
         """A retriever still marked running when its expert returns is dropped and marked orphaned."""
@@ -727,7 +727,7 @@ class RetrievalTest(LedgerCase):
         running.set_expert(self.SID, self.PARENT)
         running.set_agent(self.SID, self.RETR, {"agent_type": "retriever-code", "role": "retriever",
                                                 "parent": self.PARENT, "status": "running"})
-        running.set_agent(self.SID, "a444444400000000f", {"agent_type": "retriever-web",
+        running.set_agent(self.SID, "a4444444000000010", {"agent_type": "retriever-web",
                                                             "role": "retriever", "parent": self.SID,
                                                             "status": "running"})
         path = os.path.join(self.projects, "slug", self.SID, "subagents",
@@ -740,7 +740,7 @@ class RetrievalTest(LedgerCase):
         self.assertEqual(running.agent(self.SID, self.RETR), {})
         self.assertEqual(self.rows("SELECT status FROM agent_runs WHERE run_id=?", (self.RETR,)),
                          [("orphaned",)])
-        self.assertEqual(running.agent(self.SID, "a444444400000000f")["status"], "running")   # not its child
+        self.assertEqual(running.agent(self.SID, "a4444444000000010")["status"], "running")   # not its child
 
     def test_expert_stop_locks_measured_savings(self):
         """SubagentStop of the expert prices every avoided re-send (spec 3.9.2)."""
@@ -787,7 +787,7 @@ class RetrievalTest(LedgerCase):
         from pa import savings
         from pa.hooks import subagent_stop
 
-        PARTNER = "a5b6389c000000014"
+        PARTNER = "a5b6389c000000015"
         running.set_agent(self.SID, PARTNER, {"agent_type": "partner", "role": "partner"})
         path = os.path.join(self.projects, "slug", self.SID, "subagents",
                             "agent-%s.jsonl" % PARTNER)
@@ -803,7 +803,7 @@ class RetrievalTest(LedgerCase):
         conn = hooks.open_db()
         try:                                              # a later session turn would carry R
             db.upsert_turn(conn, {"msg_id": "msg_later", "session_id": self.SID,
-                                  "run_id": "a8888888000000019", "kind": "api",
+                                  "run_id": "a888888800000001a", "kind": "api",
                                   "ts": "2099-01-01T00:00:00Z", "model": "claude-opus-5-5",
                                   "ctx": 30000})
             detail = savings.measured_saved(conn, self.SID)
@@ -910,7 +910,7 @@ class RetrievalTest(LedgerCase):
         """A12: a memory-curator (or planner-gen) with kept_out_tokens > 0 gets a savings row."""
         from pa.hooks import subagent_stop
 
-        CURATOR = "a7777777000000018"
+        CURATOR = "a7777777000000019"
         running.set_agent(self.SID, CURATOR, {"agent_type": "memory-curator",
                                               "role": "other"})
         path = os.path.join(self.projects, "slug", self.SID, "subagents",
@@ -1058,7 +1058,7 @@ class ModelMismatchTest(LedgerCase):
         inp = {"session_id": "mm-1", "cwd": self.root, "tool_name": "Agent",
                "tool_use_id": "toolu_1",
                "tool_input": {"subagent_type": "coder-opus46"},
-               "tool_response": {"agentId": "a999999900000001b", "agentType": "coder-opus46",
+               "tool_response": {"agentId": "a999999900000001c", "agentType": "coder-opus46",
                                  "resolvedModel": "claude-opus-5", "status": "completed"}}
         self.assertIsNone(post_tool_use.run(inp, self.cfg))
         self.assertIsNone(post_tool_use.run(inp, self.cfg))
@@ -1072,7 +1072,7 @@ class ModelMismatchTest(LedgerCase):
     def test_matching_model_is_silent(self):
         inp = {"session_id": "mm-2", "cwd": self.root, "tool_name": "Agent",
                "tool_input": {"subagent_type": "retriever-code"},
-               "tool_response": {"agentId": "a8888888000000019", "agentType": "retriever-code",
+               "tool_response": {"agentId": "a888888800000001a", "agentType": "retriever-code",
                                  "resolvedModel": "claude-haiku-5-5",   # 3.27 T11
                                  "status": "completed"}}
         post_tool_use.run(inp, self.cfg)
@@ -1606,13 +1606,13 @@ class SessionEndTest(LedgerCase):
 
         status_path = os.path.join(self.root, ".run", "status.json")
         with open(status_path, "w", encoding="utf-8") as fh:
-            json.dump({"task": "T3.1", "run_id": "a1b2c3d4000000008", "attempt": 1,
+            json.dump({"task": "T3.1", "run_id": "a1b2c3d4000000009", "attempt": 1,
                       "expert_agent_type": "expert-fable", "kind": "task"}, fh)
         session_end.run({"session_id": self.SID, "cwd": self.root,
                          "reason": "prompt_input_exit"}, self.cfg)
         with open(status_path, encoding="utf-8") as fh:
             st = json.load(fh)
-        self.assertEqual(st["run_id"], "a1b2c3d4000000008")     # not nulled
+        self.assertEqual(st["run_id"], "a1b2c3d4000000009")     # not nulled
         self.assertEqual(st["task"], "T3.1")
         self.assertEqual(st["attempt"], 1)
         self.assertEqual(st["expert_agent_type"], "expert-fable")
@@ -1923,7 +1923,7 @@ class RefreshGrownRunsTest(LedgerCase):
     """T1.c2: a run's last request is picked up when its transcript grows after lock."""
 
     SID = "refresh-s"
-    AGENT = "a7777777000000018"
+    AGENT = "a7777777000000019"
 
     def _lock_and_grow(self):
         """Lock a subagent, then append one more usage line to its transcript."""
@@ -2055,7 +2055,7 @@ class ServedOutlineTest(LedgerCase):
     """3.9.5 T11: a denied whole Read serves the outline; the ranged Read after it is credited."""
 
     SID = "outline-session"
-    AGENT = "a444444400000000f"
+    AGENT = "a4444444000000010"
 
     def _big_py(self):
         path = os.path.join(self.root, "pa", "big.py").replace("\\", "/")
@@ -2504,7 +2504,7 @@ class TestMemoryLink(LedgerCase):
     def test_subagent_session_does_nothing(self):
         inp = {"session_id": "mem-test-002", "source": "startup",
                "cwd": self.root, "agent_type": "retriever-code",
-               "agent_id": "a1234567000000005"}
+               "agent_id": "a1234567000000006"}
         self.run_hook("session_start", inp)
         proj_mem = self._proj_mem()
         self.assertFalse(self._is_link(proj_mem))
@@ -2600,7 +2600,7 @@ class ProgressFromKillTest(LedgerCase):
         return os.path.join(self.root, "phase-ends", "current", "TASK_PROGRESS.md")
 
     def test_resume_writes_progress_with_header_and_sections(self):
-        run_id = "a1234567000000005"
+        run_id = "a1234567000000006"
         tp, _agent_tp = self._make_transcript(run_id)
         self._status(run_id)
         os.makedirs(os.path.join(self.root, "phase-ends", "current"), exist_ok=True)
@@ -2612,7 +2612,7 @@ class ProgressFromKillTest(LedgerCase):
         self.assertIn("# TASK_PROGRESS -- T3 attempt 1", text)
         self.assertIn("Task: T3 the test task", text)
         self.assertIn("Agent: expert-fable", text)
-        self.assertIn("Run: a1234567000000005", text)
+        self.assertIn("Run: a1234567000000006", text)
         self.assertIn("## Done so far", text)
         self.assertIn("Read -- /proj/foo.py", text)
         self.assertIn("Bash -- python -m unittest discover -s tests", text)
@@ -2626,7 +2626,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_12_call_cap(self):
         """Only the last 12 tool calls appear."""
-        run_id = "a222222200000000a"
+        run_id = "a222222200000000b"
         calls = [("Read", {"file_path": "/proj/f%d.py" % i}) for i in range(20)]
         tp, _agent_tp = self._make_transcript(run_id, tool_calls=calls,
                                               text_blocks=["last text"])
@@ -2644,7 +2644,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_three_text_blocks_in_flight(self):
         """Only the last 3 text blocks appear in ## In flight."""
-        run_id = "a333333300000000e"
+        run_id = "a333333300000000f"
         texts = ["text block %d" % i for i in range(6)]
         tp, _agent_tp = self._make_transcript(run_id, tool_calls=[], text_blocks=texts)
         self._status(run_id)
@@ -2659,7 +2659,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_subagent_session_writes_nothing(self):
         """A subagent's SessionStart must not write progress."""
-        run_id = "a444444400000000f"
+        run_id = "a4444444000000010"
         tp, _agent_tp = self._make_transcript(run_id)
         self._status(run_id)
         os.makedirs(os.path.join(self.root, "phase-ends", "current"), exist_ok=True)
@@ -2670,7 +2670,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_existing_progress_is_kept_and_the_digest_appended_once(self):
         """An expert-written TASK_PROGRESS.md is never replaced: the digest is appended, once."""
-        run_id = "a5555555000000012"
+        run_id = "a5555555000000013"
         killed_at = "2026-09-20T22:01:39Z"
         tp, _agent_tp = self._make_transcript(run_id)
         self._status(run_id, killed_at=killed_at)
@@ -2693,7 +2693,7 @@ class ProgressFromKillTest(LedgerCase):
 
     def test_missing_transcript_writes_nothing(self):
         """When the killed transcript is missing, nothing is written."""
-        run_id = "a6666666000000016"
+        run_id = "a6666666000000017"
         self._status(run_id)
         os.makedirs(os.path.join(self.root, "phase-ends", "current"), exist_ok=True)
         tp = os.path.join(self.projects, "slug", self.SID + ".jsonl")
@@ -2795,7 +2795,7 @@ class ModHooksTest(LedgerCase):
     """3.22: hooks in a governed project (3.24 T3.2: always a mod session, ``"mod": "on"`` or not)."""
 
     SID = "mod-s"
-    PEER = ('<agent-message from="a5b6389c000000014">\n[Subagent hand-back] The text below is the '
+    PEER = ('<agent-message from="a5b6389c000000015">\n[Subagent hand-back] The text below is the '
             'final report of a subagent this session delegated to.\n  STATUS: done\n  all good')
 
     def _mod(self, on=True):
@@ -2866,10 +2866,10 @@ class ModHooksTest(LedgerCase):
         from pa.hooks import user_prompt_submit as ups
 
         fields = ups.parse_notification(self.PEER)
-        self.assertEqual(fields["task-id"], "a5b6389c000000014")
+        self.assertEqual(fields["task-id"], "a5b6389c000000015")
         ups.run({"session_id": self.SID, "cwd": self.root, "prompt": self.PEER}, self.cfg)
         ret = running.session(self.SID)["last_return"]
-        self.assertEqual(ret["agent_id"], "a5b6389c000000014")
+        self.assertEqual(ret["agent_id"], "a5b6389c000000015")
         self.assertEqual(ret["contract"], "done")
         self.assertEqual(ups.parse_notification("hello <agent-message from=\"x\">"), {})
 

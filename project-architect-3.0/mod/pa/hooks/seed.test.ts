@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { LoopState } from '../types'
 import { type Entry, renderEntry, splitDay } from './journal'
-import { buildSeed, CARD_CAP_CHARS, cardSection, localStamp, loopSection, MEMORY_CAP_CHARS, memorySection, openQuestion } from './seed'
+import { buildSeed, CARD_CAP_CHARS, cardSection, charTokens, CHARS_PER_TOKEN, localStamp, loopSection, MEMORY_CAP_TOKENS, memorySection, openQuestion, RECENT_EXCHANGES_TOKENS, RECORDS_TOKENS, SEED_BUDGET_TOKENS, tokenChars } from './seed'
 
 const D = '.claude-state/journal/2026-10-07'
 const T0 = Date.UTC(2026, 9, 7, 10, 0, 0) // entry n is n minutes later (3.22 T8g: real ISO ts)
@@ -58,8 +58,8 @@ describe('seed', () => {
     expect(all).toContain(`${loc(T0 + 2 * 60_000).hm} dev:\nQ1 line\n`)
     expect(all).toContain(`${loc(T0 + 3 * 60_000).hm} Claude:\nA1 line\n`)
 
-    const tight = buildSeed(entries, { budgetTokens: 1_000 }) // 4,000 chars
-    expect(tight.length / 4).toBeLessThan(1_100)
+    const tight = buildSeed(entries, { budgetTokens: 1_400 }) // ~4,000 chars
+    expect(charTokens(tight.length)).toBeLessThan(1_500)
     expect(tight).toContain(`Q30 line\n${'q'.repeat(400)}`) // the newest pair whole
     expect(tight).toContain(`A30 line\n${'a'.repeat(400)}`)
     expect(tight).toMatch(/^- \d\d:\d\d dev: Q\d+ line \/ Claude: A\d+ line$/m) // older ones as one line
@@ -160,13 +160,13 @@ describe('seed 3.23 T7', () => {
       '## LOOP\n\n- phase: (unknown); state: boundary\n- task: (none)\n- holds: (none)\n- open stop: (none)\n\n')
   })
 
-  test('absent sources omit the sections; MEMORY is capped near 1.5k tokens', async () => {
+  test('absent sources omit the sections; MEMORY is capped at its real-token budget', async () => {
     const s = buildSeed(convo(1))
     expect(s).not.toContain('## LOOP')
     expect(s).not.toContain('## MEMORY')
     const big = Array.from({ length: 400 }, (_, i) => `- [m${String(i)}](m${String(i)}.md) — ${'x'.repeat(40)}`).join('\n')
     const m = memorySection(big)
-    expect(m.length).toBeLessThan(MEMORY_CAP_CHARS + 200)
+    expect(m.length).toBeLessThan(tokenChars(MEMORY_CAP_TOKENS) + 200)
     expect(m).toContain('- [m0](m0.md)')
     expect(m).toMatch(/\(\d+ more lines; see \.claude-state\/memory\/MEMORY\.md\)\n\n$/)
     expect(memorySection('\n\n')).toBe('')
@@ -185,9 +185,105 @@ describe('seed 3.23 T7', () => {
     expect(c).toMatch(/\(\d+ more lines; see HOW_WE_WORK\.md \(PY tools\/card\.py slice claude\)\)\n\n$/)
   })
 
-  test('3.24 T7b-2c: a pending first run: its line under ## Plan; absent: none', async () => {
-    const s = buildSeed(convo(1), { planPaths: ['GENERATION_PLAN.md'], firstRun: 'First run line.' })
-    expect(s).toContain('## Plan\n\n- GENERATION_PLAN.md\n\nFirst run line.\n\n')
+  test('3.32 B9: the intake due: its line under ## Plan; absent: none', async () => {
+    const s = buildSeed(convo(1), { planPaths: ['GENERATION_PLAN.md'], intake: 'Intake line.' })
+    expect(s).toContain('## Plan\n\n- GENERATION_PLAN.md\n\nIntake line.\n\n')
     expect(buildSeed(convo(1))).toContain('## Plan\n\n(none)\n\n')
+  })
+})
+
+describe('seed 3.31 T3: with records', () => {
+  const REC = '## Outcomes in force\n\n### alpha (2026-10-07) · alpha ships\n- R1 decision: ship alpha\n\n## Earlier topics\n\n- beta: dropped'
+  const ts = (n: number): string => new Date(T0 + n * 60_000).toISOString()
+  const FILED = '— filed: these and older exchanges are on record —'
+
+  test('the sections in order: the recent exchanges, the records as given, then running work to the open question', async () => {
+    const s = buildSeed(convo(3), { records: { through: ts(5), text: `${REC}\n` }, card: '- c\n', memory: '- m\n', planPaths: ['P.md'] })
+    expect(s.startsWith('JOURNAL SEED\n\n## Recent exchanges (word for word, newest first)\n\n')).toBe(true)
+    expect(s).not.toContain('## Recent conversation')
+    const at = ['## Recent exchanges', 'Q3 line', FILED, 'Q2 line', 'Q1 line', '## Outcomes in force', '## Earlier topics', '## Running work', '## Plan',
+      '## CARD', '## MEMORY', '## Open question'].map((h) => s.indexOf(h))
+    expect(at.every((x) => x > 0)).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+    expect(s).toContain(`- beta: dropped\n\n## Running work`)
+  })
+
+  test('3.32 B6: the pre-PA3 state page before the records, its size out of the exchanges only at the seed\'s limit', async () => {
+    const state = '## Pre-PA3 state\n\nGen5.4.6 is in flight.\n'
+    const s = buildSeed(convo(2), { records: { through: ts(1), text: REC }, state })
+    expect(s.indexOf('## Pre-PA3 state')).toBeGreaterThan(0)
+    expect(s.indexOf('## Pre-PA3 state')).toBeLessThan(s.indexOf('## Outcomes in force'))
+    expect(buildSeed(convo(2), { state })).toContain('Gen5.4.6 is in flight.\n\n## Running work')
+    expect(buildSeed(convo(2), { state: ' \n' })).not.toContain('## Pre-PA3 state')
+    expect(buildSeed(convo(2))).not.toContain('## Pre-PA3 state')
+  })
+
+  test('3.32 B5: this generation after the records, with records or none; its size comes out of the exchanges only at the seed\'s limit', async () => {
+    const generation = '## This generation (3)\n\n- 3.1 | 2026-10-01 | first\n\nAll phases: docs/PHASE_HISTORY.md\n'
+    const s = buildSeed(convo(2), { records: { through: ts(1), text: REC }, generation })
+    const at = ['## Outcomes in force', '## This generation (3)', '- 3.1 | 2026-10-01 | first', '## Running work'].map((h) => s.indexOf(h))
+    expect(at.every((x) => x > 0)).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+    expect(s).toContain('docs/PHASE_HISTORY.md\n\n## Running work')
+    expect(buildSeed(convo(2), { generation })).toContain('## This generation (3)')
+    expect(buildSeed(convo(2), { generation: ' \n' })).not.toContain('## This generation')
+    expect(buildSeed(convo(2))).not.toContain('## This generation')
+    const big = 'g'.repeat(tokenChars(SEED_BUDGET_TOKENS) - 5_000)
+    const squeezed = buildSeed(convo(196, 400), { generation: big })
+    expect(charTokens(squeezed.length)).toBeLessThan(SEED_BUDGET_TOKENS + 50) // the dropped line sits past the room
+  })
+
+  test('filed exchanges stay word for word, below one filed line; nothing filed: no line', async () => {
+    const s = buildSeed(convo(3), { records: { through: ts(5), text: REC } })
+    expect(s.split(FILED).length).toBe(2)
+    expect(s).toContain(`Q1 line\n${'q'.repeat(20)}`) // filed through pair 2, still word for word
+    expect(s).toContain(`A2 line\n${'a'.repeat(20)}`)
+    expect(buildSeed(convo(3), { records: { through: ts(1), text: REC } })).not.toContain(FILED)
+  })
+
+  test('everything filed: the line comes first; no exchanges: (none); empty records text: no records section', async () => {
+    const s = buildSeed(convo(2), { records: { through: ts(99), text: REC } })
+    expect(s).toContain(`## Recent exchanges (word for word, newest first)\n\n${FILED}\n\n`)
+    expect(s).toContain('A2 line')
+    const t = buildSeed([], { records: { through: ts(99), text: ' \n' } })
+    expect(t).toContain('## Recent exchanges (word for word, newest first)\n\n(none)\n\n## Running work')
+  })
+
+  test('the exchanges take ~12k real tokens, filed or not; older ones go to one line, then drop', async () => {
+    const entries = convo(196, 400) // ~850 chars a pair, ~165k chars
+    const s = buildSeed(entries, { records: { through: ts(201), text: REC } })
+    expect(s).toContain(`${loc(T0 + 392 * 60_000).hm} dev:\nQ196 line\n`)
+    expect(s).not.toContain('Q100 line')
+    const conv = s.slice(s.indexOf('## Recent'), s.indexOf('## Outcomes'))
+    expect(charTokens(conv.length)).toBeLessThan(RECENT_EXCHANGES_TOKENS + 100)
+    expect(charTokens(conv.length)).toBeGreaterThan(RECENT_EXCHANGES_TOKENS - 500)
+    expect(s).toMatch(/\(\d+ older exchanges dropped; see the journal\)\n\n## Outcomes in force/)
+    // a project with no records: the same budget
+    const plain = buildSeed(entries)
+    const talk = plain.slice(plain.indexOf('## Recent'), plain.indexOf('## Running'))
+    expect(charTokens(talk.length)).toBeLessThan(RECENT_EXCHANGES_TOKENS + 100)
+    expect(charTokens(talk.length)).toBeGreaterThan(RECENT_EXCHANGES_TOKENS - 500)
+  })
+
+  test('3.32 B4: budgets are real tokens at 2.85 chars each; a full seed stays near 28k', async () => {
+    expect(CHARS_PER_TOKEN).toBe(2.85)
+    expect(tokenChars(RECORDS_TOKENS)).toBe(28_500)
+    expect(SEED_BUDGET_TOKENS).toBe(28_000)
+    const text = `## Outcomes in force\n\n${'r'.repeat(tokenChars(RECORDS_TOKENS))}`
+    const memory = Array.from({ length: 200 }, (_, i) => `- m${String(i)} ${'x'.repeat(60)}`).join('\n')
+    const card = Array.from({ length: 200 }, (_, i) => `- c${String(i)} ${'y'.repeat(60)}`).join('\n')
+    const s = buildSeed(convo(196, 400), { records: { through: ts(201), text }, memory, card, planPaths: ['GENERATION_PLAN.md', 'phase-ends/current/PHASE_PLAN.md'] })
+    expect(charTokens(s.length)).toBeLessThan(SEED_BUDGET_TOKENS)
+    expect(charTokens(s.length)).toBeGreaterThan(24_000)
+  })
+
+  test('without records: today\'s seed; the open question still reads the newest exchanges, filed or not', async () => {
+    const plain = buildSeed(convo(2))
+    expect(plain.startsWith('JOURNAL SEED\n\n## Recent conversation (newest first)\n\n')).toBe(true)
+    expect(plain).not.toContain('## Recent exchanges')
+    const asked = [...convo(2), e(6, 'partner', 'A3 line\n\nShall we ship?')]
+    const s = buildSeed(asked, { records: { through: ts(6), text: REC } })
+    expect(s).toContain(`## Recent exchanges (word for word, newest first)\n\n${FILED}`)
+    expect(s).toContain('## Open question\n\nShall we ship?\n')
   })
 })

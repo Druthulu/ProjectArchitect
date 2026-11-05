@@ -10,6 +10,7 @@
 // policy says so (policy.ts), and an answer that asks raises the waiting toast.
 import { type Entry, entryPath, type Meta, parseEntry, parseEntryPath, renderEntry, stamp } from './journal'
 import { CTX_MAX, decideRoute, ratesFrom } from './policy'
+import { localStamp } from './seed'
 import type { LoopState } from '../types'
 import type {
   Child, JournalOut, OutMsg, Partner, PriceCache, ReplyMark, RouterState, ToastOut, TurnKind, TurnRegistry, YourTurn,
@@ -290,7 +291,7 @@ export function childOut(partnerId: string, children: Record<string, Child>,
 }
 
 export function newPartner(agentId: string, model: string, now: number): Partner {
-  return { agentId, spawnedAt: now, lastTurnAt: 0, model, ctx: 0, topic: false, modelSwitchAt: 0, pingInFlight: false, firstCtx: 0 }
+  return { agentId, spawnedAt: now, lastTurnAt: 0, model, ctx: 0, topic: false, modelSwitchAt: 0, pingInFlight: false, firstCtx: 0, filingInFlight: false, summary: '' }
 }
 
 /** The partner's agent type (3.22 T8g; `claude` at T8f, `partner` before): never the built-in `claude` catch-all. */
@@ -648,8 +649,71 @@ export function parentOf(children: Record<string, Child>, child: string, list: r
   return p === undefined || p === '' ? null : p
 }
 
-/** The outbox waits while a ping turn runs or a send to the partner is not yet confirmed. */
-export const outboxHeld = (s: RouterState): boolean => s.partner?.pingInFlight === true || s.awaiting !== null
+/** The outbox waits while a ping or filing turn runs or a send to the partner is not yet confirmed. */
+export const outboxHeld = (s: RouterState): boolean => s.partner?.pingInFlight === true || s.partner?.filingInFlight === true || s.awaiting !== null
+
+// 3.31 T2: the hidden filing turn (3.31-journal-records.md, "The mod").
+/** A filing reply that files nothing: `nothing to file`, any case, an optional period. */
+export const nothingToFile = (text: string): boolean => /^nothing to file\.?$/i.test(text.trim())
+
+/** The record entry's body: the reply, or `(nothing to file)`. */
+export const recordBody = (text: string): string => (nothingToFile(text) ? '(nothing to file)' : text)
+
+/** The filing request: the span (after `after`, through `through`, ISO; local times), the `topic` call when it came, and
+ * `records.py inforce --ids`'s lines to supersede or retire by id. */
+export function filingRequest(o: { after: string; through: string; topic: boolean; summary: string; inforce: string }): string {
+  const a = localStamp(o.after)
+  const b = localStamp(o.through)
+  const topic = o.topic ? `; you called topic${o.summary === '' ? '' : `: "${o.summary}"`}` : ''
+  const inforce = o.inforce.trim() === '' ? '(none)' : o.inforce.trim()
+  return `‹pa› file: the exchanges from ${a.hm} to ${b.hm} on ${b.date} are not filed yet${topic}.\n` +
+    `Reply in the filing format, or exactly \`nothing to file\`. If they are not in your context, read them in ` +
+    `.claude-state/journal/ (the entries after ${o.after}).\nIn force now (supersede or retire by id):\n${inforce}`
+}
+
+/** The filing request sent: the partner held until its turn ends, the span it covers kept. */
+export function startFiling(s: RouterState, agentId: string, through: string): RouterState {
+  const p = s.partner
+  return p === null || p.agentId !== agentId ? s : { ...s, partner: { ...p, filingInFlight: true }, filingThrough: through }
+}
+
+/** The filing request undelivered: the hold lifted, nothing filed. */
+export function dropFiling(s: RouterState): RouterState {
+  const p = s.partner
+  return { ...s, partner: p === null ? null : { ...p, filingInFlight: false }, filingThrough: '' }
+}
+
+/** A filing turn's end: partnerTurnEnded (never applyReply: no reply, no marker, no toast, the warm counts go on), the
+ * filing hold lifted; a `/model` switch pending before it stays pending (its rotation still due after this turn end). */
+export function filingTurnEnded(s: RouterState, now: number, ctx: number | null): RouterState {
+  const p = s.partner
+  const switched = p !== null && p.modelSwitchAt > p.lastTurnAt
+  const e = partnerTurnEnded(s, now, ctx)
+  const q = e.partner
+  return q === null ? e : { ...e, partner: { ...q, filingInFlight: false, modelSwitchAt: switched ? Math.max(q.modelSwitchAt, now + 1) : q.modelSwitchAt } }
+}
+
+/**
+ * The filing filed: its turn ended (filingTurnEnded; `turnEnd` false: a late hand-back's, whose turn end was taken), the
+ * span filed (`filedThrough`), the summary dropped, the to-do lines kept for the developer's next message, its reply
+ * key marked `handback` so a hand-back carrying the same text draws nothing.
+ */
+export function endFiling(s: RouterState, now: number, ctx: number | null, key: string, todo: readonly string[], turnEnd = true): RouterState {
+  const e = turnEnd ? filingTurnEnded(s, now, ctx) : s
+  const q = e.partner
+  return {
+    ...e,
+    partner: q === null ? null : { ...q, filingInFlight: false, summary: '' },
+    filedThrough: s.filingThrough !== '' ? s.filingThrough : s.filedThrough,
+    filingThrough: '',
+    todo: [...s.todo, ...todo],
+    replies: key === '' ? e.replies : withMark(e, key, { via: 'handback', n: 0, at: now }),
+  }
+}
+
+/** The to-do block of the developer's next message ('' none). */
+export const todoBlock = (todo: readonly string[]): string =>
+  todo.length === 0 ? '' : ['‹pa› to-do (from the last filing):', ...todo.map(l => `- ${l}`)].join('\n')
 
 // Render rules: rows the transcript draws as nothing, so it reads as a chat (3.21 P3b).
 /** A user row the transcript draws as nothing: the router's marker, or a hand-back. The text decides too, because a

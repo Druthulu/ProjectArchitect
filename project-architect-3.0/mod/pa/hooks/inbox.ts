@@ -18,7 +18,7 @@ export type RequestName = { id: string; ms: number; seq: number; kind: string }
  * (`stop`; null clears it); 3.24 T13E: a card the loop drew (`card`: registered, journaled, drawn at zero tokens). */
 export type Effect =
   | { do: 'log'; kind: string; data: Record<string, unknown> }
-  | { do: 'topic'; agentId: string }
+  | { do: 'topic'; agentId: string; summary: string }
   | { do: 'toast'; cause: ToastOut['cause']; body: string }
   | { do: 'present'; item: Present }
   | { do: 'notice'; text: string; to: string }
@@ -31,7 +31,7 @@ export type Effect =
  * `forward`, written by the router when it queues a forward of a child's hand-back to the loop's expert. T6a1: the
  * router's `install` (an approved generation or phase plan) and `answer` (the answer to the loop's own `ask`).
  */
-export const LOOP_KINDS: ReadonlySet<string> = new Set(['release', 'plan_edit', 'steer', 'forward', 'install', 'answer', 'cleanup'])
+export const LOOP_KINDS: ReadonlySet<string> = new Set(['release', 'plan_edit', 'steer', 'forward', 'install', 'answer', 'cleanup', 'drive'])
 
 /** A file name's kind is one the loop drains. */
 export const isLoopKind = (name: string): boolean => LOOP_KINDS.has(parseRequestName(name)?.kind ?? '')
@@ -154,7 +154,7 @@ const retrieveFx = (req: Request, root: string): Effect[] => {
 /** kind -> handler; any other kind goes to `noop`. `ask` raises the toast and queues the picker (Claude's ask takes a
  * pending stop's place, T13b); `plan` queues path 0. */
 export const HANDLERS: Readonly<Record<string, Handler>> = {
-  topic: req => [...noop(req), { do: 'topic', agentId: req.caller }],
+  topic: req => [...noop(req), { do: 'topic', agentId: req.caller, summary: inputText(req.input, 'summary') }], // 3.31 T2: the summary, for the filing request
   ask: req => [...noop(req), { do: 'toast', cause: 'input', body: inputText(req.input, 'question') },
     ...(req.caller === 'loop' ? [] : [{ do: 'stop', cause: null } as const]), ...presentFx(req)],
   plan: req => [...noop(req), ...presentFx(req)],

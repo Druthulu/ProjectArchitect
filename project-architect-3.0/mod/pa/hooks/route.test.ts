@@ -5,6 +5,7 @@ import {
   hideSpinner, hideUser, isSeedName, localAnswer, markerText, newestPartner, newPartner, nextMarker, outboxHeld, parentOf, parseMarker, partnerReport, registerTurn,
   replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds,
   bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS, bangOf, bangText,
+  nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, todoBlock,
 } from './route'
 import type { Entry } from './journal'
 import { defaultState } from './state'
@@ -268,6 +269,76 @@ describe('a `!` command at the prompt (3.29.8)', () => {
     const long = Array.from({ length: 50 }, (_, i) => String(i)).join('\n')
     expect(bangText('c', long)).toContain('(the last 40 lines)')
     expect(bangText('c', long)).not.toContain('\n9\n')
+  })
+})
+
+describe('3.31 T2: the filing turn', () => {
+  const iso = (h: number, m: number): string => new Date(2026, 9, 30, h, m).toISOString()
+
+  test('nothingToFile and the record body', () => {
+    for (const t of ['nothing to file', 'Nothing to file.', '  NOTHING TO FILE \n']) {
+      expect(nothingToFile(t)).toBe(true)
+    }
+    expect(nothingToFile('nothing to file yet')).toBe(false)
+    expect(nothingToFile('topic: x\nheadline: y')).toBe(false)
+    expect(recordBody('nothing to file.')).toBe('(nothing to file)')
+    expect(recordBody('topic: x')).toBe('topic: x')
+  })
+
+  test('the request text: the span in local time, the topic clause, the in-force ids or (none)', () => {
+    const after = iso(9, 5)
+    const through = iso(10, 40)
+    expect(filingRequest({ after, through, topic: false, summary: '', inforce: '' })).toBe(
+      '‹pa› file: the exchanges from 09:05 to 10:40 on 2026-10-30 are not filed yet.\n' +
+      'Reply in the filing format, or exactly `nothing to file`. If they are not in your context, read them in ' +
+      `.claude-state/journal/ (the entries after ${after}).\nIn force now (supersede or retire by id):\n(none)`)
+    const r = filingRequest({ after, through, topic: true, summary: 'the alpha plan', inforce: 'R1 decision: x.\nR2 open: y.\n' })
+    expect(r.split('\n')[0]).toBe('‹pa› file: the exchanges from 09:05 to 10:40 on 2026-10-30 are not filed yet; you called topic: "the alpha plan".')
+    expect(r.endsWith('In force now (supersede or retire by id):\nR1 decision: x.\nR2 open: y.')).toBe(true)
+    expect(filingRequest({ after, through, topic: true, summary: '', inforce: '' }).split('\n')[0]).toContain('not filed yet; you called topic.')
+  })
+
+  test('start, drop: the hold and the outbox; a stale agent id changes nothing', () => {
+    const s0 = { ...defaultState('S', 1), partner: newPartner('P', 'opus', 1) }
+    const s = startFiling(s0, 'P', iso(10, 40))
+    expect([s.partner?.filingInFlight, s.filingThrough, outboxHeld(s)]).toEqual([true, iso(10, 40), true])
+    expect(startFiling(s0, 'Q', iso(10, 40))).toBe(s0)
+    const d = dropFiling(s)
+    expect([d.partner?.filingInFlight, d.filingThrough, outboxHeld(d)]).toEqual([false, '', false])
+  })
+
+  test('the turn end: the hold lifted, no reply mark, the warm counts kept; a pending /model switch stays pending', () => {
+    const p = { ...newPartner('P', 'opus', 1), lastTurnAt: 50, modelSwitchAt: 80 }
+    const s0 = startFiling({ ...defaultState('S', 1), partner: p, warm: { ...defaultState('S', 1).warm, waitStart: 7, waitPings: 2 } }, 'P', iso(10, 40))
+    const e = filingTurnEnded(s0, 100, 5000)
+    expect([e.partner?.filingInFlight, e.partner?.lastTurnAt, e.partner?.ctx, e.partner?.modelSwitchAt]).toEqual([false, 100, 5000, 101])
+    expect([e.warm.waitStart, e.warm.waitPings]).toEqual([7, 2])
+    expect(e.replies).toEqual({})
+    expect(e.filingThrough).toBe(iso(10, 40))
+    const n = filingTurnEnded(startFiling({ ...defaultState('S', 1), partner: { ...p, modelSwitchAt: 0 } }, 'P', 'x'), 100, null)
+    expect([n.partner?.modelSwitchAt, n.partner?.ctx]).toEqual([0, 0])
+  })
+
+  test('endFiling: filed through the span, the summary dropped, the to-do kept, the hand-back key marked', () => {
+    const p = { ...newPartner('P', 'opus', 1), summary: 'the alpha plan', topic: true }
+    const s0 = { ...startFiling({ ...defaultState('S', 1), partner: p, filedThrough: iso(9, 5), todo: ['old'] }, 'P', iso(10, 40)) }
+    const e = endFiling(s0, 100, null, 'P:k', ['land R3', 'R4 open: y'])
+    expect([e.partner?.filingInFlight, e.partner?.summary, e.partner?.lastTurnAt, e.partner?.topic]).toEqual([false, '', 100, true])
+    expect([e.filedThrough, e.filingThrough]).toEqual([iso(10, 40), ''])
+    expect(e.todo).toEqual(['old', 'land R3', 'R4 open: y'])
+    expect(e.replies['P:k']?.via).toBe('handback')
+    expect(takeReply(e, 'P:k', 101).show).toBe(false)
+    expect(outboxHeld(e)).toBe(false)
+    // a late hand-back's filing: the turn end was taken already
+    const late = endFiling({ ...s0, partner: { ...s0.partner!, filingInFlight: false, lastTurnAt: 60 } }, 200, null, '', [], false)
+    expect([late.partner?.lastTurnAt, late.filedThrough, late.replies]).toEqual([60, iso(10, 40), {}])
+    // no span in flight: filedThrough kept
+    expect(endFiling({ ...s0, filingThrough: '' }, 100, null, '', []).filedThrough).toBe(iso(9, 5))
+  })
+
+  test('the to-do block', () => {
+    expect(todoBlock([])).toBe('')
+    expect(todoBlock(['land R3', 'R4 open: y'])).toBe('‹pa› to-do (from the last filing):\n- land R3\n- R4 open: y')
   })
 })
 

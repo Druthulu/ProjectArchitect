@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { auditorBrief, coderLine, curatorBrief, EXPERT_RETURN, expertBrief, fixBrief, type PlanTask, readsPath } from './brief'
+import { auditorBrief, coderLine, curatorBrief, EXPERT_RETURN, expertBrief, fixBrief, intakeBrief, type PlanTask, readsPath } from './brief'
 
 // As `plan_edit.py show --task T1 --json` printed it for templates/PHASE_PLAN.template.md (3.23 T4), plus reads.
 const T1: PlanTask = {
@@ -48,6 +48,13 @@ describe('expert brief', () => {
     expect(expertBrief(T1, { card: ' \n' })).toBe(expertBrief(T1))
   })
 
+  test('3.31 T4: OUTCOMES IN FORCE after the CARD block; absent or blank: none', async () => {
+    const b = expertBrief(T1, { card: '## Paths\n- src/\n', outcomes: '- R2 decision: one task per context\n  binds work: yes\n' })
+    expect(b.endsWith('- src/\nOUTCOMES IN FORCE (PY tools/records.py inforce --binds-work; binding):\n- R2 decision: one task per context\n  binds work: yes')).toBe(true)
+    expect(expertBrief(T1, { outcomes: '- R2 decision: x' })).toBe(`${expertBrief(T1)}\nOUTCOMES IN FORCE (PY tools/records.py inforce --binds-work; binding):\n- R2 decision: x`)
+    expect(expertBrief(T1, { card: '## Paths\n', outcomes: ' \n' })).toBe(expertBrief(T1, { card: '## Paths\n' }))
+  })
+
   test('3.3 T7: the CODER line: the task coder, else pa.json external, else opus55; external ones say how they run', async () => {
     const EXT = { coder: 'openrouter/deepseek', lanes: { openrouter: 2 }, max_coders: 3, escalate: ['opus55', 'fable'] }
     const run = 'external: brief it in a file and run it with tools/pa_ext.py'
@@ -71,6 +78,12 @@ describe('expert brief', () => {
 
 describe('other briefs', () => {
   test('curator, auditor, fix', async () => {
+    const o = { memoryDir: 'M', from: '', page: 'docs/PRE_PA3_STATE.md', sources: ['a.md', 'b.md'] }
+    expect(intakeBrief({ ...o, steps: ['living docs'] })).toBe('CURATE: intake · MEMORY: M · PAGE: docs/PRE_PA3_STATE.md\nSTEPS: living docs\nRETURN: recap')
+    const full = intakeBrief({ ...o, from: 'pa2', steps: ['memories', 'living docs', 'state page'] })
+    expect(full).toContain('CURATE: intake · MEMORY: M · PAGE: docs/PRE_PA3_STATE.md · FROM: pa2\nSTEPS: memories, living docs, state page\nWRITE: Where does this project stand?')
+    expect(full).toContain('\nFOR: every fresh Claude and the planner\nSCOPE: the living docs, git log, the roadmap files, then a.md, b.md. In a checkpoint file')
+    expect(full).toContain('\nCAP: one page, 7,000 characters at most\nRETURN: recap')
     expect(curatorBrief('curate: gen 2 start', 'Z:/p/.claude-state/memory')).toBe('CURATE: curate: gen 2 start\nMEMORY: Z:/p/.claude-state/memory\nRETURN: recap')
     // 3.24 T8b: the first-run line carries MEMORY itself; no second field.
     expect(curatorBrief('curate: migration 3.2 -> gen 3.2 · FROM: vanilla · MEMORY: M', 'M')).toBe('CURATE: curate: migration 3.2 -> gen 3.2 · FROM: vanilla · MEMORY: M\nRETURN: recap')

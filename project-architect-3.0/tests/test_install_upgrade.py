@@ -377,8 +377,8 @@ class TestLadderRefresh(ProjectCase):
     def test_max20_to_max5(self):
         self.set_tier("max5")
         out = self.install()
-        self.assertNotIn(self.JUDGE, out)               # max5 judges keep max20's row
-        self.assertNotIn("pa-expert", out)              # and so does the expert's base row
+        self.assertIn(self.JUDGE, out)                  # 3.32: max5's auditor runs Opus, max20's Fable
+        self.assertNotIn("pa-expert", out)              # the expert's base row stays
         self.assertIn("  removed %s (not in this plan tier)\n" % self.FABLE, out)
         self.assertIn("restart: needed\n", out)
         self.assertFalse(self.exists_rel(self.FABLE))

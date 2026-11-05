@@ -30,7 +30,7 @@ import { eventFile } from './debug'
 import { EDIT_TOOLS, editHeader, editOf, editsShown } from './edit'
 import { feedDirOf, feedName, feedPieces, feedRecord, feeds, lastLine, narrationIndexes, startsLine, startText } from './feed'
 import type { StepBlock } from './feed'
-import { displayWho, entryPath, entryText, noteLines, noteWho, partnerIdOf, stamp, stepFactsText, whoOf } from './journal'
+import { displayWho, entryPath, entryText, filingOf, noteLines, noteWho, partnerIdOf, stamp, stepFactsText, whoOf } from './journal'
 import { hintOf, keepRow, ladderArgv, PLANNER, rowKey, rowOf, spawnFields, spawnModel, stepEffort, UNSET } from './ladder'
 import type { LadderRow } from './ladder'
 import { argLine, depthOf, HANDBACK, isPingStep, planningAfter, ctxOf } from './stream'
@@ -115,6 +115,27 @@ const shellsEdit = async ($: Pick<EngineInterface, 'fs' | 'session'>, f: (s: Rec
     }
   })
   shellsChain = run.catch(quiet)
+  await run.catch(quiet)
+}
+
+/** 3.32.1 T5: each helper's parent, `.run/mod/<sid>/parents.json` (pa loop.ts PARENTS_FILE, parentsOf): `{ <child>: <parent> }`,
+ * from the Agent call that started it; Claude Code leaves `parentId` out of its list for some helpers. */
+let parentsChain: Promise<unknown> = Promise.resolve() // one read-modify-write at a time
+const parentsSet = async ($: Pick<EngineInterface, 'fs' | 'session'>, child: string, parent: string): Promise<void> => {
+  const run = parentsChain.then(async () => {
+    const path = `${await $.session.root()}/.run/mod/${await $.session.id()}/parents.json`
+    let cur: Record<string, string> = {}
+    try {
+      const v = JSON.parse((await $.fs.read(path).catch(() => null)) ?? '{}') as unknown
+      cur = typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, string>) : {}
+    } catch {
+      cur = {}
+    }
+    if (cur[child] !== parent) {
+      await $.fs.write(path, JSON.stringify({ ...cur, [child]: parent }))
+    }
+  })
+  parentsChain = run.catch(quiet)
   await run.catch(quiet)
 }
 
@@ -317,7 +338,10 @@ export const register: Register = on => {
     // (`thinking` chunks) and tool calls never feed. c5's `kind` "summary" records are gone; `kind` stays "text".
     // 3.24 T13n: but a narration block does (white in the view); all the step's records are written at its end, which
     // comes before its tools run.
-    const feedOn = me !== undefined && agentId !== undefined && feeds(factsOf(agentId).type)
+    // 3.31 T2b: the partner's hidden filing turn (the router's state: `filingInFlight`) feeds nothing; its thinking
+    // entries stay.
+    const feedOn = me !== undefined && agentId !== undefined && feeds(factsOf(agentId).type) &&
+      !filingOf(await $.fs.read(`${await $.session.root()}/.run/mod/${await $.session.id()}/state.json`).catch(() => null), agentId)
     let feedDir = ''
     const feedOut = async (raw: string): Promise<void> => {
       const t = raw.trim()
@@ -458,6 +482,24 @@ export const register: Register = on => {
         }
         return r
       }
+      if (e.tool === 'Agent' || e.tool === 'Task') {
+        // 3.32.1 T5: the new helper's parent is the caller, recorded for pa (parents.json) and in its facts when empty.
+        const r = await next(e)
+        const res = r.result as { agentId?: unknown } | undefined
+        const child = typeof res?.agentId === 'string' && res.agentId !== '' ? res.agentId : (/agentId: ([\w-]+)/.exec(r.text ?? '')?.[1] ?? '')
+        const parent = e.agentId
+        if (child !== '' && child !== parent) {
+          await parentsSet($, child, parent)
+          const fc = facts.get(child)
+          if (fc !== undefined && fc.parentId === '') {
+            const f2 = { ...fc, parentId: parent }
+            facts.set(child, f2)
+            await $.fs.write(`${await $.session.root()}/.run/mod/${await $.session.id()}/agents/${child}.json`,
+              factsText(f2, agents.get(child)?.ctx ?? 0, Date.now())).catch(quiet)
+          }
+        }
+        return r
+      }
       if (e.tool === 'SendMessage' || e.tool === HANDBACK) {
         // 3.28.1 T15: the agent's report: its dead shells are cleared; a contract (`STATUS:`) clears all of them.
         const msg = String(args['message'] ?? '')
@@ -515,7 +557,7 @@ export const register: Register = on => {
     return r
   })
 
-  // The seven tools: a good call becomes one request file in the router's inbox, which its one-second tick drains.
+  // The eight tools: a good call becomes one request file in the router's inbox, which its one-second tick drains.
   for (const name of TOOL_NAMES) {
     on('tool.call', { tool: `mcp__pa-watch__${name}` }, async ($, e) => {
       const input = argsOf(e as unknown as Record<string, unknown>)

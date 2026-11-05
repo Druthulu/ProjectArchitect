@@ -44,6 +44,8 @@ type W = {
   recalcDone?: boolean
   /** `$.fs.stat` mtimes by path (3.24 T8: a REVIEW.md older than the summary is rebuilt); 0 when absent. */
   mtimes?: Record<string, number>
+  /** 3.32.1 T5: the next spawns' refusals, in order (each one taken); empty or absent: spawns succeed. */
+  spawnDeny?: string[]
 }
 
 function world(on: On, files: Record<string, string>, env: Record<string, string> = {}): W {
@@ -108,6 +110,10 @@ function world(on: On, files: Record<string, string>, env: Record<string, string
   })
   on('agent.spawn', async ($, e) => {
     w.spawns.push({ type: e.subagentType ?? '', prompt: e.prompt, description: e.description ?? '' })
+    const deny = w.spawnDeny?.shift()
+    if (deny !== undefined) {
+      return { deny }
+    }
     const id = `E${String(w.spawns.length)}`
     w.list = [...w.list.filter(a => a.id !== id), { id, status: 'running', type: e.subagentType ?? '' }]
     return { agentId: id, model: 'opus' }
@@ -179,8 +185,11 @@ describe('autopilot loop', () => {
     await clock.advance(2_000)
     expect(w.runs.map(r => r.slice(1, 3).join(' '))).toEqual([
       'tools/launch.py --state-json', 'tools/managed.py drift', 'tools/plan_edit.py next', 'tools/status.py window-gate', 'tools/status.py set', 'rev-parse HEAD',
-      'tools/card.py slice', 'tools/plan_edit.py show',
+      'tools/card.py slice', 'tools/records.py inforce', 'tools/plan_edit.py show',
     ])
+    // 3.31 T4: the in-force outcomes that bind work, asked beside the card; none printed: no block.
+    expect(ran(w, 'tools/records.py')[0]).toEqual(['py', 'tools/records.py', 'inforce', '--binds-work', '--max-tokens', '4000'])
+    expect(w.spawns[0]?.prompt).not.toContain('OUTCOMES IN FORCE')
     // 3.24 T7b: the brief carries the card's expert slice.
     expect(ran(w, 'tools/card.py')[0]).toEqual(['py', 'tools/card.py', 'slice', 'expert'])
     expect(w.spawns[0]?.prompt).toContain('\nCARD (PY tools/card.py slice expert; the card\'s expert sections, already read):\n## Developer <!-- roles: expert -->\n- plain words')
@@ -196,6 +205,60 @@ describe('autopilot loop', () => {
     // Nothing more while it runs: no second spawn.
     await clock.advance(10_000)
     expect(w.spawns.length).toBe(1)
+  })
+
+  // 3.32.1 T5 (#6): Claude Code's auto-mode check refusing with no verdict is transient: the pick tries again.
+  const NO_VERDICT = 'Permission for this action was denied: the auto mode classifier gave no verdict'
+  const ticks = async (clock: { advance: (ms: number) => Promise<unknown> }, n: number): Promise<void> => {
+    for (let i = 0; i < n; i += 1) {
+      await clock.advance(2_000)
+    }
+  }
+  const holdLines = (w: W): string => entries(w, 'mod-hold').map(p => w.files.get(p) ?? '').join('\n')
+  test('3.32.1 T5: a no-verdict refusal is journaled, not held; the pick runs again after 30 s and spawns', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {})
+    w.spawnDeny = [NO_VERDICT]
+    await $.session.start(START)
+    await ticks(clock, 1)
+    const r = loopOf(w) as Loop & { spawnRetry?: { task: string; n: number } | null }
+    expect([w.spawns.length, r.holds, r.task, r.spawnRetry?.task, r.spawnRetry?.n]).toEqual([1, [], null, 'T1', 1])
+    expect(holdLines(w)).toContain('the pick runs again in 30 s (1 of 3)')
+    await ticks(clock, 13)
+    expect(w.spawns.length).toBe(1)
+    await ticks(clock, 2)
+    const l = loopOf(w) as Loop & { spawnRetry?: unknown }
+    expect([w.spawns.length, l.state, l.task?.agentId, l.holds, l.spawnRetry]).toEqual([2, 'running', 'E2', [], null])
+  })
+
+  test('3.32.1 T5: the third no-verdict refusal of a task attempt holds question, saying so', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {})
+    w.spawnDeny = [NO_VERDICT, NO_VERDICT, NO_VERDICT]
+    await $.session.start(START)
+    await ticks(clock, 40)
+    expect([w.spawns.length, loopOf(w).holds]).toEqual([3, ['question']])
+    expect(holdLines(w)).toContain('auto-mode check gave no answer 3 times')
+  })
+
+  test('3.32.1 T5: any other spawn refusal holds question at once', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {})
+    w.spawnDeny = ['Permission for this action was denied by a hook']
+    await $.session.start(START)
+    await ticks(clock, 20)
+    expect([w.spawns.length, loopOf(w).holds]).toEqual([1, ['question']])
+    expect(holdLines(w)).not.toContain('the pick runs again')
+  })
+
+  test('3.31 T4: the in-force outcomes that bind work ride after the card; a failed run adds none', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const w = world(on, {})
+    w.answer = argv => (argv[1] === 'tools/card.py' ? ok('## Developer <!-- roles: expert -->\n- plain words\n')
+      : argv[1] === 'tools/records.py' ? ok('- R3 decision: keep the ladder\n  binds work: yes\n') : defaultAnswer(argv))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(w.spawns[0]?.prompt).toContain('- plain words\nOUTCOMES IN FORCE (PY tools/records.py inforce --binds-work; binding):\n- R3 decision: keep the ladder\n  binds work: yes')
   })
 
   test('3.23 T7: an entry the naming rejects (who T6b) is a journal.bad debug event, not a silent drop', async ($, on) => {
@@ -1326,6 +1389,23 @@ describe('visible and steerable (T5c)', () => {
     expect(w.files.get(entries(w, 'dev-msg')[0] ?? '')).not.toContain('running now') // the journal keeps the original
   })
 
+  test('3.32.1 T5: the running-now note places a coder known only from parents.json under its expert', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, {
+      [LOOP]: running(), [`${BASE}/S1/state.json`]: PRIOR, [`${BASE}/S1/parents.json`]: '{"C1":"E1"}',
+      [`${BASE}/S1/agents/E1.json`]: facts({ type: 'pa-expert', description: 'T1 add function' }),
+      [`${BASE}/S1/agents/C1.json`]: facts({ type: 'pa-coder', steps: ['Edit calc.py'] }),
+    })
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }, { id: 'E1', status: 'running', type: 'pa-expert' },
+      { id: 'C1', status: 'running', type: 'pa-coder' }]
+    await $.session.start(ISTART)
+    await clock.advance(2_000)
+    await $.prompt.submit({ text: 'what is it doing?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(delivered(w).some(t => t.includes('- expert E1 (claude-opus-5-5)\n- coder C1 (claude-opus-5-5)'))).toBe(true)
+  })
+
   test('3.26 T2: while the task is routed the note still names it', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: running({ state: 'routing', holds: ['question'] }), [`${BASE}/S1/state.json`]: PRIOR })
@@ -2174,95 +2254,320 @@ describe('generation start (T6a2)', () => {
     expect(asked.length).toBe(1)
   })
 
-  test('3.24 T7b: pa.json first_run, no plan, any mode: the first-run ask before the plan hold, the curator, its recap relayed', async ($, on) => {
-    const clock = mock.clock(on, { now: NOW })
-    const w = noPlanWorld(on, { [`${ROOT}/.claude/pa.json`]: JSON.stringify({ mod: 'on', python: 'py', first_run: { from: 'gen3', at: '3.24' } }), [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n',
-      [`${BASE}/S1/state.json`]: PRIOR })
-    w.answer = launchDoc({ mode: 'router' })
-    const asked = askWith(on, w, ['Run it now (Recommended)'])
+  // 3.32 B9: the PA3 intake: one memory-curator, one run, one marker.
+  const paWith = (o: Record<string, unknown>): string => JSON.stringify({ mod: 'on', python: 'py', ...o })
+  const FIRST = { first_run: { from: 'pa2', at: '3.24' } }
+  const PA_JSON = `${ROOT}/.claude/pa.json`
+  const WORK_CARD = `${ROOT}/HOW_WE_WORK.md`
+  const PAGE = `${ROOT}/docs/PRE_PA3_STATE.md`
+  const LIVING = '# How we work\n\n## Living docs <!-- roles: claude -->\n- `a.md`: a; with a\n\n## Next\n'
+  const NO_LIVING = '# How we work\n\n## Living docs <!-- roles: claude -->\n- (none yet: `doc`: what it answers; when to update it)\n'
+  const HELLO = { text: 'hello', origin: { kind: 'composer' }, wait: false } as const
+  const intakes = (w: W): { prompt: string; description: string }[] => w.spawns.filter(x => x.description === 'PA3 intake')
+  const marks = (w: W): string[] => w.runs.filter(r => r[1] === 'tools/history.py').map(r => r.slice(2).join(' '))
+  const commits = (w: W): string[][] => w.runs.filter(r => r.some(a => a.endsWith('commit_task.sh'))).map(r => r.slice(r.findIndex(a => a === 'PA3 intake')))
+  const drawn = (w: W): string[] => [...w.files.keys()].filter(p => p.startsWith(`${INBOX}/`) && p.endsWith('-card.json')).sort()
+    .map(p => (JSON.parse(w.files.get(p) ?? '{}') as { input: { text: string } }).input.text)
+  const job = (w: W): unknown => (loopOf(w) as Loop & { bgJob?: unknown }).bgJob ?? null
+  const tries = (w: W): number => (loopOf(w) as Loop & { intakeTries?: number }).intakeTries ?? 0
+  const curator = (w: W, n = intakes(w).length): string => {
+    const at = w.spawns.indexOf(w.spawns.filter(x => x.description === 'PA3 intake')[n - 1] as W['spawns'][number])
+    return `E${String(at + 1)}`
+  }
+  /** A world whose fake tools answer: state-sources, and `mark` writing the marker. */
+  const intakeWorld = (w: W, mode = 'router'): void => {
+    const doc = launchDoc({ mode })
+    w.answer = argv => {
+      if (argv[2] === 'mark') {
+        const o = JSON.parse(w.files.get(PA_JSON) ?? '{}') as Record<string, unknown>
+        w.files.set(PA_JSON, JSON.stringify({ ...o, intake: argv.includes('--incomplete') ? 'incomplete' : 'done' }))
+      }
+      return argv[1] === 'tools/phaseend_index.py' ? { exitCode: 0, stdout: 'CURRENT_PHASE.md\nGENERATION_PLAN.md\n', stderr: '' } : doc(argv)
+    }
     w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }]
-    await $.session.start(ISTART)
-    for (let i = 0; i < 6 && w.spawns.length === 0; i += 1) {
+  }
+  type Clock = ReturnType<typeof mock.clock>
+  const until = async (clock: Clock, done: () => boolean): Promise<void> => {
+    for (let i = 0; i < 12 && !done(); i += 1) {
       await clock.advance(2_000)
     }
-    const fr = 'curate: migration 3.2 -> gen 3.2 · FROM: gen3 · MEMORY: .claude-state/memory'
-    expect(asked.map(a => a.q)).toEqual([`This project's first run in PA 3.2: the memory curator sorts its memories once (${fr}), ` +
-      'card first, memory kept lean, the rest archived, and recaps after. Run it now?'])
-    expect(loopOf(w).holds).toEqual([]) // no plan hold while it runs
-    expect(w.spawns.map(x => [x.description, x.prompt])).toEqual([['memory curator', `CURATE: ${fr}\nRETURN: recap`]]) // 3.24 T8b: MEMORY once
-    // the curator writes migrated: "3.2"; its recap goes to Claude, then the plan hold
-    w.files.set(`${ROOT}/.claude/pa.json`, JSON.stringify({ mod: 'on', python: 'py', migrated: '3.2' }))
-    await $.turn.complete(complete('E1', 'memories: who.md -> developer'))
-    for (let i = 0; i < 12 && genOf(w)?.step !== 'done'; i += 1) {
-      await clock.advance(2_000)
-    }
-    expect(genOf(w)?.kind).toBe('migration')
-    const n = notices(w).filter(x => x.input.text.startsWith("‹pa› The project's first run in PA 3.2"))
-    expect(n.map(x => x.input.text)).toEqual([[`‹pa› The project's first run in PA 3.2: the memory curator ran (${fr}). Relay its recap to the developer in plain words.`,
-      'memory curator recap:\nmemories: who.md -> developer',
-      'archived memories: .claude-state/memory/gen3.2.md (tell the developer, in case he wants to keep something)'].join('\n')])
-    // 3.24 T13A: relay first: no PLAN_NEEDED until Claude's turn that relayed the recap has ended
-    await clock.advance(4_000)
-    expect(loopOf(w).holds).toEqual([])
-    expect(notices(w).filter(x => x.input.text.includes('a phase plan is needed'))).toEqual([])
-    await $.turn.complete(complete('P1', 'The curator sorted your memories: who.md is kept.'))
+  }
+  /** The curator of try `n` ends with `status`; the tick that sees it runs. */
+  const endTry = async (clock: Clock, w: W, n: number, status: Agent['status']): Promise<void> => {
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }, { id: curator(w, n), status, type: 'memory-curator' }]
+    await until(clock, () => job(w) === null)
     await clock.advance(2_000)
-    expect(loopOf(w).holds).toEqual(['plan'])
-    const texts = notices(w).map(x => x.input.text)
-    expect(texts.findIndex(t => t.includes('a phase plan is needed'))).toBeGreaterThan(texts.findIndex(t => t.startsWith("‹pa› The project's first run")))
-    expect(asked.length).toBe(1)
+  }
+
+  test('a first run: no picker: one curator, its card once, the marker, the commit and the end line; no notice, no hold', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ ...FIRST, intake: 'pending' }), [WORK_CARD]: NO_LIVING, [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n' })
+    intakeWorld(w)
+    const asked = askWith(on, w, [])
+    await $.session.start(ISTART)
+    await $.prompt.submit(HELLO)
+    await until(clock, () => intakes(w).length > 0)
+    expect(intakes(w)[0]?.prompt).toContain('CURATE: intake · MEMORY: .claude-state/memory · PAGE: docs/PRE_PA3_STATE.md · FROM: pa2\nSTEPS: memories, living docs, state page\nWRITE: Where does this project stand?')
+    expect(intakes(w)[0]?.prompt).toContain('SCOPE: the living docs, git log, the roadmap files, then CURRENT_PHASE.md, GENERATION_PLAN.md.')
+    expect(drawn(w)).toEqual(['**PA3 intake** · one agent reads this project once, in the background\n\n1. Sort its memories\n' +
+      "2. Map its docs and write the card's living docs\n3. Write where the project stands: `docs/PRE_PA3_STATE.md`\n\n" +
+      'Keep talking as usual. A new plan waits until this is done.'])
+    await clock.advance(6_000)
+    expect([drawn(w).length, intakes(w).length, marks(w), genOf(w)]).toEqual([1, 1, [], null])
+    expect(loopOf(w).holds).toEqual([])
+    w.files.set(PA_JSON, paWith({ migrated: '3.2', intake: 'pending' }))
+    w.files.set(WORK_CARD, LIVING)
+    w.files.set(PAGE, '# Pre-PA3 state\n')
+    await endTry(clock, w, 1, 'completed')
+    expect(marks(w)).toEqual(['mark intake'])
+    expect(commits(w)).toEqual([['PA3 intake', 'docs/PRE_PA3_STATE.md', 'HOW_WE_WORK.md', '.claude/pa.json']])
+    expect(drawn(w)[1]).toBe('**PA3 intake** done · memories sorted (archive: .claude-state/memory/gen3.2.md), living docs on the card, docs/PRE_PA3_STATE.md written')
+    expect(notices(w).filter(n => /intake/i.test(n.input.text))).toEqual([])
+    expect(asked).toEqual([])
+    await clock.advance(6_000)
+    expect([intakes(w).length, marks(w), drawn(w).length]).toEqual([1, ['mark intake'], 2])
   })
 
-  test('3.24 T7b: no first-run ask once migrated is "3.2"', async ($, on) => {
+  test('an install with no git never wrote the marker: a first run is still owed, and the job is watched after the sort', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const w = noPlanWorld(on, { [`${ROOT}/.claude/pa.json`]: JSON.stringify({ mod: 'on', python: 'py', first_run: { from: 'pa2', at: '3.24' }, migrated: '3.2' }) })
-    w.answer = launchDoc({ mode: 'router' })
-    const asked = askWith(on, w, ['Run it now (Recommended)'])
-    await $.session.start(START)
-    await clock.advance(10_000)
-    expect([asked.length, w.spawns.length, w.files.has(LOOP)]).toEqual([0, 0, false]) // asleep: no plan, no generation plan
+    const w = noPlanWorld(on, { [PA_JSON]: paWith(FIRST), [WORK_CARD]: NO_LIVING })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    await $.prompt.submit(HELLO)
+    await until(clock, () => intakes(w).length > 0)
+    w.files.set(PA_JSON, paWith({ migrated: '3.2' })) // the sort is done: intakeDue goes false, the job still runs
+    w.files.set(WORK_CARD, LIVING)
+    w.files.set(PAGE, '# Pre-PA3 state\n')
+    await endTry(clock, w, 1, 'completed')
+    expect([marks(w), job(w)]).toEqual([['mark intake'], null])
   })
 
-  test('3.24 T7b-2c: under the session hold the first-run ask comes with the developer\'s first message; the curator runs', async ($, on) => {
+  test('nothing before the developer\'s first message, under a session hold or not; it lifts no hold', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const w = noPlanWorld(on, { [`${ROOT}/.claude/pa.json`]: JSON.stringify({ mod: 'on', python: 'py', first_run: { from: 'gen3', at: '3.24' } }), [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n', [`${BASE}/S1/state.json`]: PRIOR })
-    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }]
-    w.answer = launchDoc({ mode: 'router' })
-    const asked = askWith(on, w, ['Run it now (Recommended)'])
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ ...FIRST, intake: 'pending' }), [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n', [`${BASE}/S1/state.json`]: PRIOR })
+    intakeWorld(w)
     await $.session.start(ISTART)
     await $.classic.SessionStart({ source: 'startup', session_id: 'S1', transcript_path: 'C:\\p\\S1.jsonl' } as never)
-    for (let i = 0; i < 5; i += 1) {
-      await clock.advance(2_000)
-    }
-    expect([asked.length, w.spawns.filter(x => x.description === 'memory curator').length, loopOf(w).holds]).toEqual([0, 0, ['session']]) // nothing before the developer writes
-    await $.prompt.submit({ text: 'Start the work.', origin: { kind: 'composer' }, wait: false })
-    for (let i = 0; i < 8 && !w.spawns.some(x => x.description === 'memory curator'); i += 1) {
-      await clock.advance(2_000)
-    }
-    expect(asked.map(a => a.q.startsWith("This project's first run in PA 3.2"))).toEqual([true])
-    expect(w.spawns.filter(x => x.description === 'memory curator').length).toBe(1)
-    expect(loopOf(w).holds).toEqual(['session']) // the task hold stays
-    const spawned = entries(w, 'mod-hold').map(p => w.files.get(p) ?? '').filter(t => t.includes('memory-curator'))
-    expect(spawned.some(t => t.includes("The project's first run in PA 3.2: memory-curator") && !t.includes('Generation start'))).toBe(true)
+    await clock.advance(10_000)
+    expect(intakes(w)).toEqual([])
+    await $.prompt.submit({ ...HELLO, text: 'Start the work.' })
+    await until(clock, () => intakes(w).length > 0)
+    expect(intakes(w).length).toBe(1)
+    expect(entries(w, 'mod-hold').map(p => w.files.get(p) ?? '').some(t => t.includes('The PA3 intake, try 1: agent'))).toBe(true)
   })
 
-  test('3.24 T7b-2c: a paused first run holds planning this session: no plan hold, an approved plan not installed, Claude told why', async ($, on) => {
+  test('no spawn while the update check is pending', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const w = noPlanWorld(on, { [`${ROOT}/.claude/pa.json`]: JSON.stringify({ mod: 'on', python: 'py', first_run: { from: 'gen3', at: '3.24' } }), [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n' })
-    w.answer = launchDoc({ mode: 'router' })
-    const asked = askWith(on, w, ['Pause'])
-    await $.session.start(START)
-    for (let i = 0; i < 8 && genOf(w)?.step !== 'done'; i += 1) {
-      await clock.advance(2_000)
-    }
-    await clock.advance(4_000)
-    expect([asked.length, w.spawns.length, genOf(w)?.step, loopOf(w).holds]).toEqual([1, 0, 'done', []]) // no plan hold
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n', [`${ROOT}/${START_CHECK}`]: '{}' })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    await $.prompt.submit(HELLO)
+    await clock.advance(10_000)
+    expect(intakes(w)).toEqual([])
+    w.files.set(`${ROOT}/${START_CHECK}`, JSON.stringify({ session: 'S1', at: (NOW + 11_000) / 1000, update: false, state: 'done' }))
+    await until(clock, () => intakes(w).length > 0)
+    expect(intakes(w).length).toBe(1)
+  })
+
+  test('a plan is refused and not installed while it is due', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n' })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    await $.prompt.submit(HELLO)
+    await until(clock, () => intakes(w).length > 0)
     installReq(w, NOW + 30_000, { kind: 'phase', path: '.run/plans/phase.md', title: 'Phase 1.1' })
-    await clock.advance(2_000)
-    await clock.advance(2_000)
+    await clock.advance(4_000)
     expect((loopOf(w) as { install?: unknown }).install ?? null).toBe(null)
-    expect(toCaller(w).some(t => t.includes("not installed: The project's first run in PA 3.2 sorts its memories first"))).toBe(true)
-    expect(asked.length).toBe(1) // asked again only next session
+    expect(toCaller(w).some(t => t.includes('not installed: The PA3 intake is reading this project once'))).toBe(true)
+    expect(loopOf(w).holds).toEqual([])
+  })
+
+  test('a generation start does not begin while it is due, and does after: lifted holds, one curator at a time', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [WORK_CARD]: LIVING, [LOOP]: loopAt({ state: 'off', holds: ['generation', 'session'], genParkSid: 'S0' }) })
+    intakeWorld(w, 'planner-gen')
+    releaseReq(w, NOW, { hold: 'generation' })
+    await $.session.start(ISTART)
+    await clock.advance(4_000)
+    expect([loopOf(w).holds, genOf(w)]).toEqual([[], null])
+    await $.prompt.submit(HELLO)
+    await until(clock, () => intakes(w).length > 0)
+    expect(genOf(w)).toBe(null)
+    w.files.set(PAGE, '# Pre-PA3 state\n')
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }, { id: curator(w), status: 'running', type: 'memory-curator' }]
+    await clock.advance(4_000)
+    expect(genOf(w)).toBe(null)
+    await endTry(clock, w, 1, 'completed')
+    await until(clock, () => genOf(w) !== null)
+    expect([genOf(w)?.kind, genOf(w)?.sid, intakes(w).length]).toEqual(['gen', 'S1', 1])
+  })
+
+  test('the legacy curate line starts no second curator while it is due', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PA_JSON]: paWith({ intake: 'pending', bash: 'bash' }), [WORK_CARD]: LIVING, [PAGE]: '# Pre-PA3 state\n' })
+    const doc = launchDoc({ mode: 'router', curate: 'curate: migration -> gen legacy' })
+    w.answer = doc
+    await $.session.start(START)
+    await clock.advance(6_000)
+    expect(genOf(w)).toBe(null)
+  })
+
+  test('no task starts during a memory sort', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PA_JSON]: paWith({ ...FIRST, intake: 'pending' }) })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    await $.prompt.submit(HELLO)
+    await clock.advance(30_000) // past the talk hold
+    expect(intakes(w).length).toBe(1)
+    expect(experts(w)).toEqual([])
+  })
+
+  test('a job with a first run owed waits for a running task', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PA_JSON]: paWith({ ...FIRST, intake: 'pending' }) })
+    await $.session.start(ISTART)
+    await clock.advance(2_000)
+    expect(experts(w).length).toBe(1)
+    intakeWorld(w)
+    w.list = [...w.list, { id: 'E1', status: 'running', type: 'expert' }]
+    await $.prompt.submit(HELLO)
+    await clock.advance(10_000)
+    expect(intakes(w)).toEqual([])
+    w.files.set(LOOP, JSON.stringify({ ...loopOf(w), task: null, state: 'off' }))
+    await until(clock, () => intakes(w).length > 0)
+    expect(intakes(w).length).toBe(1)
+  })
+
+  test('a job with no first run owed runs beside a running task', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PA_JSON]: paWith({ intake: 'pending' }) })
+    await $.session.start(ISTART)
+    await clock.advance(2_000)
+    expect(experts(w).length).toBe(1)
+    intakeWorld(w)
+    w.list = [...w.list, { id: 'E1', status: 'running', type: 'expert' }]
+    await $.prompt.submit(HELLO)
+    await until(clock, () => intakes(w).length > 0)
+    expect(intakes(w).length).toBe(1)
+    expect(loopOf(w).task?.id).toBe('T1')
+  })
+
+  test('a stopped or stateless try leaves it pending; it reruns on the next message with only what is missing; a stop counts', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [WORK_CARD]: NO_LIVING, [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n' })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    await $.prompt.submit(HELLO)
+    await until(clock, () => intakes(w).length > 0)
+    w.files.set(WORK_CARD, LIVING)
+    await endTry(clock, w, 1, 'killed')
+    await clock.advance(6_000)
+    expect([job(w), marks(w), commits(w), intakes(w).length, tries(w)]).toEqual([null, [], [], 1, 1])
+    expect(w.files.get(PA_JSON)).toContain('"intake":"pending"')
+    await $.prompt.submit({ ...HELLO, text: 'and now?' })
+    await until(clock, () => intakes(w).length > 1)
+    const brief = intakes(w)[1]?.prompt ?? ''
+    expect(brief).toContain('CURATE: intake · MEMORY: .claude-state/memory · PAGE: docs/PRE_PA3_STATE.md\nSTEPS: state page\n')
+    expect(drawn(w)[1]).toBe('**PA3 intake** · one agent reads this project once, in the background · try 2 of 3\n\n' +
+      '1. Write where the project stands: `docs/PRE_PA3_STATE.md`\n\nKeep talking as usual. A new plan waits until this is done.')
+    w.files.set(PAGE, '# Pre-PA3 state\n')
+    await endTry(clock, w, 2, 'completed')
+    expect(marks(w)).toEqual(['mark intake'])
+    expect(drawn(w)[2]).toBe('**PA3 intake** done · docs/PRE_PA3_STATE.md written')
+  })
+
+  test('the third failed try writes incomplete, tells Claude once with the missing step, and plans go ahead', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [WORK_CARD]: LIVING, [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n' })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    for (const n of [1, 2, 3]) {
+      await $.prompt.submit({ ...HELLO, text: `message ${String(n)}` })
+      await until(clock, () => intakes(w).length === n)
+      expect(intakes(w)[n - 1]?.prompt).toContain('STEPS: state page\n')
+      await endTry(clock, w, n, 'completed')
+    }
+    expect(marks(w)).toEqual(['mark intake --incomplete'])
+    expect(commits(w)).toEqual([['PA3 intake', 'HOW_WE_WORK.md', '.claude/pa.json']])
+    const told = notices(w).filter(n => /intake/i.test(n.input.text)).map(n => n.input.text)
+    expect(told).toEqual(['‹pa› The PA3 intake stopped after 3 tries; planning goes ahead without: state page. Tell the developer that in one line.'])
+    expect(drawn(w).length).toBe(3) // no end line
+    await $.prompt.submit({ ...HELLO, text: 'one more' })
+    await clock.advance(6_000)
+    expect(intakes(w).length).toBe(3)
+    installReq(w, NOW + 300_000, { kind: 'phase', path: '.run/plans/phase.md', title: 'Phase 1.1' })
+    await clock.advance(4_000)
+    expect(toCaller(w).some(t => t.includes('not installed'))).toBe(false)
+    expect(notices(w).filter(n => /intake/i.test(n.input.text)).length).toBe(1)
+  })
+
+  test('a session that died counts as a try: it ends the job and reruns; its last try ends the intake', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const old = { steps: ['living docs', 'state page'], agentId: 'OLD', sid: 'S0', spawnedAt: NOW - 1_000, lastCompleteAt: 0 }
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [WORK_CARD]: NO_LIVING, [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n',
+      [LOOP]: loopAt({ state: 'off', ownerSid: 'S0', heartbeatAt: NOW - 3_600_000, bgJob: old, intakeTries: 1 } as never) })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    await until(clock, () => job(w) === null)
+    await $.prompt.submit(HELLO)
+    await until(clock, () => intakes(w).length > 0)
+    expect([tries(w), drawn(w)[0]?.includes('try 2 of 3')]).toEqual([2, true])
+    w.files.set(LOOP, JSON.stringify({ ...loopOf(w), intakeTries: 3, bgJob: old }))
+    await clock.advance(6_000)
+    expect(marks(w)).toEqual(['mark intake --incomplete'])
+    expect(notices(w).filter(n => n.input.text.includes('planning goes ahead without: living docs, state page')).length).toBe(1)
+  })
+
+  test('past the cap with no job, or nothing owed: it ends with the message: no agent, no card', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [WORK_CARD]: LIVING, [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n',
+      [LOOP]: loopAt({ state: 'off', intakeTries: 3 } as never) })
+    intakeWorld(w)
+    await $.session.start(ISTART)
+    await clock.advance(6_000)
+    expect(marks(w)).toEqual([])
+    await $.prompt.submit(HELLO)
+    await until(clock, () => marks(w).length > 0)
+    expect([marks(w), intakes(w), drawn(w)]).toEqual([['mark intake --incomplete'], [], []])
+    expect(notices(w).filter(n => n.input.text.includes('planning goes ahead without: state page')).length).toBe(1)
+    w.files.set(PAGE, '# Pre-PA3 state\n')
+    w.files.set(PA_JSON, paWith({ intake: 'pending' }))
+    await $.prompt.submit({ ...HELLO, text: 'again' })
+    await until(clock, () => marks(w).length > 1)
+    expect([marks(w)[1], intakes(w), drawn(w)]).toEqual(['mark intake', [], []])
+  })
+
+  test('a mark that fails stays pending and runs nothing again until the next message; a failed commit does not stop it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ intake: 'pending' }), [WORK_CARD]: LIVING, [PAGE]: '# Pre-PA3 state\n', [`${ROOT}/GENERATION_PLAN.md`]: '# gen\n' })
+    intakeWorld(w)
+    const ok = w.answer
+    let fails = true
+    w.answer = argv => (fails && argv[2] === 'mark' ? { exitCode: 1, stdout: '', stderr: 'locked' }
+      : argv.some(a => a.endsWith('commit_task.sh')) ? { exitCode: 1, stdout: 'refused: nothing staged', stderr: '' } : ok(argv))
+    await $.session.start(ISTART)
+    await $.prompt.submit(HELLO)
+    await until(clock, () => marks(w).length > 0)
+    await clock.advance(6_000)
+    expect([marks(w).length, w.files.get(PA_JSON)?.includes('"intake":"pending"')]).toEqual([1, true])
+    fails = false
+    await $.prompt.submit({ ...HELLO, text: 'again' })
+    await until(clock, () => marks(w).length > 1)
+    expect(w.files.get(PA_JSON)).toContain('"intake":"done"')
+    expect(entries(w, 'mod-decision').some(p => /The PA3 intake is done; .*refused: nothing staged/s.test(w.files.get(p) ?? ''))).toBe(true)
+  })
+
+  test('a project with no marker and no first run gets no intake; no job once the first run is migrated', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = noPlanWorld(on, { [PA_JSON]: paWith({ ...FIRST, migrated: '3.2' }) })
+    w.answer = launchDoc({ mode: 'router' })
+    const asked = askWith(on, w, [])
+    await $.session.start(START)
+    await $.prompt.submit(HELLO)
+    await clock.advance(10_000)
+    expect([asked.length, intakes(w).length, marks(w)]).toEqual([0, 0, []])
   })
 
   test('a contract identical to the last routed one is ignored, with no journal line (3.25 T3)', async ($, on) => {
@@ -2511,6 +2816,74 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     expect(reload.length).toBe(1)
     expect(notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 updated from')).length).toBe(1)
     expect(w.spawns.length).toBe(0)
+  })
+
+  // 3.32.1 T5 (#6): a work hold's release the update gate holds back is answered at once, once, then goes through by itself.
+  const waits = (w: W): Notice[] => notices(w).filter(n => n.input.text.startsWith('waiting: question ('))
+  test('3.32.1 T5: a running update: one waiting reply to the caller; the release goes through when the update ends', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: held('question', NOW - 10 * 60_000), [MARKER]: marker({ state: 'running' }) })
+    w.list = [{ id: 'E1', status: 'idle', type: 'pa-expert' }]
+    releaseReq(w, NOW, { hold: 'question', note: 'use ints' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(waits(w).map(n => [n.input.to, n.input.text.includes('it goes through when the update ends')])).toEqual([['P1', true]])
+    expect([loopOf(w).holds, w.sends]).toEqual([['question'], []])
+    w.files.set(MARKER, marker({ at: (NOW + 5_000) / 1000 }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await until(clock, () => w.sends.includes('NOTE: use ints'))
+    expect([waits(w).length, loopOf(w).holds, w.sends.includes('NOTE: use ints')]).toEqual([1, [], true])
+  })
+
+  test('3.32.1 T5: the update check has not answered: one waiting reply naming the wait; the release goes through after', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: held('question', NOW - 10 * 60_000), [`${ROOT}/${START_CHECK}`]: '{}' })
+    w.list = [{ id: 'E1', status: 'idle', type: 'pa-expert' }]
+    releaseReq(w, NOW, { hold: 'question', note: 'use ints' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(waits(w).map(n => n.input.text.includes('it answers by itself within 2 minutes'))).toEqual([true])
+    expect(w.sends).toEqual([])
+    for (let i = 0; i < 65; i += 1) { // the check's wait is 120 s
+      await clock.advance(2_000)
+    }
+    expect([waits(w).length, loopOf(w).holds, w.sends.includes('NOTE: use ints')]).toEqual([1, [], true])
+  })
+
+  test('3.32.1 T5: the new mod not loaded: one waiting reply asking the restart; it goes through once the new mod loads', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: held('question', NOW - 10 * 60_000), [MARKER]: marker({ state: 'running' }),
+      [MANIFEST]: JSON.stringify({ files: { 'mod/pa/hooks/loop.ts': 'a1' } }) })
+    w.list = [{ id: 'E1', status: 'idle', type: 'pa-expert' }]
+    await $.session.start(START)
+    await clock.advance(20_000)
+    w.files.set(MANIFEST, JSON.stringify({ files: { 'mod/pa/hooks/loop.ts': 'a2' } }))
+    w.files.set(MARKER, marker({ at: (NOW + 21_000) / 1000 }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await clock.advance(10_000)
+    expect(notices(w).filter(n => n.input.text === RELOAD_NOTICE).length).toBe(1)
+    releaseReq(w, NOW + 30_000, { hold: 'question', note: 'use ints' })
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(waits(w).map(n => n.input.text.includes('ask the developer to restart Claude Code (/exit, then claude --continue') &&
+      !n.input.text.includes('/reload-plugins'))).toEqual([true])
+    expect(w.sends).toEqual([])
+    await $.session.start(START) // the reload: a new process, the new mod
+    await until(clock, () => w.sends.includes('NOTE: use ints'))
+    expect([waits(w).length, loopOf(w).holds]).toEqual([1, []])
+  })
+
+  test('3.32.1 T5: a talk release still goes through under the update gate, with no waiting reply', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: held('talk', NOW - 10 * 60_000), [MARKER]: marker({ state: 'running' }) })
+    releaseReq(w, NOW, { hold: 'talk' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect([loopOf(w).holds, notices(w).filter(n => n.input.text.startsWith('waiting: ')).length]).toEqual([[], 0])
   })
 
   // 3.28.1 T14: the 8-hour release check (pa_ledger.py update-check), its picker, the clean stop, the statusline's marker.
@@ -3625,6 +3998,19 @@ describe('no stall on a false stop (3.28.8)', () => {
     expect(notices(w).filter(x => x.input.text.includes('stopped (Ctrl+C'))).toEqual([])
   })
 
+  for (const known of [true, false]) {
+    test(`3.32.1 T5: a coder the list gives no parent, ${known ? 'known from parents.json, keeps its expert waiting' : 'and none in parents.json: stopped'}`, async ($, on) => {
+      const clock = mock.clock(on, { now: NOW })
+      const w = world(on, { [LOOP]: running(), ...(known ? { [`${BASE}/S1/parents.json`]: '{"C1":"E1"}' } : {}) })
+      await $.session.start(START)
+      await clock.advance(2_000)
+      w.list = [{ id: 'C1', status: 'running', type: 'pa-coder' }]
+      await clock.advance(2_000)
+      await clock.advance(2_000)
+      expect(loopJ(w).holds).toEqual(known ? [] : ['stopped'])
+    })
+  }
+
   test('a stop taken from absence is lifted by the expert\'s own report after it; the report is routed', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: running() })
@@ -4119,5 +4505,202 @@ describe('display trim (3.29.9)', () => {
     await $.session.start(ISTART)
     await clock.advance(5_000)
     expect(m.calls.map(c => c.instructions)).toEqual([CUT])
+  })
+})
+
+// 3.32 B8: `drive`: coop is talk with no hold; the queue moves only for a locked-in batch, and nothing is said.
+describe('the drive (3.32 B8)', () => {
+  const PAC = JSON.stringify({ ...(JSON.parse(PA) as Record<string, unknown>), drive: 'coop' })
+  const PAJ = `${ROOT}/.claude/pa.json`
+  type LoopB = Loop5 & { batch?: string[] }
+  const loopB = (w: W): LoopB => JSON.parse(w.files.get(LOOP) ?? '{}') as LoopB
+  const req = (w: W, ms: number, kind: string, input: unknown): void => {
+    const id = `${String(ms)}-1-${kind}`
+    w.files.set(`${INBOX}/${id}.json`, JSON.stringify({ id, kind, caller: 'P1', input, at: ms }))
+  }
+  const rows = (...ids: string[]) => ok(`${ids.map(id => `${id} | queued | pa-expert | x`).join('\n')}\n`)
+  /** A plan of T1, T2: `next --only` walks them, one a set-status; `show --tasks` lists them. */
+  const twoTasks = (w: W): void => {
+    let left = ['T1', 'T2']
+    w.answer = argv => {
+      const a = argv.slice(1).join(' ')
+      if (a.startsWith('tools/plan_edit.py set-status')) {
+        left = left.filter(id => id !== argv[3])
+      }
+      if (a.startsWith('tools/plan_edit.py show --tasks')) {
+        return rows('T1', 'T2')
+      }
+      if (a.startsWith('tools/plan_edit.py next')) {
+        return left.length === 0 ? NEXT_DONE : ok(`${JSON.stringify({ kind: 'task', task: { ...T1, id: left[0] }, promoted: null })}\n`)
+      }
+      return defaultAnswer(argv)
+    }
+  }
+  const finish = async ($: { prompt: { submit: (e: never) => Promise<unknown> } }, clock: { advance: (ms: number) => Promise<void> }, id: string): Promise<void> => {
+    await $.prompt.submit({ text: notification(id, 'STATUS: done\nLOG: logs/T.md\nCOMMIT: def5678'), origin: { kind: 'task-notification' }, wait: false } as never)
+    await clock.advance(60_000)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+  }
+
+  test('coop: at a boundary with no batch the queue stays, no hold, no notice, no pick', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PAJ]: PAC, [LOOP]: closeLoop({}), [`${ROOT}/${PLAN}`]: PE_PLAN })
+    twoTasks(w)
+    await $.session.start(START)
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(w.spawns).toEqual([])
+    expect(ran(w, 'tools/plan_edit.py next')).toEqual([])
+    expect(loopB(w).holds).toEqual([])
+    expect(notices(w)).toEqual([])
+  })
+
+  test('autopilot: the same boundary picks with the old call and spawns', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: closeLoop({}), [`${ROOT}/${PLAN}`]: PE_PLAN })
+    twoTasks(w)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(ran(w, 'tools/plan_edit.py next')[0]).toEqual(['py', 'tools/plan_edit.py', 'next', '--brief', '--json'])
+    expect(w.spawns.length).toBe(1)
+  })
+
+  test('coop: a session start holds nothing, and the developer\'s messages carry no hold, waiting or idle line', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PAJ]: PAC, [LOOP]: closeLoop({ lastDone: { id: 'T1', at: NOW - 1 }, nextId: 'T2' }), [`${BASE}/S1/state.json`]: PRIOR })
+    twoTasks(w)
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }]
+    await $.session.start(ISTART)
+    await clock.advance(2_000)
+    await $.prompt.submit({ text: 'what about the seams?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(2_000)
+    await $.prompt.submit({ text: 'and the masks?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(2_000)
+    expect(loopB(w).holds).toEqual([])
+    expect(delivered(w).some(t => t.includes('and the masks?'))).toBe(true)
+    expect(delivered(w).filter(t => /‹pa› the (queue|loop)|no task is running|nothing is running/i.test(t))).toEqual([])
+    expect(notices(w)).toEqual([])
+    expect(w.spawns.filter(s => s.description.startsWith('T'))).toEqual([])
+  })
+
+  test('coop: a locked-in batch runs through, talk does not stop it, its end is one notice and everything stops', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PAJ]: PAC, [LOOP]: closeLoop({}), [`${ROOT}/${PLAN}`]: PE_PLAN, [`${BASE}/S1/state.json`]: PRIOR })
+    twoTasks(w)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    req(w, NOW + 2_500, 'release', { hold: 'batch', tasks: ['T1', 'T2'] })
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(ran(w, 'tools/plan_edit.py next')[0]).toEqual(['py', 'tools/plan_edit.py', 'next', '--brief', '--json', '--only', 'T1,T2'])
+    expect(w.spawns.map(s => s.description.split(' ')[0])).toEqual(['T1'])
+    await $.prompt.submit({ text: 'how is it going?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(2_000)
+    expect(loopB(w).holds).toEqual([])
+    await finish($, clock, 'E1')
+    const tasks = (): (string | undefined)[] => w.spawns.filter(s => /^T\d/.test(s.description)).map(s => s.description.split(' ')[0])
+    expect(tasks()).toEqual(['T1', 'T2'])
+    const second = `E${String(w.spawns.findIndex(s => s.description.startsWith('T2')) + 1)}`
+    expect(notices(w)).toEqual([])
+    await finish($, clock, second)
+    const n = notices(w)
+    expect(n.map(x => x.input.text)).toEqual(['‹pa› The batch is done (T1, T2). No task left a summary. Bring the results to the developer.'])
+    expect(n[0]?.input.text).not.toMatch(/Is the milestone met|has no task left/)
+    expect(loopB(w).batch).toEqual([])
+    expect(loopB(w).holds).toEqual([])
+    const picks = ran(w, 'tools/plan_edit.py next').length
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(ran(w, 'tools/plan_edit.py next').length).toBe(picks)
+    expect(notices(w).length).toBe(1)
+    expect(tasks().length).toBe(2)
+  })
+
+  test('coop: a batch names real tasks; autopilot refuses a batch', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PAJ]: PAC, [LOOP]: closeLoop({}), [`${ROOT}/${PLAN}`]: PE_PLAN })
+    twoTasks(w)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    req(w, NOW + 2_500, 'release', { hold: 'batch', tasks: ['T9'] })
+    await clock.advance(2_000)
+    expect(notices(w).map(n => n.input.text)).toEqual(['refused: no such task: T9; add it with plan_edit first'])
+    expect(loopB(w).batch ?? []).toEqual([])
+    w.files.set(PAJ, PA)
+    req(w, NOW + 4_500, 'release', { hold: 'batch', tasks: ['T1'] })
+    await clock.advance(2_000)
+    expect(notices(w).map(n => n.input.text)[1]).toBe('refused: the drive is autopilot: the tasks run on their own')
+  })
+
+  test('coop: a plan_edit with nothing running lands at once, with no batch', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PAJ]: PAC, [LOOP]: closeLoop({}), [`${ROOT}/${PLAN}`]: PE_PLAN })
+    twoTasks(w)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    req(w, NOW + 2_500, 'plan_edit', { command: 'add-task --title "x" --done-when d', why: 'agreed' })
+    await clock.advance(2_000)
+    expect(ran(w, 'tools/plan_edit.py add-task').length).toBe(1)
+    expect(loopB(w).queuedEdits).toEqual([])
+    expect(notices(w)).toEqual([])
+    expect(w.spawns).toEqual([])
+  })
+
+  test('coop: the phase closes on his word with no close hold, not over an open task or a running batch', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PAJ]: PAC, [LOOP]: closeLoop({}), [`${ROOT}/${PLAN}`]: PE_PLAN, [`${ROOT}/GENERATION_PLAN.md`]: genPlan('- 1.2 Next | status: open\n') })
+    let open = true
+    w.answer = closeAnswer(a => (a.startsWith('tools/plan_edit.py show --tasks') ? (open ? rows('T5') : ok('T1 | done | pa-expert | x\n')) : undefined))
+    await $.session.start(START)
+    await clock.advance(2_000)
+    req(w, NOW + 2_500, 'release', { hold: 'close', note: 'report' })
+    await clock.advance(2_000)
+    expect(notices(w).map(n => n.input.text)).toEqual(['refused: T5 is still open: supersede it with plan_edit, or run it first'])
+    expect(loopB(w).closeRequested ?? false).toBe(false)
+    open = false
+    req(w, NOW + 4_500, 'release', { hold: 'close', note: 'report' })
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect(w.files.get(`${ROOT}/phase-ends/current/RECAP.md`)).toContain('report')
+    expect(chainRuns(w).some(r => r.startsWith('tools/phaseend_index.py'))).toBe(true) // the chain ran on his word alone
+    expect(notices(w).length).toBe(1)
+  })
+
+  test('coop: no plan under a generation plan: no plan hold and no nudge', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [PAJ]: PAC, [LOOP]: closeLoop({ state: 'off' }), [`${ROOT}/GENERATION_PLAN.md`]: genPlan('') })
+    w.files.delete(`${ROOT}/${PLAN}`)
+    w.answer = launchDoc({ mode: 'router' })
+    await $.session.start(START)
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(loopB(w).holds).toEqual([])
+    expect(notices(w)).toEqual([])
+  })
+
+  test('the drive tool sets pa.json and commits it, quietly; the next boundary reads it with no restart', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    w.list = [{ id: 'E1', status: 'running', type: 'pa-expert' }]
+    await $.session.start(START)
+    await clock.advance(2_000)
+    req(w, NOW + 2_500, 'drive', { value: 'coop' })
+    await clock.advance(2_000)
+    expect((JSON.parse(w.files.get(PAJ) ?? '{}') as { drive?: string }).drive).toBe('coop')
+    expect(commits(w).at(-1)).toEqual([BASH, 'tools/commit_task.sh', 'router', 'Drive: coop', '.claude/pa.json'])
+    expect(notices(w)).toEqual([])
+    expect(loopB(w).batch).toEqual(['T1']) // the running task comes back with its results
+    req(w, NOW + 4_500, 'drive', { value: 'autopilot' })
+    await clock.advance(2_000)
+    expect((JSON.parse(w.files.get(PAJ) ?? '{}') as { drive?: string }).drive).toBe('autopilot')
+    expect(loopB(w).batch).toEqual([])
+    req(w, NOW + 6_500, 'drive', { value: 'nap' })
+    await clock.advance(2_000)
+    expect(notices(w).map(n => n.input.text)).toEqual(['refused: drive is autopilot or coop'])
   })
 })

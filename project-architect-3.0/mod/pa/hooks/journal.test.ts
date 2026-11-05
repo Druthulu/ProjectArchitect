@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
-import { buildIndex, dayFilePath, type Entry, entryPath, indexAgrees, indexPath, parseEntry, parseEntryPath, parseIndex, renderEntry, splitDay } from './journal'
+import { buildIndex, dayFilePath, type Entry, entryPath, filedThroughOf, indexAgrees, indexPath, parseEntry, parseEntryPath, parseIndex, renderEntry, splitDay, TOPICS_PATH } from './journal'
 
 describe('journal naming (vectors shared with pa-watch)', () => {
   test('the pinned vectors', async () => {
@@ -163,5 +163,30 @@ describe('spawn entries (3.24 T17b)', () => {
     const text = ['---', 'agentId: P1', 'agentType: pa-planner', 'model: claude-opus-5-5[1m]', 'effort: max', 'managed: yes', '---', 'pa-planner ran.', ''].join('\n')
     expect(parseEntry(text)?.meta).toEqual({ agentId: 'P1', agentType: 'pa-planner', model: 'claude-opus-5-5[1m]', effort: 'max' })
     expect(renderEntry({ agentType: 'pa-planner' }, 'x')).toContain('agentType: pa-planner')
+  })
+})
+
+describe('record entries (3.31)', () => {
+  test('the record path round-trips, live and rolled', async () => {
+    const p = entryPath('2026-10-30', '153000', 4, 'r', 'claude', 'record')
+    expect(p).toBe('.claude-state/journal/2026-10-30/153000-004r-claude-record.md')
+    expect(parseEntryPath(p)).toEqual({ date: '2026-10-30', time: '153000', seq: 4, writer: 'r', who: 'claude', kind: 'record' })
+    expect(parseEntryPath('.claude-state/journal/2026-10-30.md#153000-004r-claude-record')?.kind).toBe('record')
+  })
+
+  test('through is read and written', async () => {
+    const meta = { ts: '2026-10-30T15:30:00.000Z', through: '2026-10-30T15:12:04.000Z', session: 's1' }
+    const text = renderEntry(meta, 'topic: alpha\nheadline: beta')
+    expect(text).toContain('\nthrough: 2026-10-30T15:12:04.000Z\n')
+    expect(parseEntry(text)).toEqual({ meta, body: 'topic: alpha\nheadline: beta' })
+  })
+
+  test('3.31 T2b: TOPICS.md\'s filed-through header', async () => {
+    const head = '# Journal records -- rebuilt by tools/records.py index; one line per outcome\n'
+    expect(filedThroughOf(`${head}# filed through: 2026-10-30T10:55:00.000Z\n# id | date\nR1 | x\n`)).toBe('2026-10-30T10:55:00.000Z')
+    expect(filedThroughOf(`${head}# filed through: (none)\n`)).toBe('')
+    expect(filedThroughOf(`${head}# id | date\n`)).toBe('') // an index written before the header
+    expect(filedThroughOf(null)).toBe('')
+    expect(TOPICS_PATH).toBe('.claude-state/journal/TOPICS.md')
   })
 })

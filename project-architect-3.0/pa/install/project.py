@@ -783,6 +783,21 @@ def _put_json_key(text, key, value):
     return re.sub(r"^\{", lambda m: '{\n  "%s": %s,' % (key, json.dumps(value)), text, count=1)
 
 
+def _drop_json_key(text, key):
+    """3.32.1: ``text`` (a JSON object) without top-level ``key``: a string-valued line followed by
+    another key removed in place, the rest kept byte for byte; otherwise the document rewritten."""
+    pat = re.compile(r'^[ \t]*"%s"\s*:\s*"(?:[^"\\]|\\.)*"\s*,[ \t]*\r?\n' % re.escape(key), re.M)
+    new = pat.sub("", text, count=1)
+    try:
+        if key not in json.loads(new):
+            return new
+    except ValueError:
+        pass
+    data = json.loads(text)
+    data.pop(key, None)
+    return json.dumps(data, indent=2) + "\n"
+
+
 def pa_json_mod(env):
     """3.24 T5: a pa3 upgrade's pa.json takes :func:`_mod_keys` (its other keys kept); a mode change
     marks ``restart: needed``. Returns the changed keys ``[(key, old, new)]``."""
@@ -802,6 +817,13 @@ def pa_json_mod(env):
         if existing.get(key) != value:
             changed.append((key, existing.get(key), value))
             new = _put_json_key(new, key, value)
+    # 3.32.1: the retired ``rhythm`` becomes ``drive: autopilot`` where no ``drive`` is set; beside one it just goes
+    if "rhythm" in existing:
+        if "drive" not in existing:
+            changed.append(("drive", None, "autopilot"))
+            new = _put_json_key(new, "drive", "autopilot")
+        changed.append(("rhythm", existing["rhythm"], None))
+        new = _drop_json_key(new, "rhythm")
     if not changed:
         env.man.skipped.append(rel)
         return []
@@ -1143,13 +1165,43 @@ def copy_files(env):
 
 # --------------------------------------------------------------------------- P7
 
+CLAUDE_PED = ("phase-ends/current/PHASE_PLAN.md", "phase-ends/*/logs/")     # 3.32 B3: CLAUDE.md's phase_ends_dir paths
+
+
+def _ped(env):
+    """The project's ``phase_ends_dir``: pa.json's, else the migration's, else the default."""
+    return _raw_pa_json(env).get("phase_ends_dir") or getattr(env, "phase_ends_dir", "phase-ends")
+
+
+def _claude_ped(env, text):
+    """``text`` with CLAUDE.md's ``phase-ends`` paths naming the project's ``phase_ends_dir`` (3.32 B3)."""
+    ped = _ped(env)
+    for path in CLAUDE_PED:
+        text = text.replace("`%s`" % path, "`%s`" % path.replace("phase-ends", ped, 1))
+    return text
+
+
+def _tagline(env):
+    """The project's one line: ``--tagline``, else the constitution's, else ``""``, never the prompt (3.32 B3)."""
+    if env.tagline and env.tagline != DEFAULT_TAGLINE:
+        return env.tagline
+    from . import howwework
+    return howwework._tagline_from_constitution(fsutil.read_text(env.path("PROJECT_CONTEXT.md"), "") or "")
+
+
+def _no_placeholder(text, tagline):
+    """``text`` with the prompt line filled, or gone when the project has no line."""
+    line = DEFAULT_TAGLINE + "\n"
+    return text.replace(line, tagline + "\n" if tagline else "", 1)
+
+
 def claude_md_text(env):
-    return _fill(_template_text(env, "CLAUDE.template.md"), {
+    return _claude_ped(env, _no_placeholder(_fill(_template_text(env, "CLAUDE.template.md"), {
         "PROJECT_NAME": env.name,
-        "PROJECT_TAGLINE": env.tagline or DEFAULT_TAGLINE,
+        "PROJECT_TAGLINE": DEFAULT_TAGLINE,
         "FAILSAFE_1": FAILSAFES[0],
         "FAILSAFE_2": FAILSAFES[1],
-    })
+    }), _tagline(env)))
 
 
 _INTERVIEW_PROMPTS = (
@@ -1158,7 +1210,6 @@ _INTERVIEW_PROMPTS = (
     ("domain", "Primary domain"),
     ("autonomy", "Autonomy posture"),
     ("notify", "Notification channel (e.g. toast, discord)"),
-    ("rhythm", "Rhythm (autonomous or review)"),
     ("tier", "Plan tier (max20, max5 or pro)"),
 )
 
@@ -1177,8 +1228,6 @@ def _interview_default(field, env):
         return "full inside an approved plan; stop only at the two gates"
     if field == "notify":
         return "toast"
-    if field == "rhythm":
-        return "autonomous"
     if field == "tier":
         return "max5"
     return ""
@@ -1817,6 +1866,110 @@ def first_run_marker(env, origin):
     return marker
 
 
+DOCS_INDEX = "pre_pa3_index"        # 3.32 B2: the pa.json key that says the docs index has run
+DOCS_INDEX_REL = "docs/PRE_PA3_INDEX.md"
+DOCS_INDEX_MSG = "chore: PA3 docs index"
+PHASE_HISTORY_REL = "docs/PHASE_HISTORY.md"
+INTAKE = "intake"                   # 3.32 B9: the pa.json key: `pending` from here, `done` or `incomplete` from the mod
+_OLD_CARD_CAP_RE = re.compile(r'("max_chars"\s*:\s*)7000\b')     # 3.32 B7: the template's old value; a changed one stays
+_OLDER_DOCS_RE = re.compile(r"^Older documents:.*?(?=\n\n|\Z)", re.M | re.S)
+
+
+def claude_md_pointer(env):
+    """3.32 B3, once on update: an older CLAUDE.md takes the template's "Older documents" lines after its Roadmap line,
+    the project's ``phase_ends_dir`` and no prompt line. A line of the developer's stays. True when it changed."""
+    raw = fsutil.read_text(env.path("CLAUDE.md"), "") or ""
+    block = _OLDER_DOCS_RE.search(_template_text(env, "CLAUDE.template.md").replace("\r\n", "\n"))
+    if not raw or not block:
+        return False
+    crlf = "\r\n" in raw
+    text = new = raw.replace("\r\n", "\n")
+    if DOCS_INDEX_REL not in new:
+        lines = new.split("\n")
+        at = [i for i, ln in enumerate(lines) if ln.startswith("Roadmap:")]
+        if at:
+            lines[at[0] + 1:at[0] + 1] = block.group(0).split("\n")
+            new = "\n".join(lines)
+        else:
+            new = new.rstrip("\n") + "\n\n" + block.group(0) + "\n"
+    new = _no_placeholder(_claude_ped(env, new), _tagline(env))
+    if new == text:
+        return False
+    write_changed(env, "CLAUDE.md", new.replace("\n", "\r\n") if crlf else new, backup=False)
+    return True
+
+
+def phase_history(env):
+    """3.32 B5: ``tools/phaseend_index.py history`` with the docs index: no model, nothing for a project with no PhaseEnd.
+    A failure is a warning: the next close writes the file."""
+    tool = os.path.join(env.pkg, "tools", "phaseend_index.py")
+    try:
+        r = subprocess.run([sys.executable, "-X", "utf8", tool, "history"], cwd=env.repo, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=300, env=dict(os.environ, PA_PROJECT_ROOT=env.repo))
+        why = "" if r.returncode == 0 else (r.stdout.strip().splitlines() or ["phaseend_index.py failed"])[-1]
+    except (OSError, subprocess.SubprocessError) as exc:
+        why = str(exc)
+    if why:
+        env.warnings.append("phase history not written: %s" % why)
+        note("warn: phase history not written: %s" % why)
+
+
+def _has_past(env):
+    """3.32 B6: the project had a life before PA3: a PA2 layout (every layout but ``fresh`` and ``pa3``) or PhaseEnds."""
+    if env.layout != "fresh":
+        return env.layout != "pa3"
+    dirs = (env.repo, env.path("docs"), env.path(getattr(env, "phase_ends_dir", "phase-ends")))
+    return any(glob.glob(os.path.join(d, "PhaseEnd*.md")) for d in dirs)
+
+
+def job_markers(env, text):
+    """3.32 B9: pa.json ``text`` with the mod's one-time intake marked ``pending``, once: on a first run, on a project with
+    a past, and on one already on PA3. A project with no past and no first run has nothing to read. The old card cap moves
+    up with it."""
+    raw = _raw_pa_json(env)
+    if INTAKE not in raw and (FIRST_RUN in raw or _has_past(env) or env.layout == "pa3"):
+        text = _put_json_key(text, INTAKE, "pending")
+        note("PA3 intake: one agent reads the project once, in the background, at the next session")
+    return _OLD_CARD_CAP_RE.sub(lambda m: m.group(1) + "10000", text)
+
+
+def docs_index(env):
+    """3.32 B2: ``tools/history.py index`` once, at install or at the first update that has it: no model, its own commit.
+    It runs after P10 because the index dates a moved doc through the install commit. A failure is a warning and leaves
+    the marker unset, so the next update runs it again. Returns True when it ran."""
+    rel = ".claude/pa.json"
+    if _raw_pa_json(env).get(DOCS_INDEX):
+        return False
+    if env.dry_run:
+        note("docs index: would write %s" % DOCS_INDEX_REL)
+        return False
+    if env.no_commit or not env.git_top:
+        return False
+    tool = os.path.join(env.pkg, "tools", "history.py")
+    try:
+        r = subprocess.run([sys.executable, "-X", "utf8", tool, "--root", env.repo, "index"], capture_output=True,
+                           text=True, encoding="utf-8", errors="replace", timeout=900)
+    except (OSError, subprocess.SubprocessError) as exc:
+        env.warnings.append("docs index not written: %s" % exc)
+        note("warn: docs index not written: %s" % exc)
+        return False
+    if r.returncode != 0:
+        why = (r.stderr.strip().splitlines() or ["history.py failed"])[-1]
+        env.warnings.append("docs index not written: %s" % why)
+        note("warn: docs index not written: %s" % why)
+        return False
+    text = fsutil.read_text(env.path(rel), "") or ""
+    if text:
+        write_changed(env, rel, _put_json_key(job_markers(env, text), DOCS_INDEX, PA_VERSION), backup=False)
+    claude_md_pointer(env)
+    phase_history(env)
+    staged = [p for p in (DOCS_INDEX_REL, PHASE_HISTORY_REL, rel, "CLAUDE.md") if _git(env.repo, "add", "--", p)[0] == 0]
+    if staged:
+        _git(env.repo, "commit", "-m", DOCS_INDEX_MSG, "--", *staged)
+    note((r.stdout.strip().splitlines() or ["index written"])[-1])
+    return True
+
+
 def _floor_stop(opts):
     """3.24 T5 (decision 3): below the mod's Claude Code floor, the one plain line; else None.
     Runs before anything is written (``root.floor_check``)."""
@@ -1868,6 +2021,8 @@ def install_project(opts):
              "(every step is idempotent)")
         return 1
     results["P10"] = close(env)
+    if results["P10"] != "FAIL":
+        docs_index(env)
 
     if "FAIL" in results.values():
         print("FAIL (%s)" % ", ".join(k for k, v in sorted(results.items()) if v == "FAIL"))

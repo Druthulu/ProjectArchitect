@@ -2,6 +2,92 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.1 — Holds that answer, reports that arrive, and a bug report
+
+- When Claude releases a hold (a question, a stop, a session start) while PA3 is still checking for updates, an update
+  is running, or a new PA3 is installed but not yet loaded, Claude now hears at once why it waits and what lets it
+  go on: the check answers by itself within two minutes, the update ends, or you restart Claude Code (`/exit`, then
+  `claude --continue`). The release then goes through by itself. Before, it waited silently, and Claude could think
+  your own message had blocked it.
+- When Claude Code's auto-mode check gives no verdict on starting a task's expert (a passing fault in Claude Code),
+  PA3 no longer stops the task with a question. It tries again after 30 seconds, up to three times, and only the third
+  refusal stops it, saying so. Any other refusal stops it at once, as before.
+- PA3 now records who started each helper itself, as the helper starts. Claude Code sometimes leaves that out, and
+  then a coder's finished report could reach the main chat instead of its expert, which never woke and was later
+  shown as stopped. Reports now reach the right expert, and the loop and the running-now note count that coder as
+  the expert's.
+- The reminder about external coders now comes once per project instead of at every session start. To have it back,
+  run `PY tools/pa_ext.py set --remind on`.
+- New: `/pa-bugreport`. One command writes a file to attach to a GitHub issue, with what we need to find the cause.
+  Your home folder, user name, email addresses and anything that looks like a key or password are taken out; read
+  the file before you attach it.
+- The memory curator can write files again: without it, sorting memories failed on a fresh install.
+- On Team and Enterprise plans, Claude Code's security guard can skip PA3's hooks; the FAQ says what to ask your admin.
+- After a PA3 update, restart Claude Code (`/exit`, then `claude --continue`) before carrying on.
+- Updating now replaces the old `rhythm` setting in `.claude/pa.json` with `"drive": "autopilot"`, so there is a key to
+  edit. A project that already has `drive` keeps it, and `rhythm` is simply removed.
+
+## 3.32 — A project's past
+
+- Installing PA3 moves a project's history aside, so a fresh Claude could lose sight of what was settled before the
+  install. Now a fresh Claude starts small and looks up the rest: the past stays where it is, and PA3 tells every agent
+  where to find it.
+- A fresh Claude starts with the card, the plan, this generation as one line per phase with the three newest recaps,
+  the current phase's outcomes, the outcomes that change how work is done from any phase, and your last exchanges word
+  for word, even when they are already filed, so it picks up the conversation where it was. Every other outcome is
+  one search away in `.claude-state/journal/TOPICS.md`.
+- The docs index: `docs/PRE_PA3_INDEX.md` lists a project's older documents, one line each, then where its transcripts
+  and memory archive are. A script builds it once, at install or after this update, and no agent loads it: one line in
+  `CLAUDE.md` tells agents to check it before they change something or explain why it is that way. Notes saved under
+  `docs/history/`, such as claude.ai chats, are listed like any other document.
+- The PA3 intake: once per project, at the first session after an install or after this update, one agent reads the
+  project in the background. It sorts the memories when a first run owes it, with no question first; maps the docs and
+  writes a `## Living docs` section on the card (each doc, what it answers, when to update it); and writes
+  `docs/PRE_PA3_STATE.md`, one page on where the project stands, which every fresh Claude starts with until the
+  project's own records replace it. A card lists the steps and one line says when it's done. Talk goes on, and no plan
+  starts until it's done; it reruns if stopped, and after three tries planning goes ahead and Claude says what's missing.
+- The phase history: a file with one line per phase and this generation's recaps in full, added to at each close.
+- The card's limit goes from 7,000 to 10,000 characters, to make room for the living docs.
+- New setting, `drive`, in `.claude/pa.json`. `autopilot`, the default, is how tasks have always run. In `coop` nothing
+  runs while you and Claude talk: a batch you lock in goes on the plan and runs on its own, never interrupted, and when
+  it ends everything stops and Claude brings the results. There are no reminders, no close question and no nudge toward
+  the next plan, and the phase closes on your word. Tell Claude to switch, or edit the key. The setting is read at the
+  next task boundary, and it shows at the end of the statusline's Session line. The old `rhythm` setting is gone.
+- Install fixes: a migration moves a project's PhaseEnds into `phase-ends/`, which the plan and PA3's own agents read,
+  and leaves the rest of its old folder where it was; a project that kept them in another folder stopped at its first
+  plan. A document edited in the last 30 days stays where it is, the migration's own PhaseEnd never takes a real phase's
+  number, and `CLAUDE.md` names the project's real `phase_ends_dir`.
+- A planner now checks each plan against every outcome in force, instead of only the outcomes that change how work is
+  done. A plan that contradicts one names it and says why. Claude's filing to-do no longer asks it to copy those
+  outcomes into the plan or the card: experts still get them in their briefs and planners read them anyway.
+- New page: [How PA3 knows a project's past](https://github.com/Druthulu/ProjectArchitect/wiki/Project-past).
+
+## 3.31 — The journal records
+
+- A fresh Claude used to start from the newest part of your conversation, word for word: about 40,000 tokens, and
+  nothing older than two weeks. In a busy project that is about one day, while a phase runs two or three weeks, so
+  what you had settled a few days earlier was gone ("we already decided that…"). Now what a conversation settles
+  survives by whether it still holds, not by how old it is.
+- Claude files records of your conversation: per topic, your idea in your own words, what Claude confirmed or
+  corrected and why, and the outcomes: a decision we now follow (and what it replaces), a finding with its evidence,
+  an idea parked for later (and where it should go), plus a one-line headline. Claude's own calls and the results it
+  relayed from tasks count too, not only what you said yes to. A discussion not settled yet is filed as an open item
+  saying where it stands, so a fresh Claude can pick it up. PA3's own housekeeping (update offers, reminders, cleanups,
+  warming) is never filed. The journal still keeps every exchange word for word.
+- Filing happens on its own, in a turn you don't see: after 15 quiet minutes, and before Claude is replaced (a new
+  topic, a full context, a `/model` switch: the warm Claude files at the end of the turn that made it due, so a
+  message you send right away waits for the filing and reaches the fresh one). The main session shows one quiet
+  `Filed: <topic>: <headline>` line per topic, so an outcome written down wrong is caught the day it is written
+  (`journal.show_filed` in `pa.json` turns it off). Filing does not count as a real turn for keeping caches warm.
+- Records are never rewritten. A later outcome replaces an earlier one or retires it. When an outcome overrides a card
+  line, a memory or a rule, Claude narrows or retires the old one in the open with your next message, rather than
+  leaving it live and outvoted; a decision that changes how work is done lands in the plan or the card.
+- A fresh Claude now starts from the exchanges not filed yet, word for word, then every outcome still in force, then
+  the headlines of earlier topics. Every outcome is listed in `.claude-state/journal/TOPICS.md`, so "remember what we
+  decided about X?" is one search and one short read. A project that has filed nothing yet starts as before.
+- Experts get the outcomes that change how work is done in their brief, and the planner reads them before drafting
+  a plan. Both treat them as binding: an expert asks rather than contradict one, and a plan names any it departs from.
+
 ## 3.30.9 — No wait on a helper that stays busy
 
 - A finished task no longer waits for ever on a helper that has already handed back its report but that Claude Code

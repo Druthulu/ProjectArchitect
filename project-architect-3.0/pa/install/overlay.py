@@ -16,7 +16,7 @@ import os
 import re
 import time
 
-from .migrate import Row, readme_rows
+from .migrate import Row, interphase_id, readme_rows, running_phase
 from .howwework import _OPS_RE, _CLAUDE_RE
 
 
@@ -284,7 +284,7 @@ def mapping(env):
     highest = _highest_closed_phase(env)
     n = highest + 1                                   # current phase number
     interphase_label = getattr(env, "interphase", None) or "PA3 migration"
-    phase_n = "%d.5" % highest                        # e.g. "37.5"
+    phase_n = interphase_id(highest)                  # e.g. "37.PA3"; was "%d.5"
 
     # -- rules from DIGEST.md bullets ----------------------------------------
     digest_path = env.path("phase-ends/DIGEST.md")
@@ -409,7 +409,9 @@ def mapping(env):
     rows.append(Row("generate", "", "GENERATION_PLAN.md",
                      "from template + legacy index",
                      {"generator": "generation_plan",
-                      "gen_number": 1, "gen_name": ""}))
+                      "gen_number": 1, "gen_name": "",
+                      "interphase": phase_n,
+                      "running": running_phase(env, "phase-ends/CURRENT_PHASE.md")}))
 
     # -- P7: generate new CLAUDE.md ------------------------------------------
     rows.append(Row("generate", "", "CLAUDE.md",

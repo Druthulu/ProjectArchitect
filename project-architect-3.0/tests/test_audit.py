@@ -1274,7 +1274,7 @@ class TestWarmPingsToasts(unittest.TestCase):
         c = cls._conn
         from pa import db
         c.executescript(db.SCHEMA_SQL)                  # the real ledger schema
-        sid, rid = "sess-warm-1", "a8cfdc7600000001a"
+        sid, rid = "sess-warm-1", "a8cfdc7600000001b"
         cls._sid, cls._sid2, cls._sid3, cls._sid4 = sid, "sess-warm-2", "sess-warm-3", "sess-warm-4"
         cls._sid5 = "sess-warm-5"
 

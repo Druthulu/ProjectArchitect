@@ -169,6 +169,25 @@ export function takesOver(s: LoopState, sid: string, now: number, prevSid = ''):
  * `.run/mod/<sid>/shells.json` (`{ <agentId>: Shell[] }`) from start to completion notice; `exit` set when it ended badly. */
 export const SHELLS_FILE = 'shells.json'
 
+/** 3.32.1 T5: each helper's parent as pa-watch saw its Agent call return, `.run/mod/<sid>/parents.json` (`{ <child>: <parent> }`):
+ * Claude Code leaves `parentId` out of `$.agent.list()` for some helpers. */
+export const PARENTS_FILE = 'parents.json'
+/** parents.json's child → parent pairs, non-empty strings only; {} for a missing or broken file. */
+export function parentsOf(text: string | null): Record<string, string> {
+  let v: unknown
+  try {
+    v = JSON.parse(text ?? '')
+  } catch {
+    return {}
+  }
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return {}
+  return Object.fromEntries(Object.entries(v as Record<string, unknown>).filter((e): e is [string, string] => typeof e[1] === 'string' && e[1] !== ''))
+}
+/** The list with parents.json's parent first, else the list's own `parentId`. */
+export function withParents<T extends { id: string; parentId?: string }>(list: readonly T[], parents: Record<string, string>): T[] {
+  return list.map(a => (parents[a.id] === undefined ? a : { ...a, parentId: parents[a.id] }))
+}
+
 /** shells.json's records by agent, each well-formed; {} for a missing or broken file. */
 export function shellsOf(text: string | null): Record<string, Shell[]> {
   let v: unknown
@@ -314,8 +333,8 @@ export function quietReply(line: string): boolean {
   if (l.includes('\n')) {
     return false
   }
-  return /^released: (review|generation|question|session|talk|close)$/.test(l) || l === 'released: stopped (resumed)' || /^queued: /.test(l) ||
-    (/^applied: /.test(l) && !l.includes('(not committed: ')) || /^steered: \S+$/.test(l)
+  return /^released: (review|generation|question|session|talk|close|batch)$/.test(l) || l === 'released: stopped (resumed)' || /^queued: /.test(l) ||
+    (/^applied: /.test(l) && !l.includes('(not committed: ')) || /^steered: \S+$/.test(l) || /^drive: \S+$/.test(l)
 }
 
 export type Route = 'done' | 'handoff' | 'review' | 'question' | 'block'
@@ -366,6 +385,21 @@ export function setAsideOf(s: LoopState): Record<string, { attempt: number }> {
     return {}
   }
   return Object.fromEntries(Object.entries(v).filter(([, x]) => typeof x === 'object' && x !== null && Number.isFinite(x.attempt)))
+}
+
+/** 3.32.1 T5 (#6): a pick's spawn refused because Claude Code's auto-mode check gave no verdict is tried again after this. */
+export const SPAWN_RETRY_MS = 30_000
+/** The no-verdict refusals of one task attempt; the last of them holds `question`. */
+export const SPAWN_RETRIES = 3
+/** A spawn refusal that says the auto-mode check gave no verdict or no answer (a transient Claude Code fault). */
+export function noVerdict(deny: string): boolean {
+  return /\bno (verdict|answer)\b/i.test(deny)
+}
+/** loop.json `spawnRetry` when well formed, else null. */
+export function spawnRetryOf(s: LoopState): { task: string; attempt: number; n: number; at: number } | null {
+  const v = s.spawnRetry
+  return typeof v === 'object' && v !== null && typeof v.task === 'string' && Number.isFinite(v.attempt) &&
+    Number.isFinite(v.n) && Number.isFinite(v.at) ? v : null
 }
 
 /**
@@ -428,9 +462,12 @@ export function bandLine(s: LoopState, phase: string): string {
 /**
  * The line the router puts before the developer's first message while the loop is active and `talk` is not held yet;
  * null otherwise. 3.23 T13d.c11: while `session` is held (a session start; nothing has started since), the waiting line
- * instead, on each developer message until the release.
+ * instead, on each developer message until the release. 3.32 B8: in `coop` neither: nothing to repeat to the developer.
  */
-export function talkLine(s: LoopState): string | null {
+export function talkLine(s: LoopState, coop = false): string | null {
+  if (coop) {
+    return null
+  }
   if (s.holds.includes('session')) {
     const what = s.task !== null ? s.task.id : s.state === 'closing' ? 'the phase close' : s.holds.includes('generation')
       ? "the next generation's start" : 'the next step'
@@ -444,6 +481,53 @@ export function talkLine(s: LoopState): string | null {
   const running = s.task === null ? 'no task' : s.task.id
   return `‹pa› the queue is held while you talk (${running} running; next: ${nextIdOf(s) || 'none listed'}). ` +
     'Call release({hold: "talk"}) when the conversation is done or does not touch the plan.'
+}
+
+// 3.32 B8: `drive`, pa.json, read each tick (no restart). `autopilot`, the default: the queue runs up to the close
+// question. `coop`: talk is the default. The queue moves only for a batch Claude locks in with the developer
+// (`release({hold: "batch", tasks})`, loop.json `batch`); `talk` is never pushed, so a running batch is never interrupted;
+// its end is the one notice, with the results. No hold or waiting line, no close question, no plan-needed nudge; the
+// phase closes on the developer's word (`release({hold: "close"})`, no `close` hold needed).
+export type Drive = 'autopilot' | 'coop'
+
+/** pa.json's `drive`; anything but `coop`, a missing key or a bad file included, is `autopilot`. */
+export function driveOf(paText: string | null): Drive {
+  try {
+    return (JSON.parse(paText ?? '') as { drive?: unknown } | null)?.drive === 'coop' ? 'coop' : 'autopilot'
+  } catch {
+    return 'autopilot'
+  }
+}
+
+/** pa.json with `drive` set: its one line replaced, so the rest of the file stays as it is; null on a bad file. */
+export function withDrive(paText: string | null, drive: Drive): string | null {
+  let o: unknown
+  try {
+    o = JSON.parse(paText ?? '')
+  } catch {
+    return null
+  }
+  if (typeof o !== 'object' || o === null || Array.isArray(o)) {
+    return null
+  }
+  const text = paText ?? ''
+  return /"drive"\s*:\s*"[^"]*"/.test(text)
+    ? text.replace(/"drive"\s*:\s*"[^"]*"/, `"drive": "${drive}"`)
+    : `${JSON.stringify({ ...o, drive }, null, 2)}\n`
+}
+
+/** The locked-in batch's task ids (loop.json `batch`); [] none. */
+export function batchOf(s: LoopState): string[] {
+  const v = (s as LoopState & { batch?: unknown }).batch
+  return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string' && x !== '') : []
+}
+
+/** A batch ended: its tasks' summaries, for Claude to bring back. */
+export const batchDoneNotice = (ids: readonly string[], sums: Record<string, { title: string; summary: string }>): string => {
+  const lines = Object.entries(sums).filter(([id]) => ids.some(b => id.split('.')[0] === b.split('.')[0]))
+    .map(([id, x]) => `${id} ${x.title}: ${x.summary.replace(/\s*\r?\n\s*/g, ' ')}`)
+  return `‹pa› The batch is done (${ids.join(', ')}).` + (lines.length === 0 ? ' No task left a summary.' : ` Each task's summary:\n${lines.join('\n')}\n`) +
+    ' Bring the results to the developer.'
 }
 
 /** `held(window)` is over: its `resume_at` has passed. */
@@ -625,20 +709,8 @@ export function firstRunLine(paText: string | null, memoryDir: string): string {
   return `curate: migration 3.2 -> gen 3.2 · FROM: ${str((fr as Record<string, unknown>)['from']) || 'unknown'} · MEMORY: ${memoryDir}`
 }
 
-/** A first-run curate line (firstRunLine). */
-export const isFirstRun = (curate: string): boolean => /^curate: migration 3\.2\b/.test(curate)
-
-/** 3.24 T7b-2c: why plans wait while a first run is pending (firstRunLine): Claude's seed line, and the refusal's reason
- * ("Not presented:", "not installed:"; all three reach Claude only). 3.24 T13g: names the mod as the one who asks. */
-export const FIRST_RUN_WAITS = "The project's first run in PA 3.2 sorts its memories first: no plan is presented or installed " +
-  'until the memory curator has run. The mod asks the developer itself, in its own picker; do not ask about the curator ' +
-  "yourself. If they pause it, the mod asks again at the next session start. Relay the curator's recap when it arrives."
-
-/** The curator ask's question (pa-session.md:86-89); 3.24 T7b: the project's first run in 3.2 says so. */
-export const curateQuestion = (curate: string): string => isFirstRun(curate)
-  ? `This project's first run in PA 3.2: the memory curator sorts its memories once (${curate}), card first, ` +
-    'memory kept lean, the rest archived, and recaps after. Run it now?'
-  : `The memory curator runs at every generation start (${curate}). Run it now?`
+/** The curator ask's question (pa-session.md:86-89). */
+export const curateQuestion = (curate: string): string => `The memory curator runs at every generation start (${curate}). Run it now?`
 
 /** Where the curator archives demoted memories: `gen<G>.md` (G the closing generation); for a migration the line's
  * target (`-> gen 3.2`: `gen3.2.md`, 3.24 T7b), else `genlegacy.md`. */
@@ -685,9 +757,7 @@ export function genNotice(o: {
   auditText: string
   deferred: readonly { id: string; text: string }[]
 }): string {
-  const out = [o.kind === 'gen' ? '‹pa› Generation start.' : isFirstRun(o.curate)
-    ? `‹pa› The project's first run in PA 3.2: the memory curator ran (${o.curate}). Relay its recap to the developer in plain words.`
-    : `‹pa› The memory curator ran (${o.curate}).`]
+  const out = [o.kind === 'gen' ? '‹pa› Generation start.' : `‹pa› The memory curator ran (${o.curate}).`]
   if (o.curate !== '') {
     out.push(`memory curator recap:\n${o.recap.trim() === '' ? '(no recap)' : o.recap.trim()}`,
       `archived memories: ${archiveOf(o.curate)} (tell the developer, in case he wants to keep something)`)
@@ -845,7 +915,8 @@ export const pausedHandbackNotice = (id: string): string =>
   `‹pa› ${id}'s expert handed back while ${id} is paused on the developer's request: it is held, not restarted. Tell ` +
   'the developer in one line; when they want it to go on, in any words, call release({hold: "stopped"}).'
 /** 3.3 T7: Claude's line, with the session's first developer message, in a project that has not set up external
- * coders: '' when pa.json's `external` sets a `coder`, `remind: false` or `use: false` (or pa.json is unreadable). */
+ * coders: '' when pa.json's `external` sets a `coder`, `remind: false` or `use: false` (or pa.json is unreadable).
+ * 3.32.1 T5: once per project: the router sets `remind: false` when it goes. */
 export function externalReminder(paJsonText: string | null): string {
   let doc: unknown = null
   try {
@@ -864,7 +935,8 @@ export function externalReminder(paJsonText: string | null): string {
   }
   return 'PA3: external coders are available (OpenRouter or local models do the coding; experts and you stay on Claude), ' +
     'and this project has not set them up. Ask the developer once in this reply whether they want them. A yes: load the ' +
-    'pa-external-agents skill. To stop this reminder, set pa.json external.remind to false (PY tools/pa_ext.py set --remind off).'
+    'pa-external-agents skill. This reminder is shown once per project and not again; to have it back, run ' +
+    'PY tools/pa_ext.py set --remind on.'
 }
 /** 3.3 T7: the external-coder setup's machine-level result (`<home>/` + this: `{at (s), ok, text}`), and the project's
  * note of the last one passed to Claude (`{at}`). */
@@ -1055,6 +1127,20 @@ export function updateDoneNotice(m: UpdateMarker, o: { conflicts: boolean; resta
 /** Said once when the mod's own files changed under a running session (3.24 T2 row P11i: no hot reload). */
 export const RELOAD_NOTICE = `‹pa› the PA3 mod's own files changed in this update: the new mod and agents load at the next start of Claude Code (${RESTART}). No task starts until then; tell the developer once, with the update.`
 
+/** 3.29.1 T8: why the session start's update gate holds work back (autopilot's `gateWhy`). */
+export const GATE_CHECK = 'the update check has not answered'
+export const GATE_RUN = 'an update is running'
+export const GATE_STALE = 'the new mod is not loaded yet'
+
+/** 3.32.1 T5 (#6): the one reply to a work hold's release the update gate holds back; it stays queued and goes through by itself. */
+export function gateWaitReply(hold: string, why: string): string {
+  const what = why === GATE_STALE
+    ? `the new PA3 is not loaded yet: ask the developer to restart Claude Code (${RESTART})`
+    : why === GATE_RUN ? 'a PA3 update is running: it goes through when the update ends'
+      : `this session start's update check has not answered yet: it answers by itself within ${String(START_CHECK_WAIT_MS / 60_000)} minutes of the start`
+  return `waiting: ${hold} (${what}; the release stays queued and goes through by itself, no need to send it again)`
+}
+
 /** The conflicts' notice when the rounds are spent. */
 export const upgradeLeftNotice = (rounds: number): string =>
   `‹pa› PA3 update conflicts remain in ${UPGRADE_MD} after ${String(rounds)} rounds; tell the developer: each line wants \`| resolve: keep|upstream|merged: <path>\`, then \`update pa3\` applies them.`
@@ -1122,6 +1208,10 @@ export const extHealthNotice = (task: string, proposals: readonly string[]): str
 // Claude's report as release's note (the mod writes it to RECAP.md); `gen`, the generation a generation-end close ends.
 // 3.30: `ext`, the external coder runs since the last external review (`pa_ext.py runs --count`): after the close, the
 // auditor reviews them.
+export const extReviewLine = (phase: string, ext: number): string =>
+  ` ${String(ext)} external coder run${ext === 1 ? '' : 's'} finished since the last external review: once` +
+  ' the close is released, start the auditor in the background with `EXTERNAL REVIEW · PHASE ' + phase + '` and bring' +
+  ' its proposals to the developer (the pa-external-agents skill, "Learning from each run").'
 export const closeNotice = (phase: string, sums: Record<string, TaskSummary> = {}, gen = '', ext = 0): string => {
   const lines = Object.entries(sums).map(([id, x]) => `${id} ${x.title}: ${x.summary.replace(/\s*\r?\n\s*/g, ' ')}`)
   return `‹pa› Plan end: phase ${phase} has no task left.` +
@@ -1130,9 +1220,7 @@ export const closeNotice = (phase: string, sums: Record<string, TaskSummary> = {
     ' what the phase built run?" with the answers "Yes, close the phase (recommended)" and "Not yet: <what is missing>",' +
     ' and wait. What is missing goes through plan_edit; on yes, call release({hold: "close", note: "<your report>"}).' +
     (gen === '' ? '' : ` This close also ends Generation ${gen}, so the report covers the whole generation.`) +
-    (ext > 0 ? ` ${String(ext)} external coder run${ext === 1 ? '' : 's'} finished since the last external review: once` +
-      ' the close is released, start the auditor in the background with `EXTERNAL REVIEW · PHASE ' + phase + '` and bring' +
-      ' its proposals to the developer (the pa-external-agents skill, "Learning from each run").' : '')
+    (ext > 0 ? extReviewLine(phase, ext) : '')
 }
 // 3.23 T13d.c4: the archived line, one feed record (3.25 T2: the mod's own; no recap turn).
 // The generation end parks the loop in `held(generation)` (T13b.c3); its sentence says the next one is the developer's.
@@ -1257,8 +1345,76 @@ export function archiveLines(out: string): { stage: string[]; runs: string[] } {
   }
 }
 
-/** The loop's own agents (never forwarded, never filed as children): the task's expert and the generation start's. */
+/** The loop's own agents (never forwarded, never filed as children): the task's expert, the generation start's and the
+ * background job's (3.32 B6). */
 export function loopAgentIds(s: LoopState): string[] {
   const g = genStartOf(s)
-  return [s.task?.agentId ?? '', g === null || g.step === 'done' ? '' : g.agentId].filter(x => x !== '')
+  return [s.task?.agentId ?? '', g === null || g.step === 'done' ? '' : g.agentId, bgJobOf(s)?.agentId ?? ''].filter(x => x !== '')
+}
+
+// 3.32 B9: the PA3 intake, the mod's one-time background job: one memory-curator, one run, while the developer works, for
+// a first run and once for every project with a past (pa.json `intake`: `pending` from the install, then `done`, or
+// `incomplete` at INTAKE_TRIES). What it still owes is read from the files, so a try cut off at any point leaves the next
+// one only what is missing. Plans wait for it (intakeDue); talk never does.
+export type IntakeStep = 'memories' | 'living docs' | 'state page'
+export type BgJob = { steps: IntakeStep[]; agentId: string; sid: string; spawnedAt: number; lastCompleteAt: number }
+export const STATE_PAGE = 'docs/PRE_PA3_STATE.md'
+export const INTAKE_TRIES = 3
+const INTAKE_STEPS: readonly IntakeStep[] = ['memories', 'living docs', 'state page']
+
+/** 3.32 B9: why plans wait while the intake is due (intakeDue): Claude's seed line, and the refusal's reason ("Not
+ * presented:", "not installed:"). */
+export const INTAKE_WAITS = 'The PA3 intake is reading this project once, in the background. The planner builds on what it ' +
+  'writes, so no plan is drafted, presented or installed until it is done. Talk goes on as usual; the developer sees its ' +
+  "card. Don't mention it unless they ask for a plan."
+
+/** The cap's one notice to Claude. */
+export const intakeCapNotice = (owed: readonly string[]): string =>
+  `‹pa› The PA3 intake stopped after ${String(INTAKE_TRIES)} tries; planning goes ahead without: ${owed.join(', ')}. Tell the developer that in one line.`
+
+/** The plan gate, from pa.json alone: `intake` pending, or a first run owed (an install with no git never wrote the
+ * marker) unless the intake gave up. */
+export function intakeDue(paText: string | null): boolean {
+  let o: Record<string, unknown>
+  try {
+    const v: unknown = JSON.parse(paText ?? '')
+    o = typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  } catch {
+    return false
+  }
+  return o['intake'] === 'pending' || (o['intake'] !== 'incomplete' && firstRunLine(paText, '') !== '')
+}
+
+/** The card has living docs: a `- ` line in its section other than the template's `- (none yet`. */
+function hasLivingDocs(card: string | null): boolean {
+  const m = /^## Living docs\b[^\n]*\n/m.exec(card ?? '')
+  if (m === null) {
+    return false
+  }
+  const rest = (card ?? '').slice(m.index + m[0].length)
+  const next = /^## /m.exec(rest)
+  return (next === null ? rest : rest.slice(0, next.index)).split(/\r?\n/).some(l => l.startsWith('- ') && !l.startsWith('- (none yet'))
+}
+
+/** The steps the intake still owes, in order. */
+export function intakeOwed(o: { paText: string | null; card: string | null; page: boolean }): IntakeStep[] {
+  return [
+    ...(firstRunLine(o.paText, '') !== '' ? ['memories' as const] : []),
+    ...(hasLivingDocs(o.card) ? [] : ['living docs' as const]),
+    ...(o.page ? [] : ['state page' as const]),
+  ]
+}
+
+/** loop.json's count of intake spawns; losing it is harmless. */
+export const intakeTriesOf = (s: LoopState): number => num((s as LoopState & { intakeTries?: unknown }).intakeTries)
+
+/** loop.json's background job, null none. */
+export function bgJobOf(s: LoopState): BgJob | null {
+  const v = (s as LoopState & { bgJob?: unknown }).bgJob
+  if (typeof v !== 'object' || v === null) {
+    return null
+  }
+  const o = v as Record<string, unknown>
+  const steps = Array.isArray(o['steps']) ? INTAKE_STEPS.filter(x => (o['steps'] as unknown[]).includes(x)) : []
+  return str(o['agentId']) === '' ? null : { steps, agentId: str(o['agentId']), sid: str(o['sid']), spawnedAt: num(o['spawnedAt']), lastCompleteAt: num(o['lastCompleteAt']) }
 }

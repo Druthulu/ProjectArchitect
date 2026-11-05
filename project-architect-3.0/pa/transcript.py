@@ -584,7 +584,7 @@ def workflow_id_of(path):
 
 
 def agent_id_from_path(path):
-    """``…/agent-abfdf578000000025.jsonl`` -> ``abfdf578000000025``."""
+    """``…/agent-abfdf578000000026.jsonl`` -> ``abfdf578000000026``."""
     m = _AGENT_RE.search(str(path or "").replace("\\", "/"))
     return m.group(1) if m else None
 

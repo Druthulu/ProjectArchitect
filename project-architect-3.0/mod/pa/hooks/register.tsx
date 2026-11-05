@@ -36,18 +36,19 @@ import {
 import { parseCoderReturn } from './contract'
 import { clip, eventFile, isStale, PRUNE_DAYS, pruneArgv } from './debug'
 import { forwardRequest, handle, isLoopKind, noAnswer, parseRequest, pendingRequests, requestFile, RETRIEVE_TYPE, retrievePrompt } from './inbox'
-import { dayFilePath, type Entry, indexAgrees, indexPath, JOURNAL_DIR, mergeIndex, parseEntry, parseEntryPath, splitDay, stamp, unindexed } from './journal'
+import { dayFilePath, type Entry, filedThroughOf, indexAgrees, indexPath, JOURNAL_DIR, mergeIndex, parseEntry, parseEntryPath, splitDay, stamp, TOPICS_PATH, unindexed } from './journal'
 import { idleNow, runningNow, taskAgents } from './digest'
 import {
   addRecords, beatOf, deathOf, emptyFeed, emptyLife, FEED_BEAT_MS, FEED_DESC, FEED_STALE_MS, FEED_TIMEOUT_MS, feedBlock, feedCommand, feedErrorLine, feedEvents,
   announces, editHead, feedLook, type FeedRecord, feedText, fromLog, missingNs, NUDGE, nudgeName, replyRecord, restartGate, seenBeat, senderOf, shownOf, speakerOf, staleOf, unseenFeed,
 } from './feed'
-import { EXT_SEEN, EXT_STATUS, extAt, externalReminder, FIRST_RUN_WAITS, firstRunLine, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, queuedTo, RESTART_LINE, sessionTitle, setupNotice, SHELLS_FILE, shellsOf, shellsOut, statusWord, talkLine } from './loop'
+import { driveOf, EXT_SEEN, EXT_STATUS, extAt, externalReminder, INTAKE_WAITS, intakeDue, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, queuedTo, RESTART_LINE, sessionTitle, setupNotice, SHELLS_FILE, shellsOf, shellsOut, statusWord, talkLine } from './loop'
+import { PARENTS_FILE, parentsOf, withParents } from './loop'
 import {
   answerLine, APPROVED, askBody, decisionLine, dialogCopy, DIALOG_FILE, dialogJson, FALLBACK_OPTIONS, FALLBACK_QUESTION, fallbackLine, installs, isReplan,
   dialogKey, dropAgentDialogs, holdingAgent, learnedFile, PLAN_PANE, planBody, planFilePath, planLogLines, presentHold, slugArgv, slugFile, trialLine,
 } from './planview'
-import { cacheTtlOf, expertStatus, isCold, partnerStatus, pingCount, pingDecision, pingUsd, type Rates, ratesFrom, tierRates } from './policy'
+import { cacheTtlOf, expertStatus, fileDecision, isCold, journalSettings, partnerStatus, pingCount, pingDecision, pingUsd, type Rates, ratesFrom, tierRates } from './policy'
 import {
   addAttach, addReply, applyReply, bangOf, bangText, childOut, classify, clearTurn, dueMarkers, emptyTurns, enqueue, entryUsage, fileEntry,
   framedOther, handbackChild, hideAssistant, hideSpinner, hideUser, isBusy, isLive, isSeedName, journalOut, localAnswer, markerReply,
@@ -55,9 +56,9 @@ import {
   registerTurn, replyKey, RESUME_CHECK_MS, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
   isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending,
-  withImageSources,
+  withImageSources, dropFiling, endFiling, filingRequest, filingTurnEnded, recordBody, startFiling, todoBlock,
 } from './route'
-import { buildSeed, type Child as SeedChild, localStamp, SEED_BUDGET_TOKENS } from './seed'
+import { buildSeed, charTokens, type Child as SeedChild, GENERATION_TOKENS, localStamp, RECORDS_TOKENS, SEED_BUDGET_TOKENS, STATE_TOKENS, tokenChars } from './seed'
 import {
   defaultState, drawnPath, feedDirOf, lastJson, lastPath, markDone, mergeDrawn, parseDrawn, parseLast, parseState, pruneDone, serializeDrawn,
   serializeState, statePath,
@@ -127,6 +128,7 @@ let transcriptSeen = { sid: '', path: '' }
 // the session.start hook, so its `$` calls stay inline there.
 let rearm: ((why: string, sid: string) => Promise<void>) | null = null
 let feedRestart: ((why: string) => Promise<void>) | null = null // 3.23 T13d.c1c: set by arm, run by a death signal
+let fileAtTurnEnd: (() => Promise<void>) | null = null // 3.31 T2c: set by arm, run at the partner's reply's turn end
 
 /** 3.23 T13d.c6a: drawn.json rewritten with an entry added (read, change, write: the file keeps every session's entries). */
 async function keepDrawn($: Pick<EngineInterface, 'fs' | 'session'>, change: (d: Drawn) => Drawn): Promise<void> {
@@ -150,6 +152,12 @@ async function errorRecord($: Pick<EngineInterface, 'fs' | 'session' | 'env' | '
 }
 
 /** One debug event file: [path, text] for `$.fs.write`. */
+/** 3.32.1 T5: `$.agent.list()` with pa-watch's parents.json (`withParents`) as the first source of each helper's parent. */
+async function listWithParents($: Pick<EngineInterface, 'fs' | 'session' | 'agent'>): Promise<Awaited<ReturnType<EngineInterface['agent']['list']>>> {
+  const text = await $.fs.read(`${await $.session.root()}/.run/mod/${await $.session.id()}/${PARENTS_FILE}`).catch(() => null)
+  return withParents(await $.agent.list(), parentsOf(text))
+}
+
 function ev(kind: string, data: Record<string, unknown>): [string, string] {
   const ms = Date.now()
   counter += 1
@@ -157,6 +165,71 @@ function ev(kind: string, data: Record<string, unknown>): [string, string] {
 }
 
 const quiet = (): undefined => undefined
+
+// 3.31 T2: the filing turn's text can come as its turn's answer or its hand-back's report, either first. A hand-back
+// while the turn runs is kept (`filingHandback`); a turn that ended with no text leaves its facts (`filingLate`) for a
+// later hand-back to file. Both are dropped when the next filing is sent. `filingWhy`: the decision's why, for the event.
+type FilingTurn = { agentId: string; turnId: string; model: string; effort: string; usage: Parameters<typeof entryUsage>[0]; ctx: number | null }
+let filingHandback: { agentId: string; text: string } | null = null
+let filingLate: FilingTurn | null = null
+let filingWhy = ''
+
+/**
+ * 3.31 T2: the filing turn's reply filed: one `claude/record` entry with `through` (written at once, so records.py reads
+ * it, and queued, so the route tick's flush indexes the month), then `records.py index`, `todo` (kept for the developer's
+ * next message) and, with `journal.show_filed`, `headlines` as quiet `Filed:` lines in the transcript (`$.ui.log`, no
+ * turn); endFiling (no reply, no marker, no toast); the `journal_filing` ledger event. `turnEnd` false: a late hand-back,
+ * whose turn's end was already taken.
+ */
+async function finishFiling($: EngineInterface, t: FilingTurn, text: string, turnEnd: boolean): Promise<void> {
+  const root = await $.session.root()
+  const st = await read($, stateAtom)
+  if (st === null) {
+    return
+  }
+  const now = await $.clock.now()
+  const through = st.filingThrough !== '' ? st.filingThrough : new Date(st.lastExchangeAt > 0 ? st.lastExchangeAt : now).toISOString()
+  jseq += 1
+  const out = journalOut(now, jseq, 'claude', 'record', {
+    session: st.sid, agentId: t.agentId, model: t.model, effort: t.effort === '' ? undefined : t.effort, turnId: t.turnId,
+    usage: entryUsage(t.usage), through,
+  }, recordBody(text))
+  await $.fs.write(`${root}/${out.rel}`, out.text)
+  const paText = await $.fs.read(`${root}/.claude/pa.json`).catch(() => null)
+  const python = paSetting(paText, 'python')
+  const records = async (...args: string[]): Promise<string[]> => {
+    if (python === '') {
+      return []
+    }
+    const r = await $.process.run([python, 'tools/records.py', ...args], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
+    return r === null || r.exitCode !== 0 ? [] : r.stdout.split('\n').map(l => l.trim()).filter(l => l !== '')
+  }
+  await records('index')
+  const todo = await records('todo', out.rel)
+  const heads = journalSettings(paText).showFiled ? await records('headlines', out.rel) : []
+  const key = replyKey(t.agentId, text)
+  const saved = await update($, stateAtom, x => (x === null ? x : endFiling({ ...fileEntry(x, out), filingThrough: through }, now, t.ctx, key, todo, turnEnd)))
+  if (saved !== null) {
+    await $.fs.write(statePath(`${root}/.run/mod`, saved.sid), serializeState(saved))
+  }
+  for (const h of heads) {
+    $.ui.log(`Filed: ${h}`, { to: 'transcript' })
+  }
+  const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
+  const ledger = ledgerPath(await $.env.get('PA_MOD_PA3_DIR'), home)
+  if (python !== '' && ledger !== '') {
+    const detail = { run_id: t.agentId, session_id: st.sid, why: filingWhy, through, chars: text.length, usage: entryUsage(t.usage) ?? null }
+    const argv = [python, ledger, 'event', 'journal_filing', '--session', st.sid, '--run', t.agentId, '--detail', JSON.stringify(detail)]
+    const ran = await $.process.run(argv, { cwd: root, timeoutMs: 15_000 }).catch(err => ({ exitCode: -1, stdout: '', stderr: String(err) }))
+    if (ran.exitCode !== 0 && debugBase !== '') {
+      await $.fs.write(...ev('filing.event.fail', { exitCode: ran.exitCode, stderr: clip(ran.stderr, 200) })).catch(quiet)
+    }
+  }
+  if (debugBase !== '') {
+    await $.fs.write(...ev('filing.done', { agentId: t.agentId, why: filingWhy, through, entry: out.rel, chars: text.length, todo: todo.length, filed: heads.length, turnEnd })).catch(quiet)
+  }
+  filingWhy = ''
+}
 
 /** 3.24 T8: under PA_MOD_DEBUG a dialog's open or close logs `$.agent.list()`'s statuses: the live record of which
  * status a subagent shows during its own permission dialog. */
@@ -384,6 +457,8 @@ export const register: Register = (on, options) => {
       const rotateAt = Number((await $.env.get('PA_MOD_ROTATE_AT')) ?? '') || 0
       // Trial knob (3.23 T5d2b): a ping falls due this long after the last request instead of policy.PING_AFTER_MS.
       const pingAfterMs = Number((await $.env.get('PA_MOD_PING_AFTER_MS')) ?? '') || undefined
+      // Trial knob (3.31 T6): the filing's quiet time in ms instead of pa.json's journal.file_quiet_min.
+      const fileQuietMs = Number((await $.env.get('PA_MOD_FILE_QUIET_MS')) ?? '') || undefined
       const jdir = `${root}/${JOURNAL_DIR}`
       // Both forms (3.23 T7): a live day folder `<date>/` and a rolled day file `<date>.md` (tools/journal_rollup.py).
       const days = async (): Promise<string[]> => {
@@ -411,6 +486,18 @@ export const register: Register = (on, options) => {
         const text = await $.fs.read(`${root}/${rel}`).catch(() => null)
         return text === null ? null : { path: rel, ...(parseEntry(text) ?? { meta: {}, body: text }) }
       }
+      // 3.31 T2: the newest `claude/record` entry's `through`, the session's `filedThrough` when newer: read once per
+      // arm. 3.31 T2b: from TOPICS.md's `# filed through:` header (records.py index), never a journal scan; no
+      // TOPICS.md, no record.
+      void (async () => {
+        const found = filedThroughOf(await $.fs.read(`${root}/${TOPICS_PATH}`).catch(() => null))
+        if (found !== '' && found > s.filedThrough) {
+          const t = await update($, stateAtom, x => (x === null || found <= x.filedThrough ? x : { ...x, filedThrough: found }))
+          if (t !== null) {
+            await $.fs.write(statePath(base, t.sid), serializeState(t))
+          }
+        }
+      })().catch(quiet)
       // The month's index, rewritten whole when it disagrees with the month's entries (its lines kept, new entries read).
       const syncIndex = async (month: string): Promise<void> => {
         const paths: string[] = []
@@ -567,7 +654,7 @@ export const register: Register = (on, options) => {
                       return req.caller === 'loop' && s.stopToast !== null ? t : { ...t, toasts: [...t.toasts, toastOut(f.cause, f.body, at)] }
                     }
                     const p = s.partner
-                    return p === null || (f.agentId !== '' && f.agentId !== p.agentId) ? s : { ...s, partner: { ...p, topic: true } }
+                    return p === null || (f.agentId !== '' && f.agentId !== p.agentId) ? s : { ...s, partner: { ...p, topic: true, summary: f.summary } } // 3.31 T2: kept for the filing
                   })
                   if (after !== null) {
                     await $.fs.write(statePath(base, sidNow), serializeState(after))
@@ -631,7 +718,7 @@ export const register: Register = (on, options) => {
       // 3.28.1 T12: the partner's own turn has ended (a turn end after the last message delivered to it); its idle
       // stretch still has warming pings; it is cold (policy.isCold), idle and not working on a message.
       const partnerIdle = (x: RouterState): boolean =>
-        x.partner !== null && x.partner.lastTurnAt > 0 && x.partner.lastTurnAt >= x.sentAt && !x.partner.pingInFlight
+        x.partner !== null && x.partner.lastTurnAt > 0 && x.partner.lastTurnAt >= x.sentAt && !x.partner.pingInFlight && !x.partner.filingInFlight
       const partnerPingsLeft = (x: RouterState): boolean =>
         x.warm.waitPings < (x.warm.waitCount > 0 ? x.warm.waitCount : pingCount(x.partner?.ctx ?? 0, 'claude'))
       const partnerCold = (x: RouterState, list: readonly { id: string; status: string }[], now: number): boolean => {
@@ -707,17 +794,25 @@ export const register: Register = (on, options) => {
             const now = await $.clock.now()
             const since = stamp(now - SEED_DAYS * 86_400_000)[0]
             const entries: Entry[] = []
+            // 3.31 T3: the newest record's `through` in the window (and the state's), for the records seed.
+            const cur = await read($, stateAtom)
+            let through = cur?.filedThrough ?? ''
             for (const d of (await days()).filter(n => n >= since)) {
               const day = await rolled(d)
               entries.push(...day.filter(e => isSeedName(e.path)))
-              for (const rel of (await dayFiles(d)).filter(r => isSeedName(r) && !r.includes('.md#'))) {
-                const e = await readEntry(rel)
-                if (e !== null) {
+              for (const e of day.filter(x => parseEntryPath(x.path)?.kind === 'record')) {
+                through = (e.meta.through ?? '') > through ? e.meta.through ?? '' : through
+              }
+              for (const rel of (await dayFiles(d)).filter(r => !r.includes('.md#'))) {
+                const kind = parseEntryPath(rel)?.kind
+                const e = isSeedName(rel) || kind === 'record' ? await readEntry(rel) : null
+                if (e !== null && kind === 'record') {
+                  through = (e.meta.through ?? '') > through ? e.meta.through ?? '' : through
+                } else if (e !== null) {
                   entries.push(e)
                 }
               }
             }
-            const cur = await read($, stateAtom)
             const old = cur?.partner?.agentId ?? ''
             const children: SeedChild[] = (await $.agent.list())
               .filter(a => old !== '' && a.parentId === old && isBusy(a.status))
@@ -743,9 +838,18 @@ export const register: Register = (on, options) => {
             // 3.24 T7b: Claude's card slice (`card.py slice claude`), so the card reaches every fresh Claude; none on a failure.
             const sl = python === '' ? null : await $.process.run([python, 'tools/card.py', 'slice', 'claude'], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
             const card = sl !== null && sl.exitCode === 0 && sl.stdout.trim() !== '' ? sl.stdout : undefined
-            // 3.24 T7b-2c: a pending first run (pa.json) says plans wait for the memory curator.
-            const firstRun = firstRunLine(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null), '') === '' ? undefined : FIRST_RUN_WAITS
-            return buildSeed(seedEntries(entries, sending), { children, planPaths, budgetTokens: SEED_BUDGET_TOKENS, session: cur?.sid || undefined, loop, memory, card, firstRun })
+            // 3.32 B9: while the PA3 intake is due (pa.json), the seed says plans wait for it.
+            const intake = intakeDue(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null)) ? INTAKE_WAITS : undefined
+            // 3.31 T3: with a record, `records.py seed` (its outcomes in force and earlier topics); none on a failure.
+            const rs = through === '' || python === '' ? null : await $.process.run([python, 'tools/records.py', 'seed', '--budget-chars', String(tokenChars(RECORDS_TOKENS))], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
+            const records = through === '' ? undefined : { through, text: rs !== null && rs.exitCode === 0 ? rs.stdout : '' }
+            // 3.32 B5: this generation's phases and newest recaps, when the project has a phase history; none on a failure.
+            const gs = python === '' || !(await $.fs.exists(`${root}/docs/PHASE_HISTORY.md`)) ? null : await $.process.run([python, 'tools/phaseend_index.py', 'history-seed', '--budget-chars', String(tokenChars(GENERATION_TOKENS))], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
+            const generation = gs !== null && gs.exitCode === 0 ? gs.stdout : undefined
+            // 3.32 B6: the pre-PA3 state page, until the project's records for this phase replace it; none on a failure.
+            const ps = python === '' || !(await $.fs.exists(`${root}/docs/PRE_PA3_STATE.md`)) ? null : await $.process.run([python, 'tools/records.py', 'state', '--budget-chars', String(tokenChars(STATE_TOKENS))], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
+            const state = ps !== null && ps.exitCode === 0 ? ps.stdout : undefined
+            return buildSeed(seedEntries(entries, sending), { children, planPaths, budgetTokens: SEED_BUDGET_TOKENS, session: cur?.sid || undefined, loop, memory, card, intake, records, generation, state })
           }
           const spawnPartner = async (text: string, why: string): Promise<void> => {
             const before = (await read($, stateAtom))?.partner?.agentId ?? ''
@@ -758,7 +862,7 @@ export const register: Register = (on, options) => {
             if (typeof id === 'string' && id !== '') {
               const at = await $.clock.now()
               const model = spawned.model ?? ''
-              const seedTokens = Math.round(seed.length / 4)
+              const seedTokens = charTokens(seed.length)
               jseq += 1
               const out = journalOut(at, jseq, 'mod', 'start', { session: sidNow, agentId: id, model },
                 `Fresh partner ${id} (${why}); seed ~${String(seedTokens)} tokens.${before === '' ? '' : ` Replaces ${before}.`}`)
@@ -806,7 +910,7 @@ export const register: Register = (on, options) => {
                 continue
               }
               if (msg.kind === 'forward') {
-                const list = await $.agent.list()
+                const list = await listWithParents($)
                 const parent = parentOf(cur.children, msg.child, list)
                 const status = parent === null ? undefined : list.find(a => a.id === parent)?.status
                 if (parent === null || isLive(status)) {
@@ -1177,12 +1281,12 @@ export const register: Register = (on, options) => {
             await $.fs.write(dialogPath, dialogJson(true, head.id, await $.clock.now()))
             // Taken before acting: a crash mid-dialog never shows it twice.
             await save(x => ({ ...x, present: x.present.filter(p => p.id !== head.id) }))
-            // 3.24 T7b-2c: while the project's first run is pending (pa.json), no plan is presented; Claude is told why.
-            if (head.kind === 'plan' && firstRunLine(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null), '') !== '') {
+            // 3.32 B9: while the PA3 intake is due (pa.json), no plan is presented; Claude is told why.
+            if (head.kind === 'plan' && intakeDue(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null))) {
               const at = await $.clock.now()
               await $.fs.write(dialogPath, dialogJson(false, head.id, at))
-              await save(x => enqueue(x, 'other', `Not presented: ${FIRST_RUN_WAITS}`, head.caller, at))
-              await log('present.firstrun', { id: head.id, caller: head.caller })
+              await save(x => enqueue(x, 'other', `Not presented: ${INTAKE_WAITS}`, head.caller, at))
+              await log('present.intake', { id: head.id, caller: head.caller })
               return
             }
             let line = ''
@@ -1396,6 +1500,50 @@ export const register: Register = (on, options) => {
           await sendPing(a.id, { role, task: t.id, ttl, model: step.model, ctx: step.ctx, rates, lastRequestAt, now, why: d.why, n: w.pings + 1 }, blank)
         }
       }
+      // 3.31 T2: the hidden filing turn (policy.fileDecision), shared by the warm tick and the partner's turn end
+      // (3.31 T2c, fileAtTurnEnd). The hold is set first (as the ping's), so a message routed meanwhile waits in the
+      // outbox for the filing turn's end; undelivered lifts it. `rotationOnly`: the turn end files only before a
+      // rotation (topic, size, /model), never for `quiet`. True when a request was sent.
+      const sendFiling = async (st: RouterState, p: NonNullable<RouterState['partner']>, status: string, now: number,
+        count: number, lastRequestAt: number, rotationOnly: boolean): Promise<boolean> => {
+        const fd = fileDecision({
+          status, busy: false, lastRequestAt, pingsLeft: st.warm.waitPings < count, pingAfterMs, spawnedAt: p.spawnedAt,
+          lastTurnAt: p.lastTurnAt, lastExchangeAt: st.lastExchangeAt, filedThrough: Date.parse(st.filedThrough) || 0,
+          quietMs: fileQuietMs ?? journalSettings(paText).quietMs, topic: p.topic, ctx: p.ctx, modelSwitchAt: p.modelSwitchAt,
+        }, now)
+        if (!fd.file || (rotationOnly && fd.why === 'quiet')) {
+          return false
+        }
+        const after = st.filedThrough !== '' ? st.filedThrough : new Date(p.spawnedAt).toISOString()
+        const through = new Date(st.lastExchangeAt).toISOString()
+        filingHandback = null
+        filingLate = null
+        filingWhy = fd.why
+        const held = await update($, stateAtom, x => (x === null ? x : startFiling(x, p.agentId, through)))
+        if (held !== null) {
+          await $.fs.write(statePath(base, sidNow), serializeState(held))
+        }
+        const ids = python === '' ? null : await $.process.run([python, 'tools/records.py', 'inforce', '--ids', '--max-tokens', '4000'], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
+        const text = filingRequest({ after, through, topic: p.topic, summary: p.summary, inforce: ids !== null && ids.exitCode === 0 ? ids.stdout : '' })
+        const sent = await $.session.send({ to: { agentId: p.agentId }, text })
+        if (!sent.isDelivered) {
+          const lifted = await update($, stateAtom, x => (x === null || x.partner?.agentId !== p.agentId ? x : dropFiling(x)))
+          if (lifted !== null) {
+            await $.fs.write(statePath(base, sidNow), serializeState(lifted))
+          }
+        }
+        await log('filing.send', { agentId: p.agentId, why: fd.why, after, through, chars: text.length, delivered: sent.isDelivered })
+        return true
+      }
+      fileAtTurnEnd = async (): Promise<void> => {
+        const st = await read($, stateAtom)
+        const p = st?.partner ?? null
+        if (st === null || p === null || p.pingInFlight || p.filingInFlight) {
+          return
+        }
+        const count = st.warm.waitCount > 0 ? st.warm.waitCount : pingCount(p.ctx, 'claude')
+        await sendFiling(st, p, 'idle', await $.clock.now(), count, Math.max(p.lastTurnAt, p.spawnedAt, st.warm.lastPingAt), true)
+      }
       // The warming tick (design.md "Warming", policy.pingDecision): the idle partner (the router's only spawn) gets a
       // `.` before its 1h cache lapses, the idle stretch's pings set by its size (3.28.1 T12, policy.pingCount).
       // The `warm_ping` event is spooled first, so the audit's 60-second match holds; its `.` answer lifts the hold.
@@ -1415,7 +1563,7 @@ export const register: Register = (on, options) => {
             await warmCoders().catch(async err => log('warm.coders.error', { err: clip(String(err), 300) }))
             const st = await read($, stateAtom)
             const p = st?.partner ?? null
-            if (st === null || p === null || p.pingInFlight || st.awaiting !== null || st.outbox.length > 0) {
+            if (st === null || p === null || p.pingInFlight || p.filingInFlight || st.awaiting !== null || st.outbox.length > 0) {
               return
             }
             const list = await $.agent.list()
@@ -1435,6 +1583,10 @@ export const register: Register = (on, options) => {
               }
             }
             const lastRequestAt = Math.max(p.lastTurnAt, p.spawnedAt, st.warm.lastPingAt)
+            // 3.31 T2: the hidden filing turn (policy.fileDecision), before the ping; one sent skips the ping this tick.
+            if (await sendFiling(st, p, status, now, count, lastRequestAt, false)) {
+              return
+            }
             const d = pingDecision({ status, lastRequestAt, ctx: p.ctx }, now, { ttl: '1h', pings: st.warm.waitPings, count, pingAfterMs })
             if (!d.ping) {
               return
@@ -1537,7 +1689,7 @@ export const register: Register = (on, options) => {
       })
 
       // 3.24 T13B (decision 2): the router's band part, every WORK_MS. Claude's rows: the partner and its live children
-      // (an agent on a warming ping left out), each with its latest step (the watcher's facts); the conversation-only note
+      // (an agent on a warming ping or the partner's filing turn left out), each with its latest step (the watcher's facts); the conversation-only note
       // (loop.json, read only; moved from pa-watch's usage line); whether anything works (a live agent, the loop at work
       // in this session, a send or a reply owed); the dots, cycled only while `‹pa› working` shows. Written when changed.
       const workSince = new Map<string, number>()
@@ -1553,7 +1705,7 @@ export const register: Register = (on, options) => {
           const now = await $.clock.now()
           const st = await read($, stateAtom)
           const pinging = new Set(Object.entries(st?.warmAgents ?? {}).filter(([, a]) => a.pingInFlight).map(([id]) => id))
-          if (st?.partner?.pingInFlight === true) {
+          if (st?.partner?.pingInFlight === true || st?.partner?.filingInFlight === true) { // 3.31 T2b: a filing turn shows as nothing
             pinging.add(st.partner.agentId)
           }
           const listed = (await $.agent.list().catch(() => [])).filter(a => !pinging.has(a.id))
@@ -1710,7 +1862,8 @@ export const register: Register = (on, options) => {
         // 3.24 T12c: before this session start's first owning tick, a loop that would act gets the `session` line now.
         const pending = sessionStartPending(await $.session.id()) && loop.state !== 'off' &&
           !loop.holds.some(h => h !== 'talk' && h !== 'window')
-        const held = talkLine(pending ? { ...loop, holds: [...loop.holds, 'session'] } : loop)
+        const coop = driveOf(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null)) === 'coop' // 3.32 B8: no hold or idle line
+        const held = talkLine(pending ? { ...loop, holds: [...loop.holds, 'session'] } : loop, coop)
         // 3.23 T5c: while a task runs, the running-now note (digest.runningNow) from the watcher's facts files.
         let running = ''
         const lt = loop.task
@@ -1722,7 +1875,7 @@ export const register: Register = (on, options) => {
             files.push([name.slice(0, -'.json'.length), await $.fs.read(`${dir}/${name}`).catch(() => '')])
           }
           // T11-fix2: each agent's real status (`stopped`: killed, failed, or the expert gone from the list; `waiting`).
-          const all = await $.agent.list()
+          const all = await listWithParents($)
           const listed = new Map(all.map(a => [a.id, a.status as string]))
           // 3.32.1: the expert gone from the list with a child listed busy is waiting on it (3.28.8), never `stopped`;
           // the list's `parentId` places a child whose facts file lacks one.
@@ -1732,7 +1885,7 @@ export const register: Register = (on, options) => {
             .map(a => ({ ...a, state: a.role === 'expert' && !listed.has(a.id) && child !== undefined
               ? `waiting on its ${/coder/.test(child.type ?? '') ? 'coder' : child.type || 'helper'}`
               : a.role === 'expert' || listed.has(a.id) ? statusWord(listed.get(a.id)) : '' })))
-        } else if (loop.state !== 'off' && lt === null) {
+        } else if (!coop && loop.state !== 'off' && lt === null) {
           // 3.24 T17p: no task runs: say so (the last done task and when), so a stale "running" cannot stand.
           const ld = (loop as { lastDone?: { id?: unknown; at?: unknown } }).lastDone
           const last = typeof ld?.id === 'string' && ld.id !== ''
@@ -1755,15 +1908,26 @@ export const register: Register = (on, options) => {
         // 3.3 T7: the external-coder reminder, on the session's first developer message; the setup's result, once per
         // project (its seen note written when it goes).
         const sidHere = await $.session.id()
-        const remind = remindedSid === sidHere ? '' : externalReminder(await $.fs.read(`${root}/.claude/pa.json`).catch(() => null))
+        const paHere = await $.fs.read(`${root}/.claude/pa.json`).catch(() => null)
+        const remind = remindedSid === sidHere ? '' : externalReminder(paHere)
         remindedSid = sidHere
+        if (remind !== '') {
+          // 3.32.1 T5: once per project: pa.json's external.remind goes false through the command the reminder names (left
+          // for the project's next commit); a failed run is logged and only means it may show once more.
+          const pyHere = paSetting(paHere, 'python')
+          const off = pyHere === '' ? null
+            : await $.process.run([pyHere, 'tools/pa_ext.py', 'set', '--remind', 'off'], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
+          data = { ...data, remindOff: off === null ? 'not run' : off.exitCode === 0 ? 'ok' : clip((off.stderr || off.stdout).trim() || `exit ${String(off.exitCode)}`, 200) }
+        }
         const home = ((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')
         const status = home === '' ? null : await $.fs.read(`${home}/${EXT_STATUS}`).catch(() => null)
         const setup = setupNotice(status, await $.fs.read(`${root}/${EXT_SEEN}`).catch(() => null), now / 1000)
         if (setup !== null) {
           await $.fs.write(`${root}/${EXT_SEEN}`, `${JSON.stringify({ at: extAt(status) })}\n`).catch(quiet)
         }
-        const sent = [held ?? '', running, fed, remind, setup ?? ''].filter(p => p !== '').concat(text).join('\n\n')
+        // 3.31 T2: the last filing's to-do lines, once (dropped in this message's state change).
+        const todoLines = st0?.todo ?? []
+        const sent = [held ?? '', running, todoBlock(todoLines), fed, remind, setup ?? ''].filter(p => p !== '').concat(text).join('\n\n')
         jseq += 1
         const seq = jseq
         // 3.23 T13d.c10: the developer's message drops the your-turn toast still owed.
@@ -1772,7 +1936,8 @@ export const register: Register = (on, options) => {
           await $.fs.write(...ev('yourturn.drop', { turnId: owed.turnId, why: 'typed' })).catch(quiet)
         }
         // 3.24 T17t: and a stop's toast still waiting for his quiet.
-        change = s => fileEntry(enqueue(heardDeveloper({ ...s, yourTurn: null }), 'dev', sent, '', now), journalOut(now, seq, 'dev', 'msg', { session: s.sid }, text))
+        change = s => fileEntry(enqueue(heardDeveloper({ ...s, yourTurn: null, lastExchangeAt: now, todo: s.todo.slice(todoLines.length) }), 'dev', sent, '', now),
+          journalOut(now, seq, 'dev', 'msg', { session: s.sid }, text))
         // 3.29 T3: Claude's band row says the message was received until Claude's turn starts (the work tick then shows
         // its steps); drawn here at once, so it never waits on a tick. An earlier unanswered message keeps its time.
         if ((await read($, receivedAtom)) === 0) {
@@ -1867,7 +2032,7 @@ export const register: Register = (on, options) => {
           }
         } else {
           // Filed as the child's end: `thinker/end` for a thinker, else `coder/end`.
-          const listed = (await $.agent.list().catch(() => [])).find(a => a.id === child)
+          const listed = (await listWithParents($).catch(() => [])).find(a => a.id === child)
           const type = st?.children[child]?.type ?? listed?.type ?? ''
           const parentId = st?.children[child]?.parent ?? listed?.parentId ?? ''
           jseq += 1
@@ -1975,8 +2140,16 @@ export const register: Register = (on, options) => {
       // answer is filed at turn.complete, whose marker it replaces). Taken here, not at prompt.submit: a notification's
       // turn started before that hook's work was done (T8d headless trial).
       const child = handbackChild(text)
-      const report = child !== null && (await read($, stateAtom))?.partner?.agentId === child ? partnerReport(text) : null
-      if (child !== null && report !== null && report.trim() !== '.' && report.trim() !== '') {
+      const partner0 = (await read($, stateAtom))?.partner ?? null
+      const report = child !== null && partner0?.agentId === child ? partnerReport(text) : null
+      // 3.31 T2: a filing turn's hand-back draws nothing: kept for its turn end, or, that turn ended with no text, filed.
+      const late = filingLate
+      if (child !== null && report !== null && report.trim() !== '' && late?.agentId === child) {
+        filingLate = null
+        await finishFiling($, late, report, false)
+      } else if (child !== null && report !== null && report.trim() !== '' && partner0?.filingInFlight === true) {
+        filingHandback = { agentId: child, text: report }
+      } else if (child !== null && report !== null && report.trim() !== '.' && report.trim() !== '') {
         const key = replyKey(child, report)
         const now = await $.clock.now()
         const took = { show: false }
@@ -2178,7 +2351,25 @@ export const register: Register = (on, options) => {
     // file is missing.
     const ctx = step.ctx > 0 ? step.ctx : usageCtx(e.usage)
     let saved: RouterState | null
-    if (answer.trim() !== '.' && answer.trim() !== '') {
+    let replied = false
+    if (st.partner?.filingInFlight === true) {
+      // 3.31 T2: the filing turn's end: its answer (else a hand-back that came first) filed as a record, never an
+      // answer; no text yet: the hold lifts and its hand-back files it (filingLate).
+      const ft: FilingTurn = {
+        agentId: e.agentId, turnId, model: step.model || (e.usage?.model ?? st.partner.model), effort: step.effort, usage: e.usage, ctx,
+      }
+      const kept = filingHandback?.agentId === e.agentId ? filingHandback.text : ''
+      filingHandback = null
+      const text = answer.trim() !== '' ? answer : kept
+      if (text.trim() !== '') {
+        await finishFiling($, ft, text, true)
+        saved = null
+      } else {
+        filingLate = ft
+        saved = await update($, stateAtom, x => (x === null ? x : filingTurnEnded(x, now, ctx)))
+      }
+    } else if (answer.trim() !== '.' && answer.trim() !== '') {
+      replied = true
       const n = nextMarker(st)
       const model = step.model || (e.usage?.model ?? st.partner?.model ?? '')
       const effort = step.effort === '' ? undefined : step.effort
@@ -2198,7 +2389,7 @@ export const register: Register = (on, options) => {
         if (x === null) {
           return x
         }
-        const r = applyReply(fileEntry(x, out), n, path, key, now, ctx, e.usage?.model ?? '')
+        const r = applyReply(fileEntry({ ...x, lastExchangeAt: now }, out), n, path, key, now, ctx, e.usage?.model ?? '')
         toast = r.stopToast === null ? null : toastOut(r.stopToast, answer, now)
         return armYourTurn(toast === null ? r : { ...r, stopToast: null, toasts: [...r.toasts, toast] }, turnId, answer, now, known, toast !== null)
       })
@@ -2211,6 +2402,10 @@ export const register: Register = (on, options) => {
     }
     if (saved !== null) {
       await $.fs.write(statePath(base, saved.sid), serializeState(saved))
+    }
+    // 3.31 T2c: a reply that leaves a rotation due files at once, so the warm Claude files before it is replaced.
+    if (replied && fileAtTurnEnd !== null) {
+      await fileAtTurnEnd()
     }
     return next(e)
   })

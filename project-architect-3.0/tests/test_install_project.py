@@ -233,7 +233,7 @@ class TestFreshInstall(ProjectCase):
         self.install("--name", "Vantage", "--tagline", "a book-length thing")
         with open(self.path("CLAUDE.md"), "rb") as fh:
             raw = fh.read()
-        self.assertLessEqual(len(raw), 1100, "CLAUDE.md is %d bytes" % len(raw))
+        self.assertLessEqual(len(raw), 1250, "CLAUDE.md is %d bytes" % len(raw))  # was 1100; 3.32 B8: the drive line
         text = raw.decode("utf-8")
         self.assertNotIn("{{", text)
         self.assertIn("Vantage", text.splitlines()[0])
@@ -465,6 +465,24 @@ class TestSecondRun(ProjectCase):
         self.assertEqual(read(self.path("HOW_WE_WORK.md")), "# hand written\n")
         self.assertEqual(read(self.path("rules", "M4.md")), "# edited rule\n")
 
+    def test_upgrade_swaps_rhythm_for_drive(self):
+        # 3.32.1: rhythm with no drive becomes drive autopilot; beside a drive it just goes; a rerun changes nothing
+        rel = self.path(".claude", "pa.json")
+        for extra, want in (({}, "autopilot"), ({"drive": "coop"}, "coop")):
+            self.install()
+            doc = json.loads(read(rel))
+            doc.pop("drive", None)
+            write(rel, json.dumps({**doc, "rhythm": "autonomous", **extra}, indent=2) + "\n")
+            out = self.install()
+            got = json.loads(read(rel))
+            self.assertNotIn("rhythm", got, out)
+            self.assertEqual(got["drive"], want, out)
+            self.assertEqual({k: v for k, v in got.items() if k != "drive"},
+                             {k: v for k, v in doc.items() if k != "drive"})
+            before = read(rel)
+            self.install()
+            self.assertEqual(read(rel), before)
+
     def test_upgrade_refreshes_the_methodology_with_force(self):
         # 3.3 T12: docs/project-architect.md is a packaged file; a pa3 upgrade restores it
         self.install()
@@ -666,7 +684,7 @@ class TestTier(ProjectCase):
     def test_interview_answer_and_cache(self):
         from unittest import mock
         env = self._env()
-        answers = iter(["", "", "", "", "", "", "pro"])
+        answers = iter(["", "", "", "", "", "pro"])
         with mock.patch.object(pj.sys, "stdin", mock.Mock(isatty=lambda: True)), \
                 mock.patch("builtins.input", side_effect=lambda _p: next(answers)) as ask:
             self.assertEqual(json.loads(pj.pa_json_text(env))["tier"], "pro")
@@ -848,13 +866,14 @@ class TestCommit(ProjectCase):
         rc, out = self.run_install()
         self.assertEqual(rc, 0, out)
         log = git(self.repo, "log", "--format=%H|%s", "-n", "5").stdout.strip().splitlines()
-        self.assertEqual(len(log), 2, log)                   # init + install
-        self.assertEqual(log[0].split("|", 1)[1], "chore: install Project Architect 3.0")
-        body = git(self.repo, "log", "-1", "--format=%B").stdout
+        self.assertEqual(len(log), 3, log)                   # init + install + the docs index (3.32 B2)
+        self.assertEqual(log[0].split("|", 1)[1], "chore: PA3 docs index")
+        self.assertEqual(log[1].split("|", 1)[1], "chore: install Project Architect 3.0")
+        body = git(self.repo, "log", "-2", "--format=%B").stdout
         self.assertNotIn("Co-Authored-By", body)
         self.assertNotIn("Generated with", body)
         self.assertEqual(git(self.repo, "status", "--porcelain").stdout.strip(), "")
-        names = git(self.repo, "show", "--name-only", "--format=", "HEAD").stdout
+        names = git(self.repo, "show", "--name-only", "--format=", "HEAD~1").stdout
         self.assertIn(".claude/pa.json", names)
         self.assertIn("rules/INDEX.md", names)
         self.assertNotIn(".run/", names)
@@ -943,7 +962,9 @@ def fixture_copy(name, tmp):
     git(dst, "config", "commit.gpgsign", "false")
     git(dst, "config", "core.autocrlf", "false")
     git(dst, "add", ".")
-    git(dst, "commit", "-qm", "fixture")
+    old = "2020-01-01T00:00:00+00:00"       # 3.32 B3: an old past; onex keeps a recently edited doc in place
+    subprocess.run(("git", "-C", dst, "commit", "-qm", "fixture"), capture_output=True,
+                   env=dict(os.environ, GIT_AUTHOR_DATE=old, GIT_COMMITTER_DATE=old))
     return dst
 
 

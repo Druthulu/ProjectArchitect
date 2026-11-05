@@ -8,6 +8,8 @@ description: Standing rules, contracts and house style for Project Architect 3.0
 Live plan: `phase-ends/current/PHASE_PLAN.md`, frozen at approval, changed only through `{{PY}} tools/plan_edit.py`.
 Standing facts, tools, paths, conventions, decisions: `HOW_WE_WORK.md`, the card. Each role reads it as
 `{{PY}} tools/card.py slice <role>`, never the file whole. Full rule texts: `rules/INDEX.md` → `rules/<id>.md`.
+Outcomes settled in conversation that bind work (`{{PY}} tools/records.py inforce --binds-work`; the expert brief's
+`OUTCOMES IN FORCE` block) bind experts and planners like the card: an expert raises a conflict as a question, a plan names it.
 Techniques: `cookbook/INDEX.md` → `cookbook/C<nnnn>.md` (grep the index, read one file). Reports: `research/INDEX.md`.
 Constitution: `PROJECT_CONTEXT.md`, never edited; its older wording yields to these rules and to `GENERATION_PLAN.md`.
 Retired files live in `docs/retired/` and are never in the load order.

@@ -27,6 +27,7 @@ statuses are in `DECIDED`. Take what is decided as given; what is still open goe
   when present, which is then your brief. Every deferred item `launch.py --state-json` lists for this phase gets exactly
   one `## Triage` line: `- <id>: T<n>`, `- <id>: postpone: <phase>` or `- <id>: drop`, each with ` -- <reason>`;
   `- (none)` when there are none (approve refuses a gap).
+- `docs/PRE_PA3_STATE.md`, when present: where the project stood at its intake, for both kinds of plan; newer records win.
 - A file over the whole-read threshold is outlined first (`{{PY}} tools/outline.py <path>`), then read by range. For the
   codebase and the outside world use retrievers in the background (`retriever-code`, `retriever-digest`,
   `retriever-web`) with `REPORT: yes`; never Explore, Plan or general-purpose agents. When they are back, run
