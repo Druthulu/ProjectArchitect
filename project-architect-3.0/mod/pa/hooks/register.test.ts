@@ -377,6 +377,28 @@ describe('router route', () => {
     expect(n.sends.map(s => [String(s.to).includes('P1'), s.text.startsWith('Hand-back from your background agent C1:\n')])).toEqual([[true, true]])
   })
 
+  // 3.32.3: Claude Code notifies one task id more than once; a user's planner, resumed by SendMessage for a revision,
+  // handed back a second time and the router dropped that as a repeat.
+  test('3.32.3: a helper\'s second, different report is forwarded too; a pointer or the same report again is not', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'C1', status: 'completed', parentId: 'P1' }, { id: 'P1', status: 'idle' }]
+    await $.session.start(ISTART)
+    const points = '<task-notification>\n<task-id>C1</task-id>\n<status>completed</status>\n<result>This agent\'s report was '
+      + 'delivered to you as a message from "C1" (its SubagentHandback call). Read it there; it is not repeated here.\n</result>\n</task-notification>'
+    const draft2 = handback('C1', 'Draft 2: T3 split in two.')
+    for (const text of [handback('C1', 'Draft 1 at .run/plans/phase-2.md.'), points, draft2, points, draft2]) {
+      await $.prompt.submit({ text, origin: { kind: text === points ? 'task-notification' : 'peer' }, wait: false })
+      await clock.advance(1_000)
+    }
+    await clock.advance(1_000)
+    expect(n.sends.map(s => [String(s.to).includes('P1'), s.text.includes('Draft 1'), s.text.includes('Draft 2')]))
+      .toEqual([[true, true, false], [true, false, true]])
+    expect(entries(w, 'coder-end').length).toBe(2)
+  })
+
   test('T8d: a partner hand-back before turn.complete answers its turn, and no marker follows', async ($, on) => {
     const clock = mock.clock(on, { now: 1_000 })
     const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })

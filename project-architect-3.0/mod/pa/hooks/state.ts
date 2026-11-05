@@ -30,6 +30,7 @@ export function defaultState(sid: string, gen: number): RouterState {
     replies: {},
     outbox: [],
     forwarded: {},
+    forwardedKey: {},
     awaiting: null,
     sentKind: '',
     sentAt: 0,
@@ -168,6 +169,14 @@ export function parseState(text: string, sid: string, now: number): RouterState 
       }
     }
   }
+  const forwardedKey: Record<string, string> = {}
+  if (isObj(doc['forwardedKey'])) {
+    for (const [id, key] of Object.entries(doc['forwardedKey'])) {
+      if (typeof key === 'string') {
+        forwardedKey[id] = key
+      }
+    }
+  }
   const replies: Record<string, ReplyMark> = {}
   if (isObj(doc['replies'])) {
     for (const [k, m] of Object.entries(doc['replies'])) {
@@ -213,6 +222,7 @@ export function parseState(text: string, sid: string, now: number): RouterState 
         : null
     }),
     forwarded,
+    forwardedKey,
     awaiting,
     sentKind: doc['sentKind'] === 'dev' || doc['sentKind'] === 'other' || doc['sentKind'] === 'forward' ? doc['sentKind'] : '',
     sentAt: num(doc['sentAt'], 0),

@@ -55,7 +55,7 @@ import {
   markerText, newestPartner, newPartner, otherTarget, PARTNER_TYPE, stepFactsOf, nextMarker, outboxHeld, parentOf, partnerReport, partnerRoute, partnerTurnEnded, priceCacheOf,
   registerTurn, replyKey, RESUME_CHECK_MS, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
-  isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending,
+  isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending, newHandback,
   withImageSources, dropFiling, endFiling, filingRequest, filingTurnEnded, recordBody, startFiling, todoBlock,
 } from './route'
 import { buildSeed, charTokens, type Child as SeedChild, GENERATION_TOKENS, localStamp, RECORDS_TOKENS, SEED_BUDGET_TOKENS, STATE_TOKENS, tokenChars } from './seed'
@@ -2011,8 +2011,8 @@ export const register: Register = (on, options) => {
           await update($, receivedAtom, () => 0) // 3.29 T3: Claude answered
         } else if (loopAgentIds(loopNowS).includes(child)) {
           kind = 'handback.loop' // 3.23 T5a: a loop agent's hand-back goes to the autopilot's capture, never filed or forwarded (T6a2: the curator and the auditor too)
-        } else if (st !== null && st.forwarded[child] !== undefined) {
-          kind = 'handback.dup'
+        } else if (st !== null && st.forwarded[child] !== undefined && !newHandback(st, child, handText)) {
+          kind = 'handback.dup' // 3.32.3: a repeat only; a new report from a child taken before is taken too (route.newHandback)
         } else if (st !== null && st.pending.some(p => p.kind === 'retrieve' && p.agentId === child)) {
           // 3.3 T7: an external coder's lookup ended: its text to the answer file, then the `.done` marker; no card, no
           // notice, no Claude turn (turn.start draws none for a retriever: its turn is the stub). A pointer to a report
@@ -2038,7 +2038,7 @@ export const register: Register = (on, options) => {
           jseq += 1
           const out = journalOut(now, jseq, ['pa-thinker', 'thinker', 'deep-thinker'].includes(type) ? 'thinker' : 'coder', 'end',
             { session: st?.sid ?? '', agentId: child, ...(parentId === '' ? {} : { parentId }), ...(type === '' ? {} : { role: type }) }, handText)
-          change = s => (s.forwarded[child] !== undefined ? s : fileEntry(takeHandback(s, child, handText, now), out))
+          change = s => (s.forwarded[child] !== undefined && !newHandback(s, child, handText) ? s : fileEntry(takeHandback(s, child, handText, now), out))
           // 3.23 T5d2a: a forward to the loop's expert is queued to it: the loop's `forward` request (its inbox, a file
           // of its own) keeps that run from reading as ended before the expert's next turn.complete.
           if (parentId !== '' && loopTask?.agentId === parentId) {

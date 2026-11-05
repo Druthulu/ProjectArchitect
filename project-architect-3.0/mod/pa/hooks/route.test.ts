@@ -3,7 +3,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import {
   addReply, ATTACH_NOTICE, applyReply, classify, clearTurn, dueMarkers, HANDBACK_WAIT_MS, handbackChild, handbackReport, hideAssistant,
   hideSpinner, hideUser, isSeedName, localAnswer, markerText, newestPartner, newPartner, nextMarker, outboxHeld, parentOf, parseMarker, partnerReport, registerTurn,
-  replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds,
+  replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds, handbackKey, newHandback,
   bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS, bangOf, bangText,
   nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, todoBlock,
 } from './route'
@@ -92,6 +92,23 @@ describe('state transitions', () => {
     expect(parentOf({ C: { parent: 'X', type: '', startedAt: 0, status: '' } }, 'C', [])).toBe('X')
     expect(parentOf({}, 'C', [{ id: 'C', parentId: 'P' }])).toBe('P')
     expect(parentOf({}, 'C', [{ id: 'C' }])).toBe(null)
+  })
+
+  test('3.32.3: a hand-back after one taken is new unless it only points or repeats the report; a child with no key takes none', async () => {
+    const waiting = '<task-notification>\n<task-id>C</task-id>\n<status>completed</status>\n<result>This agent has not reported '
+      + 'yet: it is waiting on its own background work and will deliver its report through SubagentHandback when that finishes.\n'
+      + '</result>\n</task-notification>'
+    const points = '<task-notification>\n<task-id>C</task-id>\n<result>This agent\'s report was delivered to you as a message '
+      + 'from "C" (its SubagentHandback call).</result>\n</task-notification>'
+    const report = '<agent-message from="C">\n[Subagent hand-back] The report follows:\n  STATUS: done\n  COMMIT: b0b9d78\n</agent-message>'
+    const s = takeHandback(defaultState('S', 1), 'C', waiting, 5)
+    expect(s.forwardedKey).toEqual({ C: handbackKey('C', waiting) })
+    expect([newHandback(s, 'C', waiting), newHandback(s, 'C', report), newHandback(s, 'C', points)]).toEqual([false, true, false])
+    const s2 = takeHandback(s, 'C', report, 9)
+    expect(s2.forwarded).toEqual({ C: 9 })
+    expect([newHandback(s2, 'C', report), newHandback(s2, 'C', `${report}\n`), newHandback(s2, 'C', points)]).toEqual([false, false, false])
+    expect(newHandback({ ...s2, forwardedKey: {} }, 'C', waiting)).toBe(false) // taken before 3.32.3, or by a lookup: no key
+    expect([handbackKey('C', points), handbackKey('C', 'done')]).toEqual(['', replyKey('C', 'done')])
   })
 })
 

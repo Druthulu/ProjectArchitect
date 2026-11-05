@@ -3998,6 +3998,44 @@ describe('no stall on a false stop (3.28.8)', () => {
     expect(notices(w).filter(x => x.input.text.includes('stopped (Ctrl+C'))).toEqual([])
   })
 
+  // 3.32.3: Claude Code's notices (2.1.299 and later, as TerrainDiffusion's journal holds them): a helper that stopped
+  // while its own background work runs; and the one after a SubagentHandback, which only points at the report.
+  const waitingNotice = (id: string): string => `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n` +
+    '<summary>Agent "T1.c1 long shell" is waiting on its own background work</summary>\n<note>This agent stopped with ' +
+    'background work of its own still running. It may resume on its own when that work completes or reports, and the same ' +
+    'task-id notifies again if it does; the result below may be interim.</note>\n<result>This agent has not reported yet: it ' +
+    'is waiting on its own background work and will deliver its report through SubagentHandback when that finishes.\n' +
+    '</result>\n</task-notification>'
+  const pointsAt = (id: string): string => `<task-notification>\n<task-id>${id}</task-id>\n<status>completed</status>\n` +
+    `<result>This agent's report was delivered to you as a message from "${id}" (its SubagentHandback call). Read it ` +
+    'there; it is not repeated here.\n</result>\n</task-notification>'
+
+  // 3.32.3: a user's long-shell tasks on 3.32.1: the coder's report, after its waiting notice and under the same task id,
+  // was taken for a repeat and dropped; nothing was queued to the expert, dropped from the list meanwhile, so the loop
+  // took it for stopped ("absent with no contract").
+  test('3.32.3: a coder\'s report after its waiting notice reaches the expert, which is not taken for stopped', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [`${BASE}/S1/state.json`]: PRIOR, [LOOP]: running() })
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }, { id: 'E1', status: 'idle', type: 'pa-expert' }]
+    await $.session.start(ISTART) // the router routes in an interactive session
+    await clock.advance(2_000)
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }, { id: 'C1', status: 'waiting', parentId: 'E1', type: 'pa-coder' }]
+    await $.prompt.submit({ text: waitingNotice('C1'), origin: { kind: 'task-notification' }, wait: false })
+    await clock.advance(2_000)
+    await $.turn.complete(complete('E1', 'WAITING: coder C1 runs its shell.'))
+    await clock.advance(2_000)
+    w.list = [{ id: 'P1', status: 'idle', type: 'pa-claude' }, { id: 'C1', status: 'completed', parentId: 'E1', type: 'pa-coder' }]
+    await $.prompt.submit({ text: handback('C1', 'STATUS: done\nCOMMIT: b0b9d78'), origin: { kind: 'peer' }, wait: false })
+    await $.prompt.submit({ text: pointsAt('C1'), origin: { kind: 'task-notification' }, wait: false })
+    for (let i = 0; i < 5; i++) await clock.advance(2_000)
+    expect(loopJ(w).holds).toEqual([])
+    expect(w.sends.filter(t => t.startsWith('Hand-back from your background agent C1:')).map(t => t.includes('COMMIT: b0b9d78')))
+      .toEqual([false, true])
+    await $.turn.complete(complete('E1', 'STATUS: done\nCOMMIT: b0b9d78'))
+    for (let i = 0; i < 10; i++) await clock.advance(2_000)
+    expect(ran(w, 'tools/plan_edit.py set-status').map(r => r.slice(2, 5))).toEqual([['set-status', 'T1', 'done']])
+  })
+
   for (const known of [true, false]) {
     test(`3.32.1 T5: a coder the list gives no parent, ${known ? 'known from parents.json, keeps its expert waiting' : 'and none in parents.json: stopped'}`, async ($, on) => {
       const clock = mock.clock(on, { now: NOW })

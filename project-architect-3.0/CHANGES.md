@@ -2,6 +2,16 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.3 — Reports that come after a wait
+
+- A helper that stops while its own background work runs, such as a long build or test, now gets its report through
+  when that work ends. Since Claude Code 2.1.299 such a helper first sends a notice that it is waiting, and later its
+  report with the same task id. PA3 took that report for a repeat and dropped it, so the task's expert never heard, and
+  the task was held as if you had pressed Ctrl+C.
+- The same went for a helper Claude sent another message to, such as a planner asked for a revision: its second report
+  never arrived. Now only a true repeat is dropped: the same report twice, or the notice that only points at a report
+  already passed on.
+
 ## 3.32.2 — Statusline lines you can turn off
 
 - The Pace, Session, Project and Account lines each have a switch now: `pace_line`, `session_line`, `project_line`

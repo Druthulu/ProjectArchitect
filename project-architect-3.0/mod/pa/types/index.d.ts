@@ -168,6 +168,9 @@ export type RouterState = {
   outbox: OutMsg[]
   /** child agentId -> when its hand-back was taken (a coder's end can arrive as task-notification and as peer). */
   forwarded: Record<string, number>
+  /** 3.32.3: child agentId -> the key of the hand-back taken last (route.handbackKey); a later one with another key is a
+   * new report, taken too (route.newHandback). */
+  forwardedKey: Record<string, string>
   awaiting: Awaiting | null
   /** 3.28.1 T9b: the kind of the last message delivered to the partner ('' none yet); an answer after an `other` (a mod
    * notice, a dialog's answer) does not keep the `talk` hold. */

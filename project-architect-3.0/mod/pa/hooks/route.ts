@@ -570,9 +570,31 @@ export function withImageSources(s: RouterState, lines: readonly string[]): Rout
 export const imagesPending = (w: { at: number; lines: readonly string[] } | null, now: number): boolean =>
   w !== null && w.lines.length === 0 && now - w.at < IMAGE_WAIT_MS
 
-/** A hand-back taken: the child marked forwarded and its forward queued. */
+/** A hand-back taken: the child marked forwarded with its key (3.32.3: newHandback) and its forward queued. */
 export function takeHandback(s: RouterState, child: string, text: string, at: number): RouterState {
-  return enqueue({ ...s, forwarded: { ...s.forwarded, [child]: at } }, 'forward', forwardText(child, text), child, at)
+  return enqueue({
+    ...s, forwarded: { ...s.forwarded, [child]: at }, forwardedKey: { ...s.forwardedKey, [child]: handbackKey(child, text) },
+  }, 'forward', forwardText(child, text), child, at)
+}
+
+/** 3.32.3: what a hand-back carries, as a key: its report's (replyKey), else its whole text's; '' for a notification that
+ * only points at a report sent as a message (it carries none of its own). */
+export function handbackKey(child: string, text: string): string {
+  const report = handbackReport(text)
+  return report === null ? replyKey(child, text) : isPointer(report) ? '' : replyKey(child, report)
+}
+
+/**
+ * 3.32.3: whether a hand-back from a child already taken is a new one, taken too. Claude Code notifies one task id more
+ * than once: since 2.1.299 a helper that stops while its own background work runs notifies ("waiting on its own
+ * background work"), then hands back its report when that work ends; a helper resumed by SendMessage hands back again.
+ * A repeat carries nothing new: the notification that only points at a report sent as a message, or the report taken
+ * last. A child taken with no key (state from before 3.32.3, or an external coder's lookup) takes nothing more.
+ */
+export function newHandback(s: RouterState, child: string, text: string): boolean {
+  const last = s.forwardedKey[child]
+  const key = handbackKey(child, text)
+  return last !== undefined && key !== '' && key !== last
 }
 
 /** The reply marks with `key` set, the newest MAX_REPLIES kept. */
