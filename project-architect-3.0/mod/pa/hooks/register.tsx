@@ -56,7 +56,7 @@ import {
   registerTurn, replyKey, RESUME_CHECK_MS, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
   isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending, newHandback,
-  withImageSources, dropFiling, endFiling, filingRequest, filingTurnEnded, recordBody, startFiling, todoBlock,
+  withImageSources, withSourceLines, dropFiling, endFiling, filingRequest, filingTurnEnded, recordBody, startFiling, todoBlock,
 } from './route'
 import { buildSeed, charTokens, type Child as SeedChild, GENERATION_TOKENS, localStamp, RECORDS_TOKENS, SEED_BUDGET_TOKENS, STATE_TOKENS, tokenChars } from './seed'
 import {
@@ -1833,12 +1833,35 @@ export const register: Register = (on, options) => {
     if (!(await read($, routeAtom))) {
       return next(e)
     }
+    // 3.32.4: Claude Code enters the prompt inside next(e) ("next(e) runs the hooks beneath and the UserPromptSubmit
+    // settings hooks, then it enters"), and with it the hidden row naming its images' files (the session.append below);
+    // its turn may start before this hook's work is done. So a developer message is noted first: any source row that
+    // comes with it is kept, attachments listed or not (only a listed one makes the tick wait for its row).
+    const images = e.attachments?.length ?? 0
+    let early: ReturnType<typeof classify> | null = null
+    try {
+      early = classify(e.origin, e.text, await read($, sdkAtom))
+      if (early === 'developer') {
+        imageWait = { at: await $.clock.now(), count: images, lines: [] }
+        if (images > 0) {
+          await update($, turnsAtom, r => addAttach(r, e.text))
+        }
+      }
+    } catch (err) {
+      // The prompt goes on; its images may then go without their lines.
+      if (debugBase !== '') {
+        await $.fs.write(...ev('image.error', { err: clip(String(err), 300) })).catch(quiet)
+      }
+    }
     const out = await next(e)
     if (out.drop !== undefined) {
+      if (early === 'developer') {
+        imageWait = null
+      }
       return out
     }
     try {
-      const route = classify(e.origin, e.text, await read($, sdkAtom))
+      const route = early ?? classify(e.origin, e.text, await read($, sdkAtom))
       const text = out.text
       const now = await $.clock.now()
       let kind = `route.${route}`
@@ -1849,10 +1872,9 @@ export const register: Register = (on, options) => {
       let data: Record<string, unknown> = { origin: e.origin, text: clip(text, 200) }
       let change: ((s: RouterState) => RouterState) | null = null
       if (route === 'developer') {
-        // 3.28.8: its attachments' files reach Claude through Claude Code's own source lines (the session.append below).
-        imageWait = (e.attachments?.length ?? 0) > 0 ? { at: now, count: e.attachments?.length ?? 0, lines: [] } : null
-        if ((e.attachments?.length ?? 0) > 0) {
-          await update($, turnsAtom, r => addAttach(r, text))
+        // 3.28.8: its attachments' files reach Claude through Claude Code's own source lines (the session.append below;
+        // 3.32.4: noted before next(e), and the lines that came inside it go with the message as it is queued).
+        if (images > 0) {
           data = { ...data, attachments: e.attachments?.map(a => a.type) }
         }
         // 3.23 T5b2: the first message held by `talk` reaches Claude after the loop's talk line (loop.json read only; the
@@ -1936,7 +1958,8 @@ export const register: Register = (on, options) => {
           await $.fs.write(...ev('yourturn.drop', { turnId: owed.turnId, why: 'typed' })).catch(quiet)
         }
         // 3.24 T17t: and a stop's toast still waiting for his quiet.
-        change = s => fileEntry(enqueue(heardDeveloper({ ...s, yourTurn: null, lastExchangeAt: now, todo: s.todo.slice(todoLines.length) }), 'dev', sent, '', now),
+        change = s => fileEntry(enqueue(heardDeveloper({ ...s, yourTurn: null, lastExchangeAt: now, todo: s.todo.slice(todoLines.length) }), 'dev',
+          withSourceLines(sent, imageWait?.lines ?? []), '', now),
           journalOut(now, seq, 'dev', 'msg', { session: s.sid }, text))
         // 3.29 T3: Claude's band row says the message was received until Claude's turn starts (the work tick then shows
         // its steps); drawn here at once, so it never waits on a tick. An earlier unanswered message keeps its time.
@@ -2109,7 +2132,7 @@ export const register: Register = (on, options) => {
         const lines = imageSourceLines(e.message.content)
         if (lines.length > 0 && (await read($, routeAtom))) {
           imageWait = { ...w, lines: [...w.lines, ...lines] }
-          const saved = await update($, stateAtom, x => (x === null ? x : withImageSources(x, lines)))
+          const saved = await update($, stateAtom, x => (x === null ? x : withImageSources(x, lines, w.at)))
           if (saved !== null) {
             await $.fs.write(statePath(`${await $.session.root()}/.run/mod`, saved.sid), serializeState(saved))
           }

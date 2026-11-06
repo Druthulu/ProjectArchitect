@@ -2755,6 +2755,24 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     })
   }
 
+  // sb, 2026-11-05: the start hook's install showed only on the statusline; the chat's last word stayed the restart line.
+  test('3.32.4: the start hook\'s install run: Claude is told it is installing, once a run; a run with no release, never', async ($, on) => {
+    const RELM2 = `${BASE}/release.json`
+    const INSTALLING = 'Installing Project Architect 3.24.0 now; please wait, I\'ll tell you when it\'s done.'
+    const told = (w: W): number => notices(w).filter(n => n.input.text.includes(INSTALLING)).length
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [MARKER]: marker({ state: 'running' }), [RELM2]: '{"version":"3.24.0","kind":"feature update","state":"running"}' })
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(told(w)).toBe(1)
+    await clock.advance(10_000)
+    expect(told(w)).toBe(1) // once a run
+    w.files.set(MARKER, marker({ state: 'running', mode: 'repair', at: (NOW + 20_000) / 1000 })) // a heal: no release named
+    w.files.set(RELM2, '{}\n')
+    await clock.advance(10_000)
+    expect(told(w)).toBe(1)
+  })
+
   test('3.24 T6e: a running marker holds T1; the done marker is reported once, then T1 spawns', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [MARKER]: marker({ state: 'running', mode: 'repair' }) })
@@ -2926,6 +2944,27 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     await $.session.start(START) // a plain start: the marker is empty
     await clock.advance(20_000)
     expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+  })
+
+  // sb, 2026-11-05: the check found 3.32.2, the run installed 3.32.3, the marker named 3.32.2: the restart said nothing.
+  test('3.32.4: a marker naming an older release than the one installed: the start says the installed one loaded', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.28.3 is installed and loaded. Ready to continue work.**'
+    const w = world(on, { [RELM]: '{"version":"3.28.2","kind":"hotfix","state":"installed"}', '/.claude/pa3/VERSION': '3.28.3\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+    expect(w.files.get(RELM)).toBe('{}\n')
+  })
+
+  test('3.32.4: a marker naming a newer release than the one installed: no loaded line', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [RELM]: '{"version":"3.28.4","kind":"hotfix","state":"later"}', '/.claude/pa3/VERSION': '3.28.3\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes('is installed and loaded')).length).toBe(0)
   })
 
   test('3.29 T6: the first start offers the one-time .run/ cleanup when .run/ holds older work, once', async ($, on) => {
@@ -3130,6 +3169,26 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     await clock.advance(10_000)
     expect(w.files.get(RELM)).toBe('{"version":"3.28.2","kind":"hotfix","state":"installed"}\n')
     expect(notices(w).filter(n => n.input.text.includes(INSTALLING)).length).toBe(1)
+  })
+
+  test('3.32.4: the run installs a newer release than the one asked about: the toast and the marker name it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running({ holds: ['stopped', 'talk'], release: chosen }), [STAMP]: fresh })
+    w.answer = (argv: string[]): Ran => {
+      if (argv[1] === 'tools/pa3_update.py') {
+        w.files.set(MARKER, marker({ state: 'running', at: (NOW + 1_000) / 1000, from: { phase: '3.28.1', git: 'aaaa1111cc' }, to: { phase: '3.28.3', git: 'cccc3333ee' } }))
+        return ok('pa3_update: started\n')
+      }
+      return defaultAnswer(argv)
+    }
+    w.list = [{ id: 'E1', status: 'idle', type: 'pa-expert' }]
+    await $.session.start(START)
+    await clock.advance(40_000)
+    w.files.set(MARKER, marker({ at: (NOW + 40_000) / 1000, from: { phase: '3.28.1', git: 'aaaa1111cc' }, to: { phase: '3.28.3', git: 'cccc3333ee' } }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await clock.advance(10_000)
+    expect(w.files.get(RELM)).toBe('{"version":"3.28.3","kind":"hotfix","state":"installed"}\n')
+    expect(toastReqs(w)).toContainEqual({ cause: 'input', body: 'Project Architect 3.28.3 hotfix installed · /exit, then claude --continue (not /clear)' })
   })
 
   test('3.28.2 T17: release({hold: "update"}) with the install chosen is accepted; with no newer release, refused so', async ($, on) => {

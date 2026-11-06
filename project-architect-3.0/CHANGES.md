@@ -2,6 +2,20 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.4 — Pictures reach Claude
+
+- A screenshot or picture you paste or drag into the prompt now reaches Claude. Claude Code saves each one to a file
+  and names that file in a hidden note beside your message. PA3 looked for that note too late and always missed it,
+  so Claude saw only "[Image #1]". Now the note goes with your message and Claude opens the file. This works for
+  screenshots pasted straight from the clipboard too, not only for files you drag in.
+- After an update, the restart now says the new version is installed and loaded. When a newer release came out
+  between the update check and the install, PA3 installed the newer one but kept the older number. The restart then
+  said nothing, and the old "restart" line stayed the last word. The toast and the statusline now name the version
+  actually installed.
+- When a session start installs an update, Claude now says so in the chat ("Installing Project Architect … now;
+  please wait"), as it already did for an update you chose. Before, only the statusline showed it. An install runs on
+  the version you had, so you first see this line on the update after this one.
+
 ## 3.32.3 — Reports that come after a wait
 
 - A helper that stops while its own background work runs, such as a long build or test, now gets its report through

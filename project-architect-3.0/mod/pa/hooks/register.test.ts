@@ -173,6 +173,9 @@ type Net = {
   run: (argv: readonly string[]) => { exitCode: number; stdout: string; stderr: string }
   /** `$.session.send` delivers (default) or not (3.23 T5d2b). */
   deliver?: boolean
+  /** 3.32.4: what happens inside the mod's next(e), where Claude Code enters the prompt: its rows (a pasted image's
+   * source row), maybe its turn's start. The test's own `$` does it (the kit refuses a test hook's own calls). */
+  enter?: (text: string) => Promise<void>
 }
 
 function net(on: On): Net {
@@ -201,6 +204,7 @@ function net(on: On): Net {
     if (e.origin.kind === 'plugin') {
       n.submits.push(e.text)
     }
+    await n.enter?.(e.text)
     return { text: e.text, origin: e.origin }
   })
   on('turn.start', async ($, e) => ({ turnId: e.turnId }))
@@ -573,7 +577,75 @@ describe('router route', () => {
     expect(n.sends.map(x => x.text).at(-1)?.endsWith('see [Image #1]\n\n[Image: source: C:\\pics\\a.jpg]')).toBe(true)
   })
 
-  test('3.28.8: no source line (a clipboard image): the message goes after the wait, the notice stays', async ($, on) => {
+  // 3.32.4: Claude Code enters the prompt and its source row inside the mod's next(e), and may start the turn there too
+  // (sb, 2026-10-29: the row came before the old hook noted the image; Claude got "[Image #1]" alone).
+  test('3.32.4: a source row entered inside next(e) goes with the message at once; no text-only notice', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    n.enter = async () => {
+      await $.session.append(imageRow('[Image: source: C:\\Users\\me\\Pictures\\Screenshots\\shot.png]'))
+    }
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: '[Image #1] can you see it?', origin: { kind: 'composer' }, wait: false, attachments: [{ type: 'image', mediaType: 'image/png' }] })
+    await $.turn.start({ text: '[Image #1] can you see it?', turnId: 'T1' })
+    const s = await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))
+    expect(s.result.answer).not.toContain('Claude sees text only')
+    await clock.advance(1_000) // under IMAGE_WAIT_MS: no wait for a line already in hand
+    expect(n.sends.map(x => x.text).at(-1)?.endsWith('[Image #1] can you see it?\n\n[Image: source: C:\\Users\\me\\Pictures\\Screenshots\\shot.png]')).toBe(true)
+  })
+
+  test('3.32.4: a source row with no attachment listed still goes with the message', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    n.enter = async () => {
+      await $.session.append(imageRow('[Image source: C:\\pics\\c.png]'))
+    }
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'this one [Image #1]', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect(n.sends.map(x => x.text).at(-1)?.endsWith('this one [Image #1]\n\n[Image source: C:\\pics\\c.png]')).toBe(true)
+  })
+
+  test('3.32.4: a source row entered inside next(e) never goes to an older message still held', async ($, on) => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1', pingInFlight: true } })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'running' }]
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'one', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(500)
+    n.enter = async () => {
+      await $.session.append(imageRow('[Image: source: C:\\pics\\b.png]'))
+    }
+    await $.prompt.submit({ text: 'two [Image #1]', origin: { kind: 'composer' }, wait: false, attachments: [{ type: 'image' }] })
+    await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: '.', durationMs: 1, isAborted: false, reason: 'answer', usage: USAGE })
+    await clock.advance(1_000)
+    await clock.advance(1_000)
+    expect(n.sends.map(x => x.text)).toEqual(['one', 'two [Image #1]\n\n[Image: source: C:\\pics\\b.png]'])
+  })
+
+  test('3.32.4: no source line, the turn started inside next(e): the text-only notice still shows', async ($, on) => {
+    mock.clock(on, { now: 1_000 })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {})
+    const n = net(on)
+    n.enter = async (text) => { // the rows, then the turn, before the mod's hook goes on
+      await $.session.append(imageRow('[Image: original 4000x3000, displayed at 2000x1500.]'))
+      await $.turn.start({ text, turnId: 'T1' })
+    }
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'look', origin: { kind: 'composer' }, wait: false, attachments: [{ type: 'image' }] })
+    const s = await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))
+    expect(s.result.answer).toBe('(Claude sees text only; your attachment stays here.)')
+  })
+
+  test('3.28.8: no source line (an image Claude Code could not save): the message goes after the wait, the notice stays', async ($, on) => {
     const clock = mock.clock(on, { now: 1_000 })
     const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
     world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, {})

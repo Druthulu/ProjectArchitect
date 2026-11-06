@@ -258,6 +258,7 @@ let modSeen: string | null = null
 let modStale = false
 let updWait = ''
 const gateTold = new Set<string>() // 3.32.1 T5 (#6): the work-hold releases already told why the update gate holds them
+let installTold = 0 // 3.32.4: the session start's install run (its marker's atMs) Claude was told is installing
 let startAt = 0 // 3.29.1 T8: this process's session start (ms): the update check's note must be this start's
 let pausedAskedSid = '' // 3.29.1 T9: the session Claude was asked about a paused task in (once a session start)
 let runReviewDue = false // 3.29.2: the one-time `.run/` cleanup is to be offered once the update gate opens
@@ -972,13 +973,16 @@ export function armAutopilot(on: On): void {
           const rl = releaseOf(s)
           if (rl !== null && rl.step === 'running') {
             if (um.rc === 0 && !loaded) {
+              // 3.32.4: the run installs the newest release, which can be newer than the one the check found (sb: 3.32.2
+              // asked about, 3.32.3 installed): the toast, the hold and the marker name the one installed.
+              const got = um.to.phase || rl.version
               modStale = true
-              await journal('mod', 'hold', {}, `PA3 ${rl.version} is installed: no task starts until Claude Code restarts (/exit, then claude --continue).`)
+              await journal('mod', 'hold', {}, `PA3 ${got} is installed: no task starts until Claude Code restarts (/exit, then claude --continue).`)
               nseq += 1
-              const r = requestFile(now, nseq, 'toast', 'loop', { cause: 'input', body: `Project Architect ${rl.version} ${rl.kind} installed · /exit, then claude --continue (not /clear)` })
+              const r = requestFile(now, nseq, 'toast', 'loop', { cause: 'input', body: `Project Architect ${got} ${rl.kind} installed · /exit, then claude --continue (not /clear)` })
               await $.fs.write(`${inboxDir}/${r.name}`, r.body).catch(quiet)
               // 3.28.5 T18: the run finished with exit 0: the statusline's "installed" stage
-              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rl.version, kind: rl.kind, state: 'installed' })}\n`).catch(quiet)
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: got, kind: rl.kind, state: 'installed' })}\n`).catch(quiet)
             } else if (um.rc !== 0) {
               await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet) // failed (told above): the line goes
             }
@@ -987,8 +991,8 @@ export function armAutopilot(on: On): void {
             // 3.28.2 T17: the session start's run installed the release (a restart before the clean stop): the marker
             // names it again, so the next start gives the loaded line once (the start emptied it before the run ended).
             const installed = ((await $.fs.read(`${pa3}/VERSION`).catch(() => null)) ?? '').split(/\r?\n/)[0]?.replace(/^version:/, '').trim() ?? ''
-            if (installed === rl.version) {
-              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rl.version, kind: rl.kind, state: 'install' })}\n`).catch(quiet)
+            if (versionAtLeast(installed, rl.version) === true) { // 3.32.4: or a newer one
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: installed, kind: rl.kind, state: 'install' })}\n`).catch(quiet)
               await save({ ...s, release: { ...rl, step: 'done' } } as LoopState, 'release.done')
             }
           }
@@ -2384,9 +2388,21 @@ ${REPLAN_NOTICE}`)
           offlineToldSid = sidNow
           await notice(OFFLINE_NOTICE)
         }
+        const runNow = markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null))
         const gateWhy = startState === 'pending' ? GATE_CHECK
-          : runRunning(markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)), now) ? GATE_RUN
+          : runRunning(runNow, now) ? GATE_RUN
             : modStale ? GATE_STALE : ''
+        // 3.32.4: an install the session start began (its `running` release marker; none of the mod's own, which says so
+        // when it starts one) gets Claude's one line too, once a run: until now only the statusline said it, and the
+        // chat's last word stayed the last update's restart line (sb, 2026-11-05).
+        if (runNow !== null && runRunning(runNow, now) && releaseOf(s)?.step !== 'running' && installTold !== runNow.atMs) {
+          const hookRel = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+          const v = typeof hookRel?.['version'] === 'string' ? hookRel['version'] : ''
+          if (hookRel?.['state'] === 'running' && v !== '') {
+            installTold = runNow.atMs
+            await notice(installingNotice(v))
+          }
+        }
         // The loop's own inbox kinds, oldest first, each marked done in loop.json before it acts.
         if (await $.fs.exists(inboxDir)) {
           const names = (await $.fs.list(inboxDir)).filter(f => f.kind === 'file').map(f => f.name)
@@ -3192,6 +3208,7 @@ ${REPLAN_NOTICE}`)
     modStale = false
     updWait = ''
     gateTold.clear()
+    installTold = 0
     releaseCheckedAt = 0
     apRearm = arm
     apTrim = null
@@ -3215,13 +3232,16 @@ ${REPLAN_NOTICE}`)
       // Claude says so first, so the resumed conversation's last line (the restart) doesn't read as a loop.
       const relm = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
       const v = typeof relm?.['version'] === 'string' ? relm['version'] : ''
-      if (v !== '' && v === installed && runsInstalled) {
+      // 3.32.4: or a newer one: the run installs the newest release, and a marker from before 3.32.4 names the one the
+      // check found (sb: 3.32.2 named, 3.32.3 installed, and the restart said nothing). The line names what loaded.
+      const reached = v !== '' && versionAtLeast(installed, v) === true && runsInstalled
+      if (reached) {
         nseq += 1
-        const r = noticeRequest(await $.clock.now(), nseq, loadedNotice(v))
+        const r = noticeRequest(await $.clock.now(), nseq, loadedNotice(installed))
         await $.fs.write(`${root}/.run/mod/${sid}/inbox/${r.name}`, r.body).catch(quiet)
       }
       // 3.28.1 T14: the restart loaded it. 3.29.2: but a release still installing (the start hook's run) stays.
-      if ((v === installed && runsInstalled) || relm?.['state'] !== 'running') {
+      if (reached || relm?.['state'] !== 'running') {
         await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
       }
     }

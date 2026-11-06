@@ -556,19 +556,28 @@ export function imageSourceLines(blocks: readonly { type: string; [field: string
     .map(l => l.trim()).filter(l => IMAGE_SOURCE_RE.test(l))
 }
 
-/** The newest queued developer message with `lines` after its text; the state as it was when none is queued. */
-export function withImageSources(s: RouterState, lines: readonly string[]): RouterState {
-  const i = s.outbox.map(m => m.kind).lastIndexOf('dev')
-  const m = s.outbox[i]
-  if (m === undefined || lines.length === 0) {
-    return s
-  }
-  return { ...s, outbox: s.outbox.map((x, j) => (j === i ? { ...m, text: `${m.text}\n\n${lines.join('\n')}` } : x)) }
+/** `text` with the source lines it does not carry yet after it (3.32.4: each line once, whichever path adds it first). */
+export function withSourceLines(text: string, lines: readonly string[]): string {
+  const have = new Set(text.split('\n'))
+  const add = lines.filter(l => !have.has(l))
+  return add.length === 0 ? text : `${text}\n\n${add.join('\n')}`
 }
 
-/** Whether the developer's latest message with attachments still waits for Claude Code's source lines. */
-export const imagesPending = (w: { at: number; lines: readonly string[] } | null, now: number): boolean =>
-  w !== null && w.lines.length === 0 && now - w.at < IMAGE_WAIT_MS
+/** The newest queued developer message with `lines` after its text; the state as it was when none is queued.
+ * 3.32.4: only a message queued at `since` (the prompt's own time) or later: an older one still held never takes them. */
+export function withImageSources(s: RouterState, lines: readonly string[], since = 0): RouterState {
+  const i = s.outbox.map(m => m.kind).lastIndexOf('dev')
+  const m = s.outbox[i]
+  if (m === undefined || m.at < since || lines.length === 0) {
+    return s
+  }
+  return { ...s, outbox: s.outbox.map((x, j) => (j === i ? { ...m, text: withSourceLines(m.text, lines) } : x)) }
+}
+
+/** Whether the developer's latest message with attachments still waits for Claude Code's source lines (3.32.4: one
+ * with none listed never waits). */
+export const imagesPending = (w: { at: number; count: number; lines: readonly string[] } | null, now: number): boolean =>
+  w !== null && w.count > 0 && w.lines.length === 0 && now - w.at < IMAGE_WAIT_MS
 
 /** A hand-back taken: the child marked forwarded with its key (3.32.3: newHandback) and its forward queued. */
 export function takeHandback(s: RouterState, child: string, text: string, at: number): RouterState {

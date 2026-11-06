@@ -5,7 +5,8 @@ import {
   hideSpinner, hideUser, isSeedName, localAnswer, markerText, newestPartner, newPartner, nextMarker, outboxHeld, parentOf, parseMarker, partnerReport, registerTurn,
   replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds, handbackKey, newHandback,
   bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS, bangOf, bangText,
-  nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, todoBlock,
+  nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, todoBlock, enqueue, withImageSources,
+  withSourceLines, imagesPending, IMAGE_WAIT_MS,
 } from './route'
 import type { Entry } from './journal'
 import { defaultState } from './state'
@@ -359,3 +360,29 @@ describe('3.31 T2: the filing turn', () => {
   })
 })
 
+describe('3.32.4: image source lines', () => {
+  const LINE = '[Image: source: C:\\pics\\a.png]'
+  const WITH = (text: string): string => `${text}\n\n${LINE}`
+
+  test('withSourceLines adds each line once', () => {
+    expect(withSourceLines('look', [])).toBe('look')
+    expect(withSourceLines('look', [LINE])).toBe(WITH('look'))
+    expect(withSourceLines(WITH('look'), [LINE])).toBe(WITH('look'))
+  })
+
+  test('imagesPending: only a message with attachments listed waits, until its lines come or the wait ends', () => {
+    expect(imagesPending(null, 1_000)).toBe(false)
+    expect(imagesPending({ at: 1_000, count: 0, lines: [] }, 1_000)).toBe(false)
+    expect(imagesPending({ at: 1_000, count: 1, lines: [] }, 1_000)).toBe(true)
+    expect(imagesPending({ at: 1_000, count: 1, lines: [LINE] }, 1_000)).toBe(false)
+    expect(imagesPending({ at: 1_000, count: 1, lines: [] }, 1_000 + IMAGE_WAIT_MS)).toBe(false)
+  })
+
+  test('withImageSources: the newest message queued at the prompt\'s time or later, never an older one', () => {
+    const s = enqueue(defaultState('S1', 1), 'dev', 'one', '', 1_000)
+    expect(withImageSources(s, [LINE], 1_500)).toBe(s)
+    const t = enqueue(s, 'dev', 'two', '', 1_500)
+    expect(withImageSources(t, [LINE], 1_500).outbox.map(m => m.text)).toEqual(['one', WITH('two')])
+    expect(withImageSources(withImageSources(t, [LINE], 1_500), [LINE], 1_500).outbox.map(m => m.text)).toEqual(['one', WITH('two')])
+  })
+})
