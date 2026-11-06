@@ -2,6 +2,13 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.6 — No more question marks on the Session line
+
+- The Session line could show `?/?` for both usage and savings when the session was the only one spending in that
+  5-hour or 7-day window, for example a single long session on a machine. A rounding difference of less than a
+  millionth of a dollar made the session look bigger than its account, which the line treats as mixed-up data. It
+  now shows the real numbers; a genuine mix-up still shows `?`.
+
 ## 3.32.5 — Updates that can't get stuck
 
 - An update check no longer cuts a slow download off. A session start still waits only a few seconds for it, since

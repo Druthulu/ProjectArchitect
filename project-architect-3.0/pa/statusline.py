@@ -1506,8 +1506,10 @@ def _line_session(payload, ctx, cfg, sl, now):
                 y_pct = None                      # live-only y rounding to 0 prints DASH, never 0% (T11.1)
             aw = account_windows.get(wkey)
             ledger_cost = _num(aw.get("ledger_cost_in_window"), None) if isinstance(aw, dict) else None
-            if cu is not None and ledger_cost is not None and cu > ledger_cost:
-                # session cost above its account's window cost: mixed accounts or windows (C0079)
+            if cu is not None and ledger_cost is not None and cu > ledger_cost + 1e-5:
+                # session cost above its account's window cost: mixed accounts or windows (C0079). 3.32.6: past
+                # rounding: the session's cost is stored to 6 places, the account's not, so a session that is its
+                # window's only spend rounded up by a hair and printed ?/? (WSL bfm-decomp: 3.943309 vs 3.9433086)
                 xy = ("?", "?")
             elif x_pct is None and y_pct is None:
                 continue

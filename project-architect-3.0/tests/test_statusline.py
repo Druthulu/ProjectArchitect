@@ -2443,6 +2443,13 @@ class WindowedPairsTest(LedgerCase):
         self.assertIn("15%/10% of 5h", session)
         self.assertIn("16%/8% of 7d", session)
 
+    def test_session_the_windows_only_spend_rounded_up_is_not_question(self):
+        """3.32.6: the session's cost (6 places) rounded a hair above the account's unrounded window cost when it was
+        the window's only spend (WSL bfm-decomp: 3.943309 vs 3.9433086): no ?/?."""
+        session = self._guard_summary(2.9999996)
+        self.assertIn("15%/10% of 5h", session)
+        self.assertNotIn("?/?", session)
+
 
 class DiscountMultiplierTest(unittest.TestCase):
     """T1.c7: discount = 100*net/(paid+net), multiplier = (paid+net)/paid."""
