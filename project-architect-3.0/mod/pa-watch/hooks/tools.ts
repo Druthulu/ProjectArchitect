@@ -42,10 +42,10 @@ export const TOOL_SPECS: readonly { name: ToolName; description: string; inputSc
   },
   {
     name: 'release',
-    description: `Ends the hold you name (talk, review, question with a note for the expert, close with your phase report as the note, which the mod keeps as the phase's recap, stopped: the developer's stopped task resumed with the note, or started over with fresh: true; generation: the next generation's start, when the developer asks for it in this session; session: the loop waiting since this session began, when the developer wants it to go on; update: the PA3 update the mod found, installed after the current task, when the developer says in any words that they want it; batch, in coop: the tasks in \`tasks\` run, once you and the developer have locked them in), so plan work may continue. ${QUIET}`,
+    description: `Ends the hold you name (talk, review, question with a note for the expert, close with your phase report as the note, which the mod keeps as the phase's recap, stopped: the developer's stopped task resumed with the note, or started over with fresh: true; generation: the next generation's start, when the developer asks for it in this session; session: the loop waiting since this session began, when the developer wants it to go on; update: the PA3 update the mod found, installed after the current task, when the developer says in any words that they want it (after a failed update: tried again); skip-update: after a failed PA3 update, work goes on without it for this session, when the developer says in any words to go on without updating; batch, in coop: the tasks in \`tasks\` run, once you and the developer have locked them in), so plan work may continue. ${QUIET}`,
     inputSchema: {
       type: 'object',
-      properties: { hold: { type: 'string', enum: ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update', 'batch'] }, note: { type: 'string' }, fresh: { type: 'boolean' }, tasks: { type: 'array', items: { type: 'string' } } },
+      properties: { hold: { type: 'string', enum: ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update', 'skip-update', 'batch'] }, note: { type: 'string' }, fresh: { type: 'boolean' }, tasks: { type: 'array', items: { type: 'string' } } },
       required: ['hold'],
     },
   },
@@ -127,7 +127,7 @@ export function validateInput(name: string, input: unknown): string | null {
       if (o['hold'] === 'batch' && !(Array.isArray(o['tasks']) && o['tasks'].length > 0 && o['tasks'].every(x => typeof x === 'string' && x.trim() !== ''))) {
         return 'tasks must be a non-empty list of task ids'
       }
-      return ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update', 'batch'].includes(String(o['hold'])) ? field(o, 'note', false) : 'hold must be talk, review, question, close, stopped, generation, session, update or batch'
+      return ['talk', 'review', 'question', 'close', 'stopped', 'generation', 'session', 'update', 'skip-update', 'batch'].includes(String(o['hold'])) ? field(o, 'note', false) : 'hold must be talk, review, question, close, stopped, generation, session, update, skip-update or batch'
     }
     case 'plan_edit':
       return field(o, 'command', true) ?? field(o, 'why', false)

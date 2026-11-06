@@ -863,6 +863,19 @@ class UpdateCheckTest(unittest.TestCase):
                          ("auto", "3.11.1", "hotfix", "The hotfix"))
         self.assertNotIn("line", doc)                     # 3.28.6 T19: no hook line (its pa3_update.py steps)
 
+    def test_check_main_says_offline(self):
+        """3.32.5: a source that does not answer prints {"offline": true}: the mod's 8-hour check says so, with the
+        command for a manual update."""
+        import contextlib
+        import io
+        import json as _json
+        from pa.hooks import session_start
+        _git_run(["-C", self.clone, "remote", "set-url", "origin", os.path.join(self.tmpdir, "nonexistent.git")])
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            session_start.check_main([self._governed()])
+        self.assertEqual(_json.loads(out.getvalue()), {"offline": True})
+
     def _assert_steps(self, result, root):
         self.assertIsNotNone(result)
         if root:                                  # T20: pre-wrapper project: the installer once
@@ -1057,10 +1070,11 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertEqual(fetches, 1)
 
     def _counting(self, fn, cfg):
-        """Run fn(self._inp(), cfg) counting `git fetch` invocations; return (result, count)."""
+        """Run fn(self._inp(), cfg) counting `git fetch` invocations; return (result, count). 3.32.5: by Popen, which
+        the detached fetch uses directly and subprocess.run underneath."""
         import subprocess
         from unittest import mock
-        real = subprocess.run
+        real = subprocess.Popen
         calls = []
 
         def spy(args, *a, **kw):
@@ -1068,7 +1082,7 @@ class UpdateCheckTest(unittest.TestCase):
                 calls.append(args)
             return real(args, *a, **kw)
 
-        with mock.patch.object(subprocess, "run", spy):
+        with mock.patch.object(subprocess, "Popen", spy):
             result = fn(self._inp(), cfg)
         return result, len(calls)
 
@@ -1092,6 +1106,32 @@ class UpdateCheckTest(unittest.TestCase):
         self.assertIn("feature F", result)
         with open(os.path.join(self.pa3_dir, "update.json"), encoding="utf-8") as fh:
             self.assertEqual(json.loads(fh.read())["behind"], 1)   # the stamp is rewritten
+
+    def test_slow_fetch_goes_on_in_the_background(self):
+        """3.32.5: a fetch slower than the start waits is never killed: the stamp says fetching (not offline), it
+        finishes on its own, and the next check offers what it fetched. (Killed at 8 s, WSL's clone over /mnt/z never
+        caught up: 3.30.7 from 2026-10-30, every start "offline".)"""
+        import subprocess
+        from unittest import mock
+        from pa.hooks import session_start as ss
+        self._release("feature S")
+        real = subprocess.Popen
+        fetches = []
+
+        def spy(args, *a, **kw):
+            p = real(args, *a, **kw)
+            if "fetch" in args:
+                fetches.append(p)
+            return p
+
+        with mock.patch.object(ss, "FETCH_WAIT_S", 0), mock.patch.object(subprocess, "Popen", spy):
+            self.assertIsNone(ss._update_check(self._inp(), config.defaults()))
+        with open(os.path.join(self.pa3_dir, "update.json"), encoding="utf-8") as fh:
+            self.assertEqual(json.loads(fh.read())["status"], "fetching")
+        self.assertFalse(ss._CHECK["offline"])       # no "offline" notice for a fetch that is only slow
+        self.assertEqual(len(fetches), 1)
+        self.assertEqual(fetches[0].wait(timeout=60), 0)   # never killed: it ended on its own, and worked
+        self.assertIn("feature S", ss._update_check(self._inp(), config.defaults()))
 
     def test_unreachable_origin_offline(self):
         _git_run(["-C", self.clone, "remote", "set-url", "origin",

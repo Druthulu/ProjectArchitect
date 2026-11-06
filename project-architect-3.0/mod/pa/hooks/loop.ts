@@ -901,10 +901,31 @@ export function startCheckOffline(text: string | null, sid: string, startAt: num
   const at = typeof o['at'] === 'number' ? o['at'] * 1000 : 0
   return o['session'] === sid && at >= startAt - START_CHECK_SKEW_MS && o['state'] === 'offline'
 }
-/** 3.30.2: said once when this start's update check timed out, so the statusline's vanished line is no mystery. */
-export const OFFLINE_NOTICE = '‹pa› The update check at this start got no answer from PA3\'s source in time, so no update ' +
-  'was looked for. PA3 checks again at the next start; to check now, the developer can run `tools/pa3_update.py` in a ' +
-  'terminal before starting Claude Code. Tell the developer in one line.'
+/** 3.32.5: the command that updates PA3 by hand, run in the project (the prompt's `!` runs it there). */
+export const manualUpdate = (python: string): string => `${python === '' ? 'python' : python} tools/pa3_update.py`
+
+/** 3.30.2: said once when this start's update check got no answer, so the statusline's vanished line is no mystery.
+ * 3.32.5: the 8-hour check says it too (`check`), and both give the command that updates PA3 by hand. */
+export const offlineNotice = (cmd: string, when: 'start' | 'check' = 'start'): string =>
+  `‹pa› The update check ${when === 'start' ? 'at this start' : 'PA3 runs every 8 hours'} could not reach PA3's source, so ` +
+  'no update was looked for. PA3 checks again at the next start and every 8 hours. Tell the developer in one line, with ' +
+  `the command that updates PA3 by hand, to type in the prompt: \`! ${cmd}\`.`
+
+/** 3.32.5: an update that failed: a manual update is required, and no work starts until it is done or the developer
+ * skips it for the session. */
+export function updateFailedNotice(version: string, cmd: string, rc?: number, tail?: string): string {
+  // a standing failure (a later session start): no exit code or output in hand, only the log
+  const what = rc === undefined
+    ? `‹pa› the last automatic PA3 update${version === '' ? '' : ` to ${version}`} failed; its output is in ${UPDATE_LOG}.\n`
+    : `‹pa› the automatic PA3 update${version === '' ? '' : ` to ${version}`} failed (exit ${String(rc)}); its whole ` +
+      `output is in ${UPDATE_LOG}. Its end:\n${tail ?? ''}\n`
+  return `${what}Tell the developer, in this shape: the line **Automatic update ` +
+    'failed: manual update required.**, one plain sentence on what failed (from the output), then on its own line the ' +
+    `command to type in the prompt:\n\n\`! ${cmd}\`\n\nand, once it finishes: ${RESTART}. Start no work until they ` +
+    'update: to any request for work, say the bold line and the command again. If they say, in any words, to go on ' +
+    'without updating, call release({hold: "skip-update"}): work goes on for this session, and PA3 asks again at its ' +
+    'next check.'
+}
 /** 3.29.1 T9: a task paused on the developer's request, found at a session start once the update check let work go on. */
 export const pausedNotice = (id: string): string =>
   `‹pa› ${id} was paused on the developer's request before the last session ended, and it has not resumed. Ask them in ` +
@@ -1038,8 +1059,9 @@ export function releaseOf(s: LoopState): Release | null {
 /** The release picker's question: the release, its title, what "Not now" does. */
 export function releaseQuestion(version: string, kind: string, title: string): string {
   return `Project Architect ${version}, a ${kind}${title === '' ? '' : ` (${title})`}, is out. Install it? Tasks keep ` +
-    'running while you decide.\nNot now: when you\'re back at this machine, just tell Claude you\'re back and want the ' +
-    'update — it installs after the current task. Or restart (/exit, then claude --continue) and it installs on the way in.'
+    'running while you decide.\nNot now: I ask again in 8 hours. When you\'re back at this machine, just tell Claude ' +
+    'you\'re back and want the update — it installs after the current task. Or restart (/exit, then claude --continue) ' +
+    'and it installs on the way in.'
 }
 
 /** The check's line to Claude, once, with the picker. */
@@ -1131,11 +1153,15 @@ export const RELOAD_NOTICE = `‹pa› the PA3 mod's own files changed in this u
 export const GATE_CHECK = 'the update check has not answered'
 export const GATE_RUN = 'an update is running'
 export const GATE_STALE = 'the new mod is not loaded yet'
+export const GATE_FAILED = 'the PA3 update failed: a manual update is required' // 3.32.5
 
 /** 3.32.1 T5 (#6): the one reply to a work hold's release the update gate holds back; it stays queued and goes through by itself. */
 export function gateWaitReply(hold: string, why: string): string {
   const what = why === GATE_STALE
     ? `the new PA3 is not loaded yet: ask the developer to restart Claude Code (${RESTART})`
+    : why === GATE_FAILED ? 'the last PA3 update failed and a manual update is required (its notice gave the command): ' +
+        'it goes through once PA3 is updated, or if the developer says to go on without updating: then call ' +
+        'release({hold: "skip-update"})'
     : why === GATE_RUN ? 'a PA3 update is running: it goes through when the update ends'
       : `this session start's update check has not answered yet: it answers by itself within ${String(START_CHECK_WAIT_MS / 60_000)} minutes of the start`
   return `waiting: ${hold} (${what}; the release stays queued and goes through by itself, no need to send it again)`

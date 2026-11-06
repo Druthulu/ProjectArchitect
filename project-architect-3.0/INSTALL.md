@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.32.4: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.32.5: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -294,6 +294,13 @@ it at both levels (`~/.claude/settings.json` allows `Bash(<python> tools/pa3_upd
 project's `.claude/settings.json` allows `Bash(<python> tools/*)`). If a hand-edited
 `settings.json` lost those rules and the update is denied, the session asks once; you can also run it
 yourself at the prompt: `! <python> tools/pa3_update.py`.
+
+If an update fails, Claude says "Automatic update failed: manual update required" and gives that
+command; the statusline shows the same in red, and no task starts until PA3 is updated (tell Claude to
+go on without updating and work goes on for that session). A release found while a session runs is
+offered every 8 hours until it is installed. A session start, or the 8-hour check, that cannot reach
+PA3's source says so once, with the same command. The fetch behind a check is never cut off: a slow
+one finishes in the background and the next check uses it.
 
 Agents or skills you edited that do not merge are listed in `.claude/pa3-upgrade/UPGRADE.md`. Each
 line is settled by appending ` | resolve: keep`, ` | resolve: upstream` or ` | resolve: merged: <path>`

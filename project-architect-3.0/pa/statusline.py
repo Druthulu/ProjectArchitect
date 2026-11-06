@@ -2119,6 +2119,16 @@ def _version_key(text):
     return tuple(int(x) for x in m.group(1).split(".")) if m else None
 
 
+def _installed_key():
+    """The installed PA3's VERSION as a version key, else None."""
+    try:
+        with open(os.path.join(paths.install_dir(), "VERSION"), "r", encoding="utf-8") as fh:
+            first = fh.readline().lstrip("﻿").strip()
+    except OSError:
+        first = ""
+    return _version_key(first.split(":", 1)[1] if first.startswith("version:") else first)
+
+
 def _release_line(project, colors):
     """3.28.1 T14: the mod's ``.run/mod/release.json`` (``{version, kind, state}``, the 8-hour check's release; the
     mod empties it when it starts) against the installed VERSION: below it, the update installs at the next restart
@@ -2127,6 +2137,13 @@ def _release_line(project, colors):
     under 20 min old, pa/health.py RUN_STALE_S) it is installing, whatever VERSION says."""
     doc = _read_json(os.path.join(project, ".run", "mod", "release.json"), None)
     want = _version_key(_text(doc.get("version"))) if isinstance(doc, dict) else None
+    if isinstance(doc, dict) and _text(doc.get("state")) == "failed":
+        # 3.32.5: the automatic update failed: red, until an update goes through (the marker changes) or the installed
+        # VERSION reaches it (updated by hand: the "installed" line below, until the restart)
+        if want is None or (_installed_key() or ()) < want:
+            failed = _text(doc.get("version"))
+            return _paint("⬆ Project Architect %supdate failed · manual update required (ask Claude)"
+                          % ((failed + " ") if failed else ""), RED, colors)
     if want is None:
         # 3.29.2: the start hook's update check is under way (its note says checking, at most 2 minutes old)
         sc = _read_json(os.path.join(project, ".run", "mod", "start-check.json"), None)
@@ -2142,12 +2159,7 @@ def _release_line(project, colors):
             isinstance(run, dict) and run.get("state") == "running" and isinstance(at, (int, float))
             and time.time() - at < 20 * 60):
         return _paint("⬆ Project Architect %s %s installing · please wait" % (version, kind), GREEN, colors)
-    try:
-        with open(os.path.join(paths.install_dir(), "VERSION"), "r", encoding="utf-8") as fh:
-            first = fh.readline().lstrip("﻿").strip()
-    except OSError:
-        first = ""
-    have = _version_key(first.split(":", 1)[1] if first.startswith("version:") else first)
+    have = _installed_key()
     if have is not None and have >= want:  # 3.28.2 T16: "(not /clear)" in red, the rest green
         return (_paint("⬆ Project Architect %s %s installed · /exit, then claude --continue " % (version, kind), GREEN, colors)
                 + _paint("(not /clear)", RED, colors))

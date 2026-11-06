@@ -913,6 +913,34 @@ def _check_due(inp):
 
 _CHECK = {"offline": False}  # 3.30.2: this start's fetch got no answer (the start-check note says so; the mod tells Claude)
 
+# 3.32.5: how long a check waits for the package clone's fetch. Claude Code ends this hook at 15 s (the SessionStart
+# timeout in settings), so a start cannot wait much longer; the fetch itself is never cut off (_fetch_clone).
+FETCH_WAIT_S = 8
+
+
+def _fetch_clone(clone, wait_s):
+    """``git fetch`` of the package clone, never killed: True when it finished within ``wait_s`` and worked, False
+    when it failed, None while it still runs. It runs detached, like the update run (health.start_run), so the
+    hook's end does not stop it, and the next check reads what it fetched.
+
+    3.32.5: the fetch was killed at 8 s and its download thrown away, so a clone that fetches slowly never caught
+    up: WSL's, fetching over ``/mnt/z``, sat on 3.30.7 from 2026-10-30, every start "offline"."""
+    import subprocess
+    kwargs = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
+              "close_fds": True}
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        proc = subprocess.Popen(["git", "-C", clone, "fetch", "--quiet"], **kwargs)   # noqa: S603 - fixed argv
+    except OSError:
+        return False
+    try:
+        return proc.wait(timeout=wait_s) == 0
+    except subprocess.TimeoutExpired:
+        return None
+
 
 def _update_check(inp, cfg):
     """Check for PA3 updates from the package clone (main session; see ``_check_due``).
@@ -923,8 +951,6 @@ def _update_check(inp, cfg):
     _CHECK["offline"] = False
     if not _check_due(inp):
         return None
-
-    from .. import config as _config
 
     pa3_dir = paths.install_dir()
     clone = paths.package_clone_dir()
@@ -937,17 +963,13 @@ def _update_check(inp, cfg):
 
     now = _time.time()
 
-    timeout_s = _config.get(cfg, "install.fetch_timeout_s", 8)
     import subprocess
-    try:
-        result = subprocess.run(
-            ["git", "-C", clone, "fetch", "--quiet"],
-            capture_output=True, timeout=timeout_s)
-        if result.returncode != 0:
-            _write_stamp(stamp_path, {"checked_at": now, "status": "offline"})
-            _CHECK["offline"] = True
-            return None
-    except (OSError, subprocess.SubprocessError):
+    fetched = _fetch_clone(clone, FETCH_WAIT_S)
+    if fetched is None:
+        # 3.32.5: still fetching, in the background: no answer yet, which is not offline; the next check reads it
+        _write_stamp(stamp_path, {"checked_at": now, "status": "fetching"})
+        return None
+    if not fetched:
         _write_stamp(stamp_path, {"checked_at": now, "status": "offline"})
         _CHECK["offline"] = True
         return None
@@ -1067,6 +1089,8 @@ def check_main(argv):
     root = os.path.abspath(argv[0]) if argv else os.getcwd()
     line = _update_check({"source": "startup", "cwd": root}, _config.load())
     if not line:
+        if _CHECK["offline"]:   # 3.32.5: the source did not answer: the mod says so, with the manual update's command
+            print(_json.dumps({"offline": True}))
         return 0
     stamp = fsutil.read_json(os.path.join(paths.install_dir(), "update.json"), None)
     version = str(stamp.get("remote_version") or "") if isinstance(stamp, dict) else ""

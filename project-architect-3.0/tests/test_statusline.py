@@ -3023,6 +3023,17 @@ class ReleaseLineTest(LedgerCase):
         self.release({"version": "3.28.2", "kind": "hotfix", "state": "later"})
         self.assertIn("⬆ Project Architect 3.28.2 hotfix available · installs at your next restart", self.lines())
 
+    def test_failed_update_red_until_updated(self):
+        """3.32.5: a failed update reads red, manual update required, until PA3 reaches it (then the installed line)."""
+        self.release({"version": "3.28.2", "kind": "hotfix", "state": "failed"})
+        colored = statusline.render(self.payload, config.defaults())
+        self.assertIn(statusline.RED + "⬆ Project Architect 3.28.2 update failed · manual update required (ask Claude)", colored)
+        self.release({"state": "failed"})                    # a failed run whose release is unknown
+        self.assertIn("⬆ Project Architect update failed · manual update required (ask Claude)", self.lines())
+        self.release({"version": "3.28.2", "kind": "hotfix", "state": "failed"})
+        self.installed("3.28.2")                             # updated by hand: the restart loads it
+        self.assertIn("⬆ Project Architect 3.28.2 hotfix installed · /exit, then claude --continue (not /clear)", self.lines())
+
     def test_green_and_feature_update(self):
         self.release({"version": "3.29", "kind": "feature update"})
         colored = statusline.render(self.payload, config.defaults())

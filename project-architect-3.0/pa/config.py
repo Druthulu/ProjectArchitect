@@ -130,8 +130,8 @@ DEFAULTS = {
               "noise_patterns": ["warning: in the working copy of", "CRLF will be replaced",
                                  "usage: ", "No such file or directory"],
               "router_ctx_flag": 300000},
-    "install": {"source": "https://github.com/Druthulu/ProjectArchitect.git", "clone_dir": "pa3-src",
-                "fetch_timeout_s": 8},  # 3.7: the package clone under the config dir
+    "install": {"source": "https://github.com/Druthulu/ProjectArchitect.git", "clone_dir": "pa3-src"},  # 3.7: the
+    # package clone under the config dir; 3.32.5: no fetch time limit (a slow fetch was killed and never caught up)
     "card": {"max_chars": 10000},  # 3.32 B7: was 7000 (3.7); HOW_WE_WORK.md cap, enforced by the archive
     # whole_plan_roles = [] (3.24 T3.6; was ["review", "critic"], agents gone with the Gen 3 loop; no 3.2 role is limited)
     "guard": {"spilled_read": True, "whole_plan_roles": [], "tool_source_roles": ["expert"],

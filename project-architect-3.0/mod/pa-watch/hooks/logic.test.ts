@@ -108,7 +108,8 @@ describe('tools', () => {
     expect(validateInput('topic', {})).toBe(null)
     expect(validateInput('topic', { summary: 1 })).toBe('summary must be a string')
     expect(validateInput('release', { hold: 'question', note: 'go' })).toBe(null)
-    expect(validateInput('release', { hold: 'nap' })).toBe('hold must be talk, review, question, close, stopped, generation, session, update or batch')
+    expect(validateInput('release', { hold: 'nap' })).toBe('hold must be talk, review, question, close, stopped, generation, session, update, skip-update or batch')
+    expect(validateInput('release', { hold: 'skip-update' })).toBeNull() // 3.32.5
     expect(validateInput('release', { hold: 'batch', tasks: ['T1', 'T2'] })).toBe(null) // 3.32 B8
     expect(validateInput('release', { hold: 'batch' })).toBe('tasks must be a non-empty list of task ids')
     expect(validateInput('release', { hold: 'batch', tasks: [] })).toBe('tasks must be a non-empty list of task ids')

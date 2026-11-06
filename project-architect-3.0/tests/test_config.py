@@ -93,7 +93,7 @@ class DefaultsTest(unittest.TestCase):
                          "https://github.com/Druthulu/ProjectArchitect.git")
         self.assertEqual(d["install"]["clone_dir"], "pa3-src")
         self.assertNotIn("update_check_hours", d["install"])   # 3.28 T5: the once-a-day gate is gone
-        self.assertEqual(d["install"]["fetch_timeout_s"], 8)
+        self.assertNotIn("fetch_timeout_s", d["install"])      # 3.32.5: a fetch is never cut off
 
         self.assertIn("card", d)
         self.assertEqual(d["card"]["max_chars"], 10000)

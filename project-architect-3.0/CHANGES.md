@@ -2,6 +2,21 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.5 — Updates that can't get stuck
+
+- An update check no longer cuts a slow download off. A session start still waits only a few seconds for it, since
+  Claude Code ends PA3's start hook at 15 seconds, but the download now finishes in the background and the next check
+  uses it. Before, it was thrown away after 8 seconds and reported as "offline", so a setup that downloads slowly, such
+  as WSL reading PA3's source from a Windows drive, never caught up and stayed on its old version.
+- Installing PA3 no longer gives up when its first download takes longer than 8 seconds on a slow connection.
+- If an update fails, Claude now says "Automatic update failed: manual update required" and gives you the one command
+  to type. The statusline shows it in red, and no task starts until PA3 is updated. Tell Claude to go on without
+  updating and work goes on for that session, or ask Claude to try the install again.
+- A release that comes out while you work is offered every 8 hours until it is installed: "Not now" no longer means
+  not again.
+- When an update check can't reach PA3's source, Claude says so with the same command, at a session start and at the
+  8-hour check.
+
 ## 3.32.4 — Pictures reach Claude
 
 - A screenshot or picture you paste or drag into the prompt now reaches Claude. Claude Code saves each one to a file

@@ -6,7 +6,7 @@ import type { On } from 'claude-code'
 
 import { GIT_WRITE_MS, gitWrite, lastAssistantText, resolveBash, subagentTranscript } from './autopilot'
 import { stamp } from './journal'
-import { CONTINUE_TEXT, OFFLINE_NOTICE, RELOAD_NOTICE, START_CHECK } from './loop'
+import { CONTINUE_TEXT, offlineNotice, RELOAD_NOTICE, START_CHECK } from './loop'
 import { tailOf } from './trim'
 
 const ROOT = '/r'
@@ -2741,7 +2741,7 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
   }
 
   for (const rc of [0, 1]) {
-    test(`3.29.2: the start hook's run ends (exit ${String(rc)}): its release reads ${rc === 0 ? 'installed' : 'nothing'}`, async ($, on) => {
+    test(`3.29.2: the start hook's run ends (exit ${String(rc)}): its release reads ${rc === 0 ? 'installed' : 'failed (3.32.5: was nothing)'}`, async ($, on) => {
       const RELM2 = `${BASE}/release.json`
       const clock = mock.clock(on, { now: NOW })
       const w = world(on, { [MARKER]: marker({ state: 'running' }), [RELM2]: '{"version":"3.24.0","kind":"feature update","state":"running"}' })
@@ -2751,7 +2751,7 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
       w.files.set(MARKER, marker({ rc, at: (NOW + 5_000) / 1000 }))
       w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
       await until(clock, () => (JSON.parse(w.files.get(RELM2) ?? '{}') as Record<string, unknown>)['state'] !== 'running')
-      expect(JSON.parse(w.files.get(RELM2) ?? '{}')).toEqual(rc === 0 ? { version: '3.24.0', kind: 'feature update', state: 'installed' } : {})
+      expect(JSON.parse(w.files.get(RELM2) ?? '{}')).toEqual({ version: '3.24.0', kind: 'feature update', state: rc === 0 ? 'installed' : 'failed' })
     })
   }
 
@@ -3065,8 +3065,9 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     expect(experts(w).length).toBe(1)
     expect(ran(w, CHECK).length).toBe(1)
     expect(asked.map(a => a.q)).toEqual(['Project Architect 3.28.2, a hotfix (Fixes), is out. Install it? Tasks keep running ' +
-      'while you decide.\nNot now: when you\'re back at this machine, just tell Claude you\'re back and want the update — it ' +
-      'installs after the current task. Or restart (/exit, then claude --continue) and it installs on the way in.'])
+      'while you decide.\nNot now: I ask again in 8 hours. When you\'re back at this machine, just tell Claude you\'re back ' +
+      'and want the update — it installs after the current task. Or restart (/exit, then claude --continue) and it installs ' +
+      'on the way in.'])
     expect(notices(w).filter(n => n.input.text.startsWith('‹pa› PA3 3.28.2, a hotfix, is out')).length).toBe(1)
     expect(w.files.get(RELM)).toBe('{"version":"3.28.2","kind":"hotfix","state":"install"}\n')
     expect(ran(w, 'tools/pa3_update.py').length).toBe(0) // the task runs on
@@ -3117,10 +3118,10 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     await clock.advance(60_000)
     await clock.advance(4_000)
     expect([ran(w, 'tools/pa3_update.py').length, experts(w).length]).toEqual([0, 2]) // the work goes on
-    w.files.set(STAMP, old) // a later check finds the same version: not asked again
+    w.files.set(STAMP, old) // 3.32.5: a later check finds the same version: asked again after "Not now" (was: not asked)
     await $.session.start(START)
     await clock.advance(10_000)
-    expect([ran(w, CHECK).length, asked.length]).toEqual([2, 1])
+    expect([ran(w, CHECK).length, asked.length]).toEqual([2, 2])
     releaseReq(w, clock.now(), { hold: 'update' })
     await clock.advance(10_000)
     expect([ran(w, 'tools/pa3_update.py').length, relOf(w)]).toEqual([0, expect.objectContaining({ step: 'install' })])
@@ -3133,6 +3134,66 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
   // 3.28.2 T17: a paused task is a clean stop; release update with the install chosen is accepted; the hook's install.
   const chosen = { version: '3.28.2', kind: 'hotfix', asked: 'a1', step: 'install' }
   const fresh = JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 })
+
+  test('3.32.5: the 8-hour check that cannot reach PA3\'s source says so, with the manual update\'s command', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [STAMP]: old })
+    w.answer = (argv: string[]): Ran => (argv.slice(1, 3).join(' ') === CHECK ? ok('{"offline": true}\n') : defaultAnswer(argv))
+    askWith(on, w, [])
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(ran(w, CHECK).length).toBe(1)
+    expect(notices(w).filter(n => n.input.text === offlineNotice('py tools/pa3_update.py', 'check')).length).toBe(1)
+    expect(relOf(w)).toBeNull() // nothing was found, so nothing is asked
+  })
+
+  // his concern, 2026-11-05: a user whose update fails must hear it in the session, with the command, and no work runs
+  test('3.32.5: a failed update: manual update required with the command; held until skip-update; a run that goes through ends it', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [MARKER]: marker({ state: 'running' }), [RELM]: '{"version":"3.24.0","kind":"feature update","state":"running"}', [STAMP]: fresh })
+    const relm = (): Record<string, unknown> => JSON.parse(w.files.get(RELM) ?? '{}') as Record<string, unknown>
+    const told = (): Notice[] => notices(w).filter(n => n.input.text.includes('**Automatic update failed: manual update required.**'))
+    await $.session.start(START)
+    await clock.advance(4_000)
+    w.files.set(MARKER, marker({ rc: 1, at: (NOW + 5_000) / 1000 }))
+    w.files.set(`${BASE}/update.log`, 'pa3_update: 1/3: git pull --ff-only failed\n')
+    await until(clock, () => relm()['state'] === 'failed')
+    expect(relm()).toEqual({ version: '3.24.0', kind: 'feature update', state: 'failed' })
+    expect(told().length).toBe(1)
+    expect(told()[0]?.input.text).toContain('`! py tools/pa3_update.py`')
+    expect(told()[0]?.input.text).toContain('git pull --ff-only failed')
+    await clock.advance(20_000)
+    expect([experts(w).length, told().length]).toEqual([0, 1]) // held, and told once
+    releaseReq(w, clock.now(), { hold: 'skip-update' })
+    await clock.advance(20_000)
+    expect(experts(w).length).toBe(1) // the developer goes on without it, for this session
+    expect(relm()['state']).toBe('failed') // the red line stays until PA3 is updated
+    w.files.set(MARKER, marker({ at: (NOW + 60_000) / 1000 })) // then an update goes through (a manual run)
+    w.files.set(`${BASE}/update.log`, 'pa3_update: done\n')
+    await until(clock, () => relm()['state'] !== 'failed')
+    expect(relm()).toEqual({ version: '3.24.0', kind: 'feature update', state: 'installed' })
+  })
+
+  test('3.32.5: a failure from before holds the next start, told once; release({hold: "update"}) tries the install again', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [RELM]: '{"version":"3.24.0","kind":"feature update","state":"failed"}', [STAMP]: fresh })
+    w.answer = (argv: string[]): Ran => {
+      if (argv[1] === 'tools/pa3_update.py') { // detached: the run goes on
+        w.files.set(MARKER, marker({ state: 'running', at: (NOW + 20_000) / 1000 }))
+        return ok('pa3_update: started\n')
+      }
+      return defaultAnswer(argv)
+    }
+    await $.session.start(START)
+    await clock.advance(10_000)
+    expect(experts(w).length).toBe(0)
+    expect(notices(w).filter(n => n.input.text.includes('the last automatic PA3 update to 3.24.0 failed')).length).toBe(1)
+    expect(w.files.get(RELM)).toBe('{"version":"3.24.0","kind":"feature update","state":"failed"}') // kept at the start
+    releaseReq(w, clock.now(), { hold: 'update' })
+    await clock.advance(10_000)
+    expect(ran(w, 'tools/pa3_update.py')).toEqual([['py', 'tools/pa3_update.py', '--detach']])
+    expect(relOf(w)).toMatchObject({ version: '3.24.0', step: 'running' })
+  })
   test('3.28.2 T17: a stopped task with no agent working is a clean stop; a working agent still waits', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: running({ holds: ['stopped', 'talk'], release: chosen }), [STAMP]: fresh })
@@ -3314,7 +3375,8 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     for (let i = 0; i < 4; i += 1) {
       await clock.advance(2_000)
     }
-    expect(notices(w).filter(n => n.input.text === OFFLINE_NOTICE).length).toBe(1)
+    expect(notices(w).filter(n => n.input.text === offlineNotice('py tools/pa3_update.py')).length).toBe(1)
+    expect(notices(w).some(n => n.input.text.includes('`! py tools/pa3_update.py`'))).toBe(true) // 3.32.5: the command
     expect(w.spawns.length).toBe(1) // still an answer: work goes on
   })
 })

@@ -4331,6 +4331,8 @@ def _doctor_update_check(doc, cfg):
 
     if status == "offline":
         state = "offline"
+    elif status == "fetching":                            # 3.32.5: a slow fetch finishing in the background
+        state = "fetching in the background"
     elif behind > 0:
         state = "behind %d" % behind
     elif not checked_at or status == "never":

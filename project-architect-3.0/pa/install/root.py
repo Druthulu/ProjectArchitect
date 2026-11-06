@@ -204,17 +204,20 @@ def _behind_count(clone):
     return 0
 
 
-def ensure_clone(env, source, timeout_s):
+def ensure_clone(env, source):
     """Clone or update the package source repository under the config dir.
 
     Returns ``{status, path, head, behind, cause}``; status is one of
     ``cloned|pulled|current|offline|absent``.  Never raises.
 
     ``cause`` is ``None`` unless status is ``offline``; then it is the last
-    non-empty stderr line of the failed fetch/clone, ``timeout after <n>s`` or the
-    exception text, or ``pull --ff-only failed``.  ``behind`` is ``None`` (unknown)
-    after a failed fetch or fresh clone: the stale ``@{u}`` count is not real.  A
-    pull that fails after a good fetch keeps the real count.
+    non-empty stderr line of the failed fetch/clone, the exception text, or
+    ``pull --ff-only failed``.  ``behind`` is ``None`` (unknown) after a failed
+    fetch or fresh clone: the stale ``@{u}`` count is not real.  A pull that fails
+    after a good fetch keeps the real count.
+
+    3.32.5: no time limit. It was 8 s: a first clone or fetch on a slow link was
+    killed and the install stopped as offline.
     """
     clone_dir_name = getattr(env, "_clone_dir_name", None) or "pa3-src"
     clone = os.path.join(env.config_dir, clone_dir_name)
@@ -229,8 +232,6 @@ def ensure_clone(env, source, timeout_s):
         return result
 
     def _exc_cause(exc):
-        if isinstance(exc, subprocess.TimeoutExpired):
-            return "timeout after %ss" % timeout_s
         return str(exc) or exc.__class__.__name__
 
     def _stderr_cause(proc, fallback):
@@ -243,7 +244,7 @@ def ensure_clone(env, source, timeout_s):
         try:
             proc = subprocess.run(
                 [exe, "-C", clone, "fetch", "--quiet"],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_s)
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         except (OSError, ValueError, subprocess.SubprocessError) as exc:
             return _offline(_exc_cause(exc), git_short_hash(clone))
         if proc.returncode != 0:
@@ -258,8 +259,7 @@ def ensure_clone(env, source, timeout_s):
         # pull --ff-only
         try:
             pull = subprocess.run([exe, "-C", clone, "pull", "--ff-only"],
-                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                  timeout=timeout_s)
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             pulled = pull.returncode == 0
         except (OSError, ValueError, subprocess.SubprocessError):
             pulled = False
@@ -277,7 +277,7 @@ def ensure_clone(env, source, timeout_s):
         os.makedirs(os.path.dirname(clone), exist_ok=True)
         proc = subprocess.run(
             [exe, "clone", "-c", "core.autocrlf=false", source, clone],
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout_s)
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         return _offline(_exc_cause(exc))
     if proc.returncode != 0:
@@ -1143,8 +1143,7 @@ def install_root(opts):
             except (KeyError, TypeError):
                 source = None
         if source:
-            timeout_s = pa_config.DEFAULTS.get("install", {}).get("fetch_timeout_s", 8)
-            clone_info = ensure_clone(env, source, timeout_s)
+            clone_info = ensure_clone(env, source)
             env.clone_path = clone_info["path"]
             env.clone_head = clone_info["head"]
             _note("clone       %s (%s, head %s%s)"

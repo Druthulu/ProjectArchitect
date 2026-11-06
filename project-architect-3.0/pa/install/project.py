@@ -619,9 +619,7 @@ def detect_project(opts):
         from .root import ensure_clone, Env as _Env
         cfg_dir = getattr(opts, "config_dir", None) or paths.config_dir()
         _env = _Env(config_dir=sm.abs_fwd(cfg_dir))
-        from .. import config as pa_config
-        timeout_s = pa_config.DEFAULTS.get("install", {}).get("fetch_timeout_s", 8)
-        clone_info = ensure_clone(_env, source, timeout_s)
+        clone_info = ensure_clone(_env, source)
         clone_behind = clone_info.get("behind", 0)
         warning = clone_warning(clone_info)
         if warning:
@@ -644,9 +642,7 @@ def detect_project(opts):
             named = os.path.normpath(os.path.abspath(clone_source))
             _env = _Env(config_dir=sm.abs_fwd(os.path.dirname(named)),
                         _clone_dir_name=os.path.basename(named))
-            from .. import config as pa_config
-            timeout_s = pa_config.DEFAULTS.get("install", {}).get("fetch_timeout_s", 8)
-            clone_info = ensure_clone(_env, clone_source, timeout_s)
+            clone_info = ensure_clone(_env, clone_source)
             clone_behind = clone_info.get("behind", 0)
             warning = clone_warning(clone_info)
             if warning:

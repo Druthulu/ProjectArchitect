@@ -96,9 +96,9 @@ import {
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
   archiveLines, bandLine, batchDoneNotice, batchOf, CHAIN_STEPS, closeNotice, driveOf, extHealthNotice, extHealthOf, extReviewLine, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withDrive, withPhaseSid,
   BANK_MARKER, BANK_OPTIONS, bankNotice, bankQuestion, generalizableCount, SET_BACK, setAsideOf,
-  installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, RUN_REVIEW_OPTIONS, RUN_REVIEW_QUESTION, runReviewNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckOffline, startCheckState, OFFLINE_NOTICE, pausedHandbackNotice, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
+  installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, RUN_REVIEW_OPTIONS, RUN_REVIEW_QUESTION, runReviewNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckOffline, startCheckState, offlineNotice, manualUpdate, updateFailedNotice, pausedHandbackNotice, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
   UPGRADE_MD, upgradeLeftNotice, upgradeOf, UPGRADE_ROUNDS, FORWARD_TTL_MS, SHELLS_FILE, shellNotice, shellsOf, shellsOut, waitingShell,
-  GATE_CHECK, GATE_RUN, GATE_STALE, gateWaitReply,
+  GATE_CHECK, GATE_FAILED, GATE_RUN, GATE_STALE, gateWaitReply,
   noVerdict, SPAWN_RETRIES, SPAWN_RETRY_MS, spawnRetryOf,
   PARENTS_FILE, parentsOf, withParents,
   bgJobOf, type BgJob, INTAKE_TRIES, INTAKE_WAITS, intakeCapNotice, intakeDue, intakeOwed, type IntakeStep, intakeTriesOf, STATE_PAGE,
@@ -267,6 +267,8 @@ let releaseCheckedAt = 0 // 3.28.1 T14: the 8-hour release check's last run (ms)
 let modLoaded = '' // 3.28.2 T17: the PA3 release this process loaded (3.30.2: its own code's BUILD; a checkout reads VERSION)
 let modGit = '' // 3.30.2: the commit this process's code was installed from (BUILD.git); '' in a checkout
 let offlineToldSid = '' // 3.30.2: the session start whose timed-out update check Claude was told about
+let failToldSid = '' // 3.32.5: the session whose Claude was told the PA3 update failed and a manual one is required
+let skipSid = '' // 3.32.5: the session the developer goes on in without the failed update (release skip-update)
 
 const quiet = (): undefined => undefined
 
@@ -948,7 +950,19 @@ export function armAutopilot(on: On): void {
             (modGit !== '' ? sameCommit(modGit, um.to.git) : versionAtLeast(modLoaded, um.to.phase) === true)
           // 3.30.3: a run that ended before this process started (a hand-run update): that start loaded its settings too
           const restart = o.restart && um.atMs >= startAt
-          await notice(updateDoneNotice(um, { restart, conflicts: upgrade !== null, loaded }, pa3, whole.trimEnd().split(/\r?\n/).slice(-12).join('\n')))
+          const tail = whole.trimEnd().split(/\r?\n/).slice(-12).join('\n')
+          // 3.32.5: an update that failed: a manual update is required (the release marker's `failed`, below: the
+          // statusline's red line, and no work until PA3 is updated or the developer skips it for the session)
+          const failedUpdate = um.rc !== 0 && um.mode !== 'repair'
+          const relBefore = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+          const failedVersion = !failedUpdate ? ''
+            : strOf(relBefore?.['version']) || releaseOf(s)?.version || um.to.phase
+          if (failedUpdate) {
+            failToldSid = sidNow
+            await notice(updateFailedNotice(failedVersion, manualUpdate(python), um.rc, tail))
+          } else {
+            await notice(updateDoneNotice(um, { restart, conflicts: upgrade !== null, loaded }, pa3, tail))
+          }
           if (conflicts && upgrade === null) {
             await notice(upgradeLeftNotice(rounds))
           }
@@ -967,7 +981,7 @@ export function armAutopilot(on: On): void {
           // "installed" stage until the restart; failed, the line goes. The mod's own install (below) does the same.
           const hookRel = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
           if (releaseOf(s) === null && hookRel?.['state'] === 'running' && um.mode !== 'repair') {
-            const done = um.rc === 0 ? { ...hookRel, state: 'installed' } : {}
+            const done = um.rc === 0 ? { ...hookRel, state: 'installed' } : { ...hookRel, state: 'failed' } // 3.32.5: was {}
             await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify(done)}\n`).catch(quiet)
           }
           const rl = releaseOf(s)
@@ -983,8 +997,8 @@ export function armAutopilot(on: On): void {
               await $.fs.write(`${inboxDir}/${r.name}`, r.body).catch(quiet)
               // 3.28.5 T18: the run finished with exit 0: the statusline's "installed" stage
               await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: got, kind: rl.kind, state: 'installed' })}\n`).catch(quiet)
-            } else if (um.rc !== 0) {
-              await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet) // failed (told above): the line goes
+            } else if (um.rc !== 0) { // 3.32.5: failed (told above): the red line and the hold, until PA3 is updated
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rl.version, kind: rl.kind, state: 'failed' })}\n`).catch(quiet)
             }
             await save({ ...s, release: { ...rl, step: 'done' } } as LoopState, 'release.done')
           } else if (rl !== null && rl.step !== 'done' && um.rc === 0) {
@@ -996,12 +1010,26 @@ export function armAutopilot(on: On): void {
               await save({ ...s, release: { ...rl, step: 'done' } } as LoopState, 'release.done')
             }
           }
+          // 3.32.5: any other update run (the developer's `update pa3`, a run by hand in a terminal or with `!`): failed,
+          // the marker says so; through, a standing failure ends (its "installed" stage until the restart loads it)
+          const relAfter = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+          if (failedUpdate && relAfter?.['state'] !== 'failed') {
+            const kind = strOf(relBefore?.['kind']) || strOf(relAfter?.['kind']) || 'hotfix'
+            await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: failedVersion, kind, state: 'failed' })}\n`).catch(quiet)
+          } else if (um.rc === 0 && um.mode !== 'repair' && relAfter?.['state'] === 'failed') {
+            const through = loaded ? {} : { version: um.to.phase || strOf(relAfter['version']), kind: strOf(relAfter['kind']) || 'hotfix', state: 'installed' }
+            await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify(through)}\n`).catch(quiet)
+          }
         }
         // 3.28.2 T17: this process runs the release (whichever path installed it): the record and the statusline's line go.
         const rlLoaded = releaseOf(s)
         if (rlLoaded !== null && versionAtLeast(modLoaded, rlLoaded.version) === true) {
           await save({ ...s, release: null } as LoopState, 'release.loaded')
-          await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
+          // 3.32.5: a failed update to a release above this one stands (its red line and hold) until PA3 is updated
+          const relNow = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+          if (relNow?.['state'] !== 'failed' || versionAtLeast(modLoaded, strOf(relNow['version'])) === true) {
+            await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
+          }
         }
         // 3.28.1 T14: every RELEASE_CHECK_MS of a running session, the session start's release check (pa_ledger.py
         // update-check: the clone's fetch, I48). A release not asked about before: the loop's picker (tasks keep running;
@@ -1014,8 +1042,14 @@ export function armAutopilot(on: On): void {
           const r = await run([python, `${pa3}/pa_ledger.py`, 'update-check', root])
           const found = r.exitCode === 0 ? jsonOf(r.stdout.trim()) : null
           const version = strOf(found?.['version'])
-          await log('release.check', { exitCode: r.exitCode, version })
-          if (version !== '' && version !== releaseOf(s)?.version) {
+          await log('release.check', { exitCode: r.exitCode, version, offline: found?.['offline'] === true })
+          if (found?.['offline'] === true) { // 3.32.5: the 8-hour check says so too, with the command for a manual update
+            await notice(offlineNotice(manualUpdate(python), 'check'))
+          }
+          // 3.32.5: a release asked about is asked again at each check until it is installed: after "Not now" (later),
+          // and after an install that did not take (done, the same version still newer than the installed one)
+          const rel0 = releaseOf(s)
+          if (version !== '' && (version !== rel0?.version || rel0.step === 'later' || rel0.step === 'done')) {
             const kind = strOf(found?.['kind']) || 'hotfix'
             const title = strOf(found?.['title'])
             // 3.28.6 T19: the facts only; the hook's line (its pa3_update.py steps) never reaches Claude or the seed
@@ -1024,7 +1058,11 @@ export function armAutopilot(on: On): void {
             const q = requestFile(now, nseq, 'ask', 'loop', { question: releaseQuestion(version, kind, title), options: [...RELEASE_OPTIONS] })
             await $.fs.write(`${inboxDir}/${q.name}`, q.body)
             await save({ ...s, release: { version, kind, asked: q.name.slice(0, -'.json'.length), step: 'asked' } } as LoopState, 'release.ask')
-            await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version, kind, state: 'later' })}\n`).catch(quiet)
+            // 3.32.5: a failed update keeps its red line and hold while the picker asks
+            const relM = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+            if (relM?.['state'] !== 'failed') {
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version, kind, state: 'later' })}\n`).catch(quiet)
+            }
             await notice(releaseNotice(version, kind))
           }
         }
@@ -1409,8 +1447,30 @@ export function armAutopilot(on: On): void {
             await confirm(line, req.caller) // 3.23 T13d.c3: a confirmation that only says done is journaled, not sent
             await log('release', { id: req.id, hold, line: clip(line, 200), sent: !quietReply(line) })
           }
+          if (hold === 'skip-update') { // 3.32.5: the developer goes on without the failed update, for this session
+            const relS = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+            if (relS?.['state'] !== 'failed') {
+              await reply('refused: no PA3 update has failed: there is nothing to skip')
+              return
+            }
+            skipSid = sidNow
+            const v = strOf(relS['version'])
+            await journal('mod', 'decision', {}, `The failed PA3 update${v === '' ? '' : ` to ${v}`} is skipped for this session (the developer's word): work goes on.`)
+            await reply(`released: skip-update (work goes on at PA3 ${modLoaded} for this session; PA3 asks again at its next check)`)
+            return
+          }
           if (hold === 'update') { // 3.28.1 T14: the developer wants the found release installed after the current task
             const rel = releaseOf(s)
+            // 3.32.5: a failed update is tried again on the developer's word (the clean-stop install below runs it)
+            const relF = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+            if (relF?.['state'] === 'failed' && (rel === null || rel.step !== 'install' && rel.step !== 'running')) {
+              const version = strOf(relF['version']) || rel?.version || ''
+              const kind = strOf(relF['kind']) || rel?.kind || 'hotfix'
+              await save({ ...s, release: { version, kind, asked: rel?.asked ?? '', step: 'install' } } as LoopState, 'release.retry')
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version, kind, state: 'install' })}\n`).catch(quiet)
+              await reply(`released: update (the failed install${version === '' ? '' : ` of PA3 ${version}`} is tried again: it runs at the clean stop, now if no expert or coder is working)`)
+              return
+            }
             if (rel === null || rel.step === 'done') {
               await reply('refused: there is no newer PA3 release')
               return
@@ -1978,9 +2038,13 @@ ${REPLAN_NOTICE}`)
             return
           }
           const step = install ? 'install' : 'later'
-          await journal('mod', 'decision', {}, `PA3 ${rel.version}: ${install ? 'installs after the current task' : 'not now; it installs at the next start'} (the developer's answer).`)
+          await journal('mod', 'decision', {}, `PA3 ${rel.version}: ${install ? 'installs after the current task' : 'not now; asked again in 8 hours, and it installs at the next start'} (the developer's answer).`)
           await save({ ...s, release: { ...rel, step } } as LoopState, `release.${step}`)
-          await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rel.version, kind: rel.kind, state: step })}\n`).catch(quiet)
+          // 3.32.5: "Not now" leaves a failed update's red line and hold standing
+          const relM = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+          if (install || relM?.['state'] !== 'failed') {
+            await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rel.version, kind: rel.kind, state: step })}\n`).catch(quiet)
+          }
         }
         // The answer to the loop's own ask (the router's `answer`, `{id, line}`), kept for the asking record's step: the
         // install or the generation start (T6a2).
@@ -2386,12 +2450,21 @@ ${REPLAN_NOTICE}`)
         // 3.30.2: a check that got no answer says so, once a session start (bfm: "checking for updates" just went).
         if (offlineToldSid !== sidNow && startCheckOffline(checkText, sidNow, startAt)) {
           offlineToldSid = sidNow
-          await notice(OFFLINE_NOTICE)
+          await notice(offlineNotice(manualUpdate(python))) // 3.32.5: with the command for a manual update
         }
         const runNow = markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null))
+        // 3.32.5: a failed update (the release marker's `failed`) holds work until PA3 is updated, or for this session
+        // until the developer goes on without it (release skip-update)
+        const relGate = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
         const gateWhy = startState === 'pending' ? GATE_CHECK
           : runRunning(runNow, now) ? GATE_RUN
-            : modStale ? GATE_STALE : ''
+            : modStale ? GATE_STALE
+              : relGate?.['state'] === 'failed' && skipSid !== sidNow ? GATE_FAILED : ''
+        // 3.32.5: a failure that stands from before (a later session start) is told once a session
+        if (gateWhy === GATE_FAILED && failToldSid !== sidNow) {
+          failToldSid = sidNow
+          await notice(updateFailedNotice(strOf(relGate?.['version']), manualUpdate(python)))
+        }
         // 3.32.4: an install the session start began (its `running` release marker; none of the mod's own, which says so
         // when it starts one) gets Claude's one line too, once a run: until now only the statusline said it, and the
         // chat's last word stayed the last update's restart line (sb, 2026-11-05).
@@ -2484,8 +2557,8 @@ ${REPLAN_NOTICE}`)
           if (!runRunning(markerOf(await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)), now)) {
             const ok = await runPa3(`PA3 ${rel.version}, the developer's choice`)
             await save({ ...s, release: { ...rel, step: ok ? 'running' : 'done' } } as LoopState, ok ? 'release.run' : 'release.failed')
-            if (!ok) {
-              await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet) // runPa3 told Claude why; the line goes
+            if (!ok) { // runPa3 told Claude why; 3.32.5: the install did not happen: a manual update is required (was: the line went)
+              await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rel.version, kind: rel.kind, state: 'failed' })}\n`).catch(quiet)
             } else { // 3.28.5 T18: the statusline's "installing" stage and Claude's one line, once per install
               await $.fs.write(`${root}/${RELEASE_MARKER}`, `${JSON.stringify({ version: rel.version, kind: rel.kind, state: 'running' })}\n`).catch(quiet)
               await notice(installingNotice(rel.version))
@@ -3216,6 +3289,8 @@ ${REPLAN_NOTICE}`)
     startAt = await $.clock.now() // 3.29.1 T8: the update check's note must be this start's
     pausedAskedSid = ''
     offlineToldSid = ''
+    failToldSid = ''
+    skipSid = ''
     // 3.28.2 T17: the release this process loads (the tick's update report and release record compare with it).
     const pa3 = ((await $.env.get('PA_MOD_PA3_DIR')) ?? '') ||
       `${((await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? '').replace(/\\/g, '/')}/.claude/pa3`
@@ -3241,7 +3316,8 @@ ${REPLAN_NOTICE}`)
         await $.fs.write(`${root}/.run/mod/${sid}/inbox/${r.name}`, r.body).catch(quiet)
       }
       // 3.28.1 T14: the restart loaded it. 3.29.2: but a release still installing (the start hook's run) stays.
-      if (reached || relm?.['state'] !== 'running') {
+      // 3.32.5: and a failed update stays (its red line and hold) until PA3 reaches it
+      if (reached || (relm?.['state'] !== 'running' && relm?.['state'] !== 'failed')) {
         await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
       }
     }

@@ -293,11 +293,11 @@ class RootWindowsTest(unittest.TestCase):
             text = fh.read()
         from pa import __version__
         self.assertIn("version: %s" % __version__, text)
-        self.assertEqual(text.splitlines()[0], "version: 3.32.4")  # I11
+        self.assertEqual(text.splitlines()[0], "version: 3.32.5")  # I11
         self.assertRegex(text, r"git: [0-9a-f]{6,40}")
 
     def test_version_parse_forms_and_fallback(self):
-        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.32.4``."""
+        """I11: ``pa.__version__`` reads a bare or ``version:`` first line, else ``3.32.5``."""
         import pa
         self.assertEqual(pa.parse_version("3.11\n"), "3.11")
         self.assertEqual(pa.parse_version("version: 3.12\ngit: abc\n"), "3.12")
@@ -320,8 +320,8 @@ class RootWindowsTest(unittest.TestCase):
                                   text=True, check=True).stdout.strip()
         self.assertEqual(ver("3.12\n"), "3.12")
         self.assertEqual(ver("version: 3.15.3\ngit: abc\n"), "3.15.3")
-        self.assertEqual(ver(None), "3.32.4")
-        self.assertEqual(ver("garbage: x\n"), "3.32.4")
+        self.assertEqual(ver(None), "3.32.5")
+        self.assertEqual(ver("garbage: x\n"), "3.32.5")
 
     def test_ledger_has_every_table(self):
         conn = db.connect(os.path.join(self.ledger, "ledger.sqlite"), create=False)
@@ -1313,7 +1313,7 @@ class CloneTest(unittest.TestCase):
 
     def test_clone_creates_repo_with_autocrlf_false(self):
         env = install.Env(config_dir=self.cfg_dir)
-        result = install.ensure_clone(env, self.source, timeout_s=30)
+        result = install.ensure_clone(env, self.source)
         self.assertEqual(result["status"], "cloned")
         clone = result["path"].replace("/", os.sep)
         self.assertTrue(os.path.isdir(os.path.join(clone, ".git")))
@@ -1325,15 +1325,15 @@ class CloneTest(unittest.TestCase):
 
     def test_second_run_pulls_or_reports_current(self):
         env = install.Env(config_dir=self.cfg_dir)
-        r1 = install.ensure_clone(env, self.source, timeout_s=30)
+        r1 = install.ensure_clone(env, self.source)
         self.assertEqual(r1["status"], "cloned")
         # second run with no new commits: current
-        r2 = install.ensure_clone(env, self.source, timeout_s=30)
+        r2 = install.ensure_clone(env, self.source)
         self.assertIn(r2["status"], ("current", "pulled"))
 
     def test_second_run_pulls_new_commit(self):
         env = install.Env(config_dir=self.cfg_dir)
-        install.ensure_clone(env, self.source, timeout_s=30)
+        install.ensure_clone(env, self.source)
         # add a commit to source
         f = os.path.join(self.source, "new.txt")
         with open(f, "w") as fh:
@@ -1342,31 +1342,31 @@ class CloneTest(unittest.TestCase):
                        check=True, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         subprocess.run(["git", "-C", self.source, "commit", "-qm", "update"],
                        check=True, timeout=30, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        r2 = install.ensure_clone(env, self.source, timeout_s=30)
+        r2 = install.ensure_clone(env, self.source)
         self.assertEqual(r2["status"], "pulled")
 
     def test_offline_for_unreachable_source(self):
         env = install.Env(config_dir=self.cfg_dir)
-        install.ensure_clone(env, self.source, timeout_s=30)
+        install.ensure_clone(env, self.source)
         # break the remote by pointing at a nonexistent path
         clone_path = os.path.join(self.cfg_dir, "pa3-src")
         subprocess.run(["git", "-C", clone_path, "remote", "set-url", "origin",
                          "/nonexistent/path/repo.git"],
                        check=True, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        r = install.ensure_clone(env, "/nonexistent/path/repo.git", timeout_s=5)
+        r = install.ensure_clone(env, "/nonexistent/path/repo.git")
         self.assertEqual(r["status"], "offline")
         self.assertIsNotNone(r["head"])
 
     def _break_remote(self):
         env = install.Env(config_dir=self.cfg_dir)
-        install.ensure_clone(env, self.source, timeout_s=30)
+        install.ensure_clone(env, self.source)
         subprocess.run(["git", "-C", os.path.join(self.cfg_dir, "pa3-src"), "remote", "set-url",
                         "origin", os.path.join(self.tmp, "no-such-repo")],
                        check=True, timeout=10, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         return env
 
     def test_offline_carries_cause_and_unknown_behind(self):
-        r = install.ensure_clone(self._break_remote(), self.source, timeout_s=10)
+        r = install.ensure_clone(self._break_remote(), self.source)
         self.assertEqual(r["status"], "offline")
         self.assertTrue(r["cause"])
         self.assertIsNone(r["behind"])
@@ -1375,7 +1375,7 @@ class CloneTest(unittest.TestCase):
 
     def test_fresh_clone_failure_is_offline_with_cause(self):
         env = install.Env(config_dir=self.cfg_dir)
-        r = install.ensure_clone(env, os.path.join(self.tmp, "no-such-repo"), timeout_s=10)
+        r = install.ensure_clone(env, os.path.join(self.tmp, "no-such-repo"))
         self.assertEqual(r["status"], "offline")
         self.assertTrue(r["cause"])
         self.assertIsNone(r["behind"])
@@ -1403,7 +1403,7 @@ class CloneTest(unittest.TestCase):
         self.assertIn("WARN clone offline: ", out)
 
     def test_install_root_current_clone_no_warn(self):
-        install.ensure_clone(install.Env(config_dir=self.cfg_dir), self.source, timeout_s=30)
+        install.ensure_clone(install.Env(config_dir=self.cfg_dir), self.source)
         rc, out, pa3 = self._root_run()
         self.assertEqual(rc, 0, out)
         self.assertNotIn("WARN", out)
@@ -1426,7 +1426,7 @@ class CloneTest(unittest.TestCase):
 
     def test_version_text_names_clone(self):
         env = install.Env(config_dir=self.cfg_dir)
-        r = install.ensure_clone(env, self.source, timeout_s=30)
+        r = install.ensure_clone(env, self.source)
         ver = install.version_text(self.source, clone_path=r["path"], clone_head=r["head"])
         self.assertIn("source: ", ver)
         # source should use / separators
@@ -1444,7 +1444,7 @@ class CloneTest(unittest.TestCase):
         """--no-clone keeps the package next to pa_install.py (today's behaviour)."""
         env = install.Env(config_dir=self.cfg_dir)
         # Clone first, so the clone exists
-        r = install.ensure_clone(env, self.source, timeout_s=30)
+        r = install.ensure_clone(env, self.source)
         env.clone_path = None
         env.clone_head = None
         # version_text without clone info should name the pkg, not the clone (the package

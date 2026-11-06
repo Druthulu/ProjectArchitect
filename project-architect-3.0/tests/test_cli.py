@@ -2181,6 +2181,15 @@ class DoctorInstallRowsTest(CliTestCase):
         # 3.28 T5: no hours-based stale test; only behind warns (was: older than 2x 24h -> WARN)
         self.assertTrue(lines[0].strip().startswith("OK"), lines)
 
+    def test_update_check_fetching(self):
+        """3.32.5: a slow fetch finishing in the background reads as such, never as current."""
+        self._update_json({"checked_at": time.time(), "status": "fetching"})
+        rc, text, errs = run_cli("doctor", "--skip-hooks")
+        lines = [ln for ln in text.splitlines() if "update check" in ln]
+        self.assertTrue(lines, text)
+        self.assertIn("fetching in the background", lines[0])
+        self.assertTrue(lines[0].strip().startswith("OK"), lines)
+
     # -- card ---------------------------------------------------------------
 
     def _project(self):
