@@ -1250,6 +1250,7 @@ def sessions_block(conn, cfg=None, hours=SESSION_WINDOW_H, accounts=None):
     cutoff = _cutoff_iso(hours)
     out = {}
     wcache = {}                                   # rated seven-day windows per account (fix-9.c2)
+    acache = {}                                   # (account, window start) -> its cost now (3.32.8)
     rows = conn.execute(
         "SELECT session_id, account, kind, project, phase, started, ended, cost_usd, "
         "cost_source FROM sessions WHERE " + LAST_ACTIVE_SQL + " >= ? "
@@ -1287,6 +1288,15 @@ def sessions_block(conn, cfg=None, hours=SESSION_WINDOW_H, accounts=None):
                     "WHERE kind='api' AND session_id=? AND ts>=?",
                     (sid, started_iso)).fetchone()
                 cu = float(crow[0] or 0.0) if crow else 0.0
+                # 3.32.8: the account's cost in the window summed now, beside the session's: the windows group's
+                # ledger_cost_in_window is rebuilt only when the usage reading changes, so a later turn made the
+                # session look bigger than its account and the Session line printed ?/? (bfm-decomp, 2026-11-06)
+                akey = (acct, started_iso)
+                if akey not in acache:
+                    arow = conn.execute(
+                        "SELECT COALESCE(SUM(cost_usd), 0) FROM turns "
+                        "WHERE kind='api' AND account=? AND ts>=?", akey).fetchone()
+                    acache[akey] = float(arow[0] or 0.0) if arow else 0.0
                 ns = None
                 try:
                     from . import savings as _savings
@@ -1311,6 +1321,7 @@ def sessions_block(conn, cfg=None, hours=SESSION_WINDOW_H, accounts=None):
                 except Exception:
                     pass
                 wins[win] = {"cost_used": round(cu, 6),
+                             "account_cost_used": round(acache[akey], 6),
                              "net_saved": round(ns, 6) if ns is not None else None,
                              "net_saved_by_family": nsf,
                              "pct_saved_pooled": psp}

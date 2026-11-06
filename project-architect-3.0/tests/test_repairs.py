@@ -503,6 +503,45 @@ class HandbackAnswerTest(_HelperRows):
         self.assertEqual(self.retrieval("ahb"), (0, 300, 39700, HB_SID))
 
 
+RR = repairs.STEP_RECORDS_READ
+RR_SID = "sess-rr"
+
+
+class RecordsReadCreditTest(RepairsCase):
+    """3.32.8: the credit rows of tools/records.py journal reads go (each counted the whole journal as typed output
+    and as carried context); the reading runs' savings rows are cleared and their sessions' savings rewritten."""
+
+    def call(self, cid, run_id, ts, script, sub, tokens):
+        db.upsert_tool_call(self.conn, {"id": cid, "session_id": RR_SID, "run_id": run_id, "ts": ts, "tool": "Bash",
+                                        "kind": "script", "script": script, "sub": sub, "path": ".claude-state/x",
+                                        "file_tokens": tokens, "emission_tokens": tokens, "result_tokens": 0,
+                                        "model": "claude-opus-5-5"})
+
+    def test_read_rows_go_and_savings_are_rewritten_once(self):
+        db.upsert_session(self.conn, {"session_id": RR_SID, "account": A, "started": "2026-11-01T00:00:00Z"})
+        db.upsert_agent_run(self.conn, {"run_id": "aexp", "session_id": RR_SID, "kind": "expert",
+                                        "agent_type": "pa-expert", "status": "completed"})
+        for i in range(3):
+            self.turn(RR_SID, "e%d" % i, A, "2026-11-01T10:0%d:00.000Z" % (i + 1), run_id="aexp", ctx=50000)
+        self.call("c-read", "aexp", "2026-11-01T10:00:30Z", "records.py", "read", 600000)
+        self.call("c-card", "aexp", "2026-11-01T10:00:40Z", "card.py", "slice", 1000)
+        db.upsert_savings(self.conn, {"run_id": "aexp", "session_id": RR_SID, "measured_saved_usd": 99.0,
+                                      "locked": 1})
+        self.assertEqual(repairs.detect_records_read(self.conn, self.cfg), {"rows": 1})
+
+        res = repairs.run(self.cfg, conn=self.conn)
+        self.assertEqual(res[RR], {"rows": 1, "runs": 1, "sessions": 1})
+        self.assertEqual([r[0] for r in self.conn.execute("SELECT id FROM tool_calls ORDER BY id")], ["c-card"])
+        saved = self.conn.execute("SELECT measured_saved_usd FROM savings WHERE run_id='aexp'").fetchone()
+        self.assertIsNotNone(saved)                      # the card slice's own credit stays
+        self.assertLess(saved[0], 1.0)
+        self.assertTrue(any("journal reads" in line for line in repairs.pop_notice()))
+
+        # run again with the stamp cleared: nothing left to repair
+        self.conn.execute("DELETE FROM meta WHERE key=?", ("repair." + RR,))
+        self.assertIsNone(repairs.run(self.cfg, conn=self.conn)[RR])
+
+
 class RecheckAnswersTest(_HelperRows):
     """3.30.8: before each summary rebuild the child re-books a helper voided in the last hour
     whose transcript now shows its hand-back (a transcript lagging SubagentStop); older rows are

@@ -375,6 +375,30 @@ class SessionsSavedNetTest(unittest.TestCase):
         self.assertAlmostEqual(row["windows"]["seven_day"]["net_saved"], 1.0, places=6)
 
 
+class SessionsAccountCostTest(unittest.TestCase):
+    """3.32.8: each session window carries its account's cost summed in the same pass, so the Session line's ?/?
+    check compares like with like (the windows group's figure is rebuilt only when the usage reading changes)."""
+
+    def test_account_cost_used_is_the_accounts_sum_now(self):
+        from unittest import mock
+        from pa import savings
+        conn = _make_db()
+        _seed_two_accounts(conn)
+        conn.execute("INSERT INTO sessions(session_id, account, project, cwd, started) VALUES(?, ?, ?, ?, ?)",
+                     ("s-a2", ACCT_A, PROJECT, PROJECT, WINDOW_START))
+        conn.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd, kind)"
+                     " VALUES(?, ?, ?, ?, ?, ?, 'api')", ("msg-a2", "s-a2", ACCT_A, _iso(NOW - 60),
+                                                          "claude-opus-4-6", 1.5))
+        conn.commit()
+        with mock.patch.object(savings, "window_saved_measured",
+                               return_value={"gross": 0.0, "seeds": 0.0, "net": 0.0}):
+            out = summary.sessions_block(conn, accounts=_accounts_block())
+        conn.close()
+        w = out["s-a"]["windows"]["five_hour"]
+        self.assertEqual((w["cost_used"], w["account_cost_used"]), (6.0, 7.5))
+        self.assertEqual(out["s-a2"]["windows"]["seven_day"]["account_cost_used"], 7.5)
+
+
 class SessionsLastActiveTest(unittest.TestCase):
     """3.15.3: sessions_block keeps a session by its last activity, not its start."""
 

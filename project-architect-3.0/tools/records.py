@@ -246,9 +246,11 @@ def first_sentence(text, cap=100):
 # ------------------------------------------------------------ loading --- #
 
 def read_entries(root):
-    """-> [{"path": display path, "date", "ts", "meta", "body"}] of every record entry, in filing order."""
+    """-> [{"path": display path, "date", "ts", "meta", "body"}] of every record entry, in filing order.
+    3.32.8: no credit note: a read writes nothing a plain session would have typed, and a plain session has no
+    journal (its note counted the whole journal as output and as carried context, most of a busy week's savings)."""
     jdir = os.path.join(root, JOURNAL_DIR)
-    out, chars = [], 0
+    out = []
     if not os.path.isdir(jdir):
         return out
     for name in sorted(os.listdir(jdir)):
@@ -256,21 +258,15 @@ def read_entries(root):
         if DAY_RE.match(name) and os.path.isdir(full):
             for f in sorted(os.listdir(full)):
                 if f.endswith(".md") and RECORD_STEM_RE.match(f[:-3]):
-                    text = _read(os.path.join(full, f))
-                    chars += len(text)
-                    meta, body = parse_entry(text)
+                    meta, body = parse_entry(_read(os.path.join(full, f)))
                     out.append({"path": "%s/%s/%s" % (J, name, f), "date": name,
                                 "ts": meta.get("ts", ""), "meta": meta, "body": body})
         elif name.endswith(".md") and DAY_RE.match(name[:-3]) and os.path.isfile(full):
-            text = _read(full)
-            chars += len(text)
-            for stem, etext in sorted(journal_rollup.split_day(text).items()):
+            for stem, etext in sorted(journal_rollup.split_day(_read(full)).items()):
                 if RECORD_STEM_RE.match(stem):
                     meta, body = parse_entry(etext)
                     out.append({"path": "%s/%s#%s" % (J, name, stem), "date": name[:-3],
                                 "ts": meta.get("ts", ""), "meta": meta, "body": body})
-    if out:
-        _cnote(jdir, script=_SCRIPT, sub="read", whole=True, file_chars=chars, root=root)
     out.sort(key=lambda e: (e["ts"], e["path"]))
     return out
 

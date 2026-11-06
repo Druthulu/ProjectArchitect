@@ -2,6 +2,20 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.8 — Honest savings, steadier statusline rows
+
+- The savings were inflated. Each time an agent read PA3's journal of decisions, the ledger counted the whole
+  journal as text a plain Claude Code session would have had to type, and as context it would have carried: on a
+  busy project, about two thirds of a week's measured savings. A journal read now counts nothing (a plain session
+  has no journal), and a one-time repair takes the credits already booked out of the usage ledger and rewrites the
+  savings they touched, so the Session and Project lines show lower, honest figures. Claude tells you once when the
+  repair has run.
+- An external coder's statusline row lost its model and token count when its expert added anything after the brief
+  on the command line, such as an output file. The row is now named from the brief itself.
+- The Session line could show `?/?` after a turn when the session was the only one spending in its window: it
+  compared the session's cost with an account total refreshed only when the usage reading changes. It now compares
+  with the account's total taken at the same moment.
+
 ## 3.32.7 — External coders count their tokens and hand off on time
 
 - An external coder's row on the statusline now shows how much context it is using, and the External line's

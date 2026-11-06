@@ -846,6 +846,17 @@ describe('background shells (3.28.1 T15)', () => {
     expect(shells(m)['C1']?.map(s => s.name)).toEqual(['external T4.c1', 'external T4.c2', 'pa_ext.py', 'make'])
   })
 
+  test('3.32.8: the brief after run <config>/<alias> names an external shell, whatever follows; a resume its label', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
+    let n = 0
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `y${String(n += 1)}` } }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: 'python3 tools/pa_ext.py run openrouter-deepseek/deepseek .run/P40/ext/T11.cW48x.md > .run/P40/T11/ext/run_W48x.out 2>&1; echo $? > .run/P40/T11/ext/run_W48x.rc', run_in_background: true, agentId: 'C1' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'python3 tools/pa_ext.py run --resume T11.cG22x', run_in_background: true, agentId: 'C1' } as never)
+    expect(shells(m)['C1']?.map(s => s.name)).toEqual(['external T11.cW48x', 'external T11.cG22x'])
+  })
+
   test('3.32.7: a pa_ext.py run refused at its start (exit 4) leaves no record; other failures stay until the agent reports', async ($, on) => {
     mock.clock(on)
     const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)

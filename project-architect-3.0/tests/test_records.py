@@ -134,6 +134,14 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual(lines[7], "R5 | 2026-10-30 | decision | in force | journal records | "
                          "File records after 15 quiet minutes. | %s/2026-10-30/090000-002r-claude-record.md" % J)
 
+    def test_reading_the_journal_writes_no_credit_note(self):
+        """3.32.8: a read credits nothing (its note counted the whole journal as typed output and as carried
+        context, most of a busy week's measured savings)."""
+        self._three()
+        self.assertEqual(len(R.read_entries(self.root)), 3)
+        credit = os.path.join(self.root, ".run", "credit")
+        self.assertEqual(os.listdir(credit) if os.path.isdir(credit) else [], [])
+
     def test_index_filed_through(self):
         """3.31 T2b: the newest `through` of every record entry heads TOPICS.md, `nothing to file` ones included."""
         path = os.path.join(self.jdir, "TOPICS.md")

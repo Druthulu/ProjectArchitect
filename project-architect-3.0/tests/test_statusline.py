@@ -2418,7 +2418,10 @@ class WindowedPairsTest(LedgerCase):
         # 7d: x = 8 * 0.02 * 100 = 16%, y = 4 * 0.02 * 100 = 8%
         self.assertIn("16%/8% of 7d", session)
 
-    def _guard_summary(self, five_ledger):
+    def _guard_summary(self, five_ledger, five_same=None):
+        five = {"cost_used": 3.0, "net_saved": 2.0}
+        if five_same is not None:                       # 3.32.8: the account's cost summed with the session's
+            five["account_cost_used"] = five_same
         write_json(paths.summary_path(), {
             "schema": 1,
             "accounts": {"dev@example.com": {"label": "win", "windows": {
@@ -2428,9 +2431,21 @@ class WindowedPairsTest(LedgerCase):
                               "ledger_cost_in_window": 50.0}}}},
             "sessions": {self.sid: {"account": "dev@example.com", "saved_measured": 5.0,
                                     "windows": {
-                                        "five_hour": {"cost_used": 3.0, "net_saved": 2.0},
+                                        "five_hour": five,
                                         "seven_day": {"cost_used": 8.0, "net_saved": 4.0}}}}})
         return [l for l in self.lines() if "Session:" in l][0]
+
+    def test_session_after_the_accounts_rebuild_is_not_question(self):
+        """3.32.8: the windows group's ledger cost lags (rebuilt only when the usage reading changes); the account's
+        cost summed with the session's is current: no ?/? (WSL bfm-decomp: 3.3919 vs a stale 3.3776)."""
+        session = self._guard_summary(2.0, five_same=3.0)
+        self.assertIn("15%/10% of 5h", session)
+        self.assertNotIn("?/?", session)
+
+    def test_session_above_its_account_now_prints_question(self):
+        """3.32.8: the same-time sum still catches a session above its account (C0079's mixed data)."""
+        session = self._guard_summary(3.5, five_same=2.0)
+        self.assertIn("?/? of 5h", session)
 
     def test_session_cost_above_ledger_window_prints_question(self):
         """3.15 T1: session cost_used > the account window's ledger cost prints ?/? (C0079)."""

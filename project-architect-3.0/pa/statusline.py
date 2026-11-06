@@ -1506,6 +1506,11 @@ def _line_session(payload, ctx, cfg, sl, now):
                 y_pct = None                      # live-only y rounding to 0 prints DASH, never 0% (T11.1)
             aw = account_windows.get(wkey)
             ledger_cost = _num(aw.get("ledger_cost_in_window"), None) if isinstance(aw, dict) else None
+            # 3.32.8: the account's cost summed with the session's, when the summary has it: the windows group
+            # above is rebuilt only when the usage reading changes, so it lags the session's own sum
+            same_time = _num(sw.get("account_cost_used"), None)
+            if same_time is not None:
+                ledger_cost = same_time
             if cu is not None and ledger_cost is not None and cu > ledger_cost + 1e-5:
                 # session cost above its account's window cost: mixed accounts or windows (C0079). 3.32.6: past
                 # rounding: the session's cost is stored to 6 places, the account's not, so a session that is its

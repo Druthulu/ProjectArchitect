@@ -77,12 +77,15 @@ const quiet = (): undefined => undefined
 type ShellRec = { id: string; name: string; at: number; type: string; exit?: number; moved?: boolean }
 let shellsChain: Promise<unknown> = Promise.resolve() // one read-modify-write at a time
 /** A shell's name: the last script-like token's basename (`bake_rest.sh`), else the last command's first word; 3.3 T7:
- * a `pa_ext.py run` is `external <stem>`, its last argument's basename without the extension (`external T4.c1`). */
+ * a `pa_ext.py run` is `external <stem>`, its brief's basename without the extension (`external T4.c1`). 3.32.8: the
+ * brief is the word after `run <config>/<alias>`, not the line's last (a redirect after it named the row after its
+ * output file, so the row found no facts); `run --resume <label>` is `external <label>`. */
 const shellName =(command: string): string => {
   const words = command.split(/\s+/).map(w => w.replace(/^["']|["';]$/g, '')).filter(w => w !== '')
   const ext = words.findIndex((w, i) => /(^|[\/\\])pa_ext\.py$/.test(w) && words[i + 1] === 'run')
-  if (ext >= 0 && words.length > ext + 2) {
-    return `external ${(words[words.length - 1] ?? '').split(/[\/\\]/).pop()?.replace(/\.[^.]*$/, '') ?? ''}`
+  if (ext >= 0 && words.length > ext + 3) {
+    const arg = words[ext + 3] ?? ''
+    return `external ${words[ext + 2] === '--resume' ? arg : (arg.split(/[\/\\]/).pop()?.replace(/\.[^.]*$/, '') ?? '')}`
   }
   const script = [...words].reverse().find(w => /\.(sh|py|ps1|js|ts|cmd|bat)$/i.test(w))
   const last = command.split(/&&|\|\||;/).pop()?.trim().split(/\s+/)[0] ?? ''

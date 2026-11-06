@@ -16,7 +16,9 @@ session's B rows up to the next switch re-filed to A; the fallback step now also
 switch details and the savings);
 ``3.24/residual-off-main`` (T13q: pre-T13l residual rows on the main run move to ``unattributed:<sid>``);
 ``3.30.8/handback-answer`` (helpers voided since CC 2.1.285 for an answer the ledger could not read get
-their hand-back reports counted; rows filed as their own parent move under their session).
+their hand-back reports counted; rows filed as their own parent move under their session);
+``3.32.8/records-read-credit`` (the credit rows of ``tools/records.py`` journal reads go, and their runs'
+savings are rewritten: each read had counted the whole journal as typed output and as carried context).
 
 A step is stamped in meta ``repair.<id>`` (``fresh`` on a new ledger, else ``{ts, result|counts}``)
 and never runs again; a failing step logs ``repair_step_failed`` and stays unstamped, but
@@ -37,6 +39,7 @@ STEP_BATCH_GAP = "3.15.1/batch-gap"
 STEP_SAVINGS_ACCOUNT = "3.15.2/savings-account"
 STEP_RESIDUAL_OFF_MAIN = "3.24/residual-off-main"
 STEP_HANDBACK_ANSWER = "3.30.8/handback-answer"
+STEP_RECORDS_READ = "3.32.8/records-read-credit"
 _LOCK_STALE_S = 1800           # any lock older than 30 min is stale
 _START_GRACE_S = 30            # a requester's lock outlives the requester while the child starts
 
@@ -465,12 +468,47 @@ def apply_handback_answer(conn, cfg, plan):
     return {"helpers": helpers, "parents": len(own), "sessions": len(sids)}
 
 
+# --------------------------------------------------------------------------- step: 3.32.8/records-read-credit
+#
+# From 3.31 (2026-10-30) every `tools/records.py` read of the journal wrote a credit note as if the model had typed
+# the whole journal: its emission (output tokens at the run's model) and, once a session, its carry (context a plain
+# session would re-read on every later turn) entered the measured savings: about two thirds of bfm-decomp's week,
+# 8 reads at some 670k tokens each.  A read types nothing and a plain session has no journal: 3.32.8 writes no note,
+# and this step deletes the rows already booked, clears the reading runs' savings rows (a run that falls to nothing
+# would keep its old row: write_savings skips it) and rewrites their sessions' savings.
+
+_RECORDS_READ_SQL = " FROM tool_calls WHERE script='records.py' AND sub='read'"
+
+
+def detect_records_read(conn, cfg):
+    n = conn.execute("SELECT COUNT(*)" + _RECORDS_READ_SQL).fetchone()[0]
+    return {"rows": n} if n else None
+
+
+def apply_records_read(conn, cfg, plan):
+    """Delete the read rows, clear their runs' savings rows, rewrite their sessions' savings, rebuild the summary.
+    Each statement stands alone (the ledger autocommits, as in the 3.30.8 step)."""
+    from . import ledger_cli, summary
+
+    pairs = conn.execute("SELECT DISTINCT run_id, session_id" + _RECORDS_READ_SQL).fetchall()
+    rows = conn.execute("DELETE" + _RECORDS_READ_SQL).rowcount
+    runs = sorted(set(p[0] for p in pairs if p[0]))
+    for run_id in runs:
+        conn.execute("DELETE FROM savings WHERE run_id=?", (run_id,))
+    sids = sorted(set(p[1] for p in pairs if p[1]))
+    for sid in sids:
+        ledger_cli.write_savings(conn, sid, cfg)
+    summary.rebuild(conn, cfg)
+    return {"rows": rows, "runs": len(runs), "sessions": len(sids)}
+
+
 STEPS = [
     (STEP_ACCOUNT_FALLBACK, detect_account_fallback, apply_account_fallback),
     (STEP_BATCH_GAP, detect_batch_gap, apply_batch_gap),
     (STEP_SAVINGS_ACCOUNT, detect_savings_account, apply_savings_account),
     (STEP_RESIDUAL_OFF_MAIN, detect_residual_off_main, apply_residual_off_main),
     (STEP_HANDBACK_ANSWER, detect_handback_answer, apply_handback_answer),
+    (STEP_RECORDS_READ, detect_records_read, apply_records_read),
 ]
 
 
@@ -478,7 +516,8 @@ _NOTICE_TEXT = {STEP_ACCOUNT_FALLBACK: "re-filed or cleared",
                 STEP_BATCH_GAP: "(turns' gaps recomputed)",
                 STEP_SAVINGS_ACCOUNT: "re-filed to the switch's account, savings rewritten",
                 STEP_RESIDUAL_OFF_MAIN: "(residual rows moved off the main run to unattributed)",
-                STEP_HANDBACK_ANSWER: "(helpers' hand-back reports counted, savings rewritten)"}
+                STEP_HANDBACK_ANSWER: "(helpers' hand-back reports counted, savings rewritten)",
+                STEP_RECORDS_READ: "(journal reads no longer counted as savings, savings rewritten)"}
 
 
 def step_ids():
