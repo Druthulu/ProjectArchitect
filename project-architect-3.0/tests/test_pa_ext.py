@@ -394,8 +394,8 @@ for line in sys.stdin:
         emit({"type": "system", "subtype": "init", "model": model})
     emit({"type": "user", "message": msg})
     if len(rec["msgs"]) == 1:
-        emit({"type": "assistant", "message": {"usage": {"input_tokens": 7, "cache_read_input_tokens": 300,
-                                                         "cache_creation_input_tokens": 20, "output_tokens": 4},
+        u0 = {"input_tokens": 7, "cache_read_input_tokens": 300, "cache_creation_input_tokens": 20, "output_tokens": 4}
+        emit({"type": "assistant", "message": {"usage": dict.fromkeys(u0, 0) if mode == "zerousage" else u0,
               "content": [{"type": "text", "text": "I will fix the name.\n\nThen test it.\nThird line."}]}})
         emit({"type": "assistant", "message": {"content": [{"type": "tool_use", "id": "tu1", "name": "Edit", "input": {
             "file_path": os.path.join(os.getcwd(), "src", "a.py"), "old_string": "a = 1\nb = 2\nc = 3\n",
@@ -406,6 +406,15 @@ for line in sys.stdin:
         emit({"type": "assistant", "message": {"id": "big", "usage": {"input_tokens": 10, "cache_read_input_tokens": 400000,
               "output_tokens": 5}, "content": [{"type": "thinking", "thinking": "The pin sits on $4."},
                                                {"type": "text", "text": "still going"}]}})
+        continue
+    if mode == "zerousage" and len(rec["msgs"]) == 1:   # 3.32.7: OpenRouter's shape: the stream's usage all zeros, the
+        tdir = os.path.join(os.environ["CLAUDE_CONFIG_DIR"], "projects", "-proj")   # reply's counts in the transcript
+        os.makedirs(tdir, exist_ok=True)
+        with open(os.path.join(tdir, args[args.index("--session-id") + 1] + ".jsonl"), "a", encoding="utf-8") as fh:
+            fh.write(json.dumps({"type": "assistant", "message": {"id": "big", "model": model, "content": [], "usage": {
+                "input_tokens": 10, "cache_read_input_tokens": 400000, "output_tokens": 5}}}) + "\n")
+        emit({"type": "assistant", "message": {"id": "big", "usage": {"input_tokens": 0, "output_tokens": 0},
+              "content": [{"type": "text", "text": "still going"}]}})
         continue
     emit({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}})
     if mode == "noresult":
@@ -963,6 +972,50 @@ class ShowTest(_ModBase):
         show.cost({"modelUsage": {DS: {"inputTokens": 2000, "cacheReadInputTokens": 4000, "outputTokens": 1000}}}, [])
         e = self._json(os.path.join(self.mod, "ext.json"), False)
         self.assertEqual((e["live"], e["runs"], e["tokens"]), ({}, 1, 7000))
+
+    def test_openrouter_stream_the_context_from_the_transcript(self):
+        """3.32.7: the stream's usage all zeros (OpenRouter's shape): the context comes from the child's transcript, so
+        the row's tokens and the handoff ask work as with a Claude-shaped stream."""
+        os.environ["FAKE_MODE"] = "zerousage"
+        code, out = self._run()
+        self.assertEqual(code, 0, out)
+        msgs = self._fake()["msgs"]
+        self.assertEqual(len(msgs), 2, msgs)
+        self.assertTrue(msgs[1].startswith("HANDOFF — context threshold reached."), msgs[1])
+        self.assertEqual(self._json(os.path.join(self.mod, "agents", "ext-T5.c1.json"))["ctx"], 400010)
+
+    def test_read_usage_reads_the_transcript_on_from_where_it_stopped(self):
+        """3.32.7: whole lines only, each message's usage for the live tally, the latest request's context as ctx and
+        in the facts; the stream's all-zero opening usage is no reading; a resumed run reads only what it adds."""
+        tdir = os.path.join(self.folder, "projects", "-proj")
+        os.makedirs(tdir)
+        tpath = os.path.join(tdir, "child-1.jsonl")
+        line = lambda mid, cache: json.dumps({"type": "assistant", "message": {   # noqa: E731
+            "id": mid, "model": DS, "content": [], "usage": {"input_tokens": 1000, "cache_read_input_tokens": cache,
+                                                             "output_tokens": 500}}}) + "\n"
+        show = pa_ext.Show(self.proj, "parent-sid", "T5.c2", "DeepSeek V4.1 Flash", DS, "high", "local", self.folder,
+                           "child-1")
+        show.start()
+        with open(tpath, "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(json.dumps({"type": "user", "message": {"content": "brief"}}) + "\n" + line("m1", 2000)
+                     + line("m2", 5000)[:40])                    # m2's line still being written
+        show.read_usage()
+        self.assertEqual((show.ctx, sorted(show.usage)), (3000, ["m1"]))
+        show.event({"type": "assistant", "message": {"id": "m2", "usage": {"input_tokens": 0, "output_tokens": 0},
+                                                     "content": []}})
+        self.assertEqual((show.ctx, sorted(show.usage)), (3000, ["m1"]))
+        with open(tpath, "a", encoding="utf-8", newline="\n") as fh:
+            fh.write(line("m2", 5000)[40:])
+        show.read_usage()
+        self.assertEqual(show.ctx, 6000)
+        self.assertEqual(self._json(os.path.join(self.mod, "agents", "ext-T5.c2.json"))["ctx"], 6000)
+        show.live()
+        self.assertEqual(self._json(os.path.join(self.mod, "ext.json"), False)["live"]["T5.c2"]["tokens"], 3500 + 6500)
+        again = pa_ext.Show(self.proj, "parent-sid", "T5.c3", "DeepSeek V4.1 Flash", DS, "high", "local", self.folder,
+                            "child-1")
+        again.start()
+        again.read_usage()
+        self.assertEqual((again.ctx, again.usage), (0, {}))
 
     def test_no_mod_side_writes_without_the_mod_folder(self):
         shutil.rmtree(self.mod)

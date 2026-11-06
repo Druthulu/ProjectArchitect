@@ -88,6 +88,8 @@ const shellName =(command: string): string => {
   const last = command.split(/&&|\|\||;/).pop()?.trim().split(/\s+/)[0] ?? ''
   return (script ?? last).split(/[\/]/).pop() ?? ''
 }
+/** 3.32.7: `pa_ext.py run`'s exit when it refused to start the coder (pa_ext `claim`); its shell leaves no record. */
+const EXT_REFUSED = 4
 /** The completion notice's task id and outcome: removed (`exit` undefined) on a clean end, else its exit code (-1 unknown). */
 const shellEnd = (text: string): { id: string; exit?: number } | null => {
   const id = /<task-id>([^<]+)<\/task-id>/.exec(text)?.[1]?.trim() ?? ''
@@ -534,7 +536,8 @@ export const register: Register = on => {
   })
 
   // 3.28.1 T15: a background shell's completion notice (a row in its agent's conversation): a clean end removes its
-  // record; a failed one keeps it with its exit code (shown dead) until the agent reports.
+  // record; a failed one keeps it with its exit code (shown dead) until the agent reports. 3.32.7: so does a `pa_ext.py
+  // run` refused at its start (exit 4: learning mode, a full lane, its label running), which ran no coder.
   on('session.append', async ($, e, next) => {
     const r = await next(e)
     try {
@@ -543,12 +546,14 @@ export const register: Register = on => {
         : (Array.isArray(content) ? content : []).map(b => (typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'text' ? String((b as { text?: unknown }).text ?? '') : '')).join('\n')
       const end = text.includes('<task-notification>') ? shellEnd(text) : null
       if (end !== null && (await read($, activeAtom).catch(() => false))) {
+        const gone = (x: ShellRec): boolean => x.id === end.id
+          && (end.exit === undefined || (end.exit === EXT_REFUSED && x.name.startsWith('external ')))
         await shellsEdit($, s => {
           if (!Object.values(s).some(l => l.some(x => x.id === end.id))) {
             return null
           }
-          return Object.fromEntries(Object.entries(s).map(([a, l]) => [a, end.exit === undefined
-            ? l.filter(x => x.id !== end.id) : l.map(x => (x.id === end.id ? { ...x, exit: end.exit } : x))]))
+          return Object.fromEntries(Object.entries(s).map(([a, l]) => [a, l.filter(x => !gone(x))
+            .map(x => (x.id === end.id ? { ...x, exit: end.exit } : x))]))
         })
       }
     } catch {

@@ -2,6 +2,18 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.7 — External coders count their tokens and hand off on time
+
+- An external coder's row on the statusline now shows how much context it is using, and the External line's
+  tokens and spend move while coders run instead of only when one finishes. OpenRouter sends a reply's token
+  counts only at its end, so PA3 never saw them while the coder ran and they read zero.
+- The same count is what tells a coder to save its progress and hand off at its context limit (350k tokens by
+  default), so external coders never got that ask: some ran far past it, and one ran until its model refused the
+  prompt as too long. They now get it on time, as in-house coders do.
+- A coder that `pa_ext.py run` turned away at the start (learning mode, a full lane, or the same coder already
+  running) no longer leaves a red `✗` row on the statusline until its expert reports. It never ran; the expert
+  starts it again when it is allowed to.
+
 ## 3.32.6 — No more question marks on the Session line
 
 - The Session line could show `?/?` for both usage and savings when the session was the only one spending in that

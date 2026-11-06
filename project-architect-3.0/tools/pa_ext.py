@@ -1200,7 +1200,7 @@ class Show:
     """One external coder as the mod shows an in-house one: feed records, the facts file, journal entries, the finish
     card and ext.json. Only the journal is written without <proj>/.run/mod/<psid>/ (no mod session)."""
 
-    def __init__(self, proj, psid, label, name, model_id, effort, config, folder):
+    def __init__(self, proj, psid, label, name, model_id, effort, config, folder, child_sid=""):
         self.proj, self.psid, self.label, self.name = proj, psid, label, name
         self.model_id, self.effort, self.config, self.folder = model_id, effort, config, folder
         self.mod = os.path.join(proj, ".run", "mod", psid) if psid else ""
@@ -1209,6 +1209,7 @@ class Show:
         self.tools, self.steps, self.note, self.line = {}, [], "", ""
         self.ctx, self.edited, self.texts_in, self.facts_last, self.key_before = 0, False, 0, None, None
         self.usage = {}   # message id -> (model, usage): the run so far, for ext.json's live tally
+        self.child_sid, self.tpath, self.tpos = child_sid, None, 0   # 3.32.7: the child's transcript, read so far
         self.health = Health()
         self.thought = set()   # (message id, start) of the thinking blocks journaled
         meta = _dict(fsutil.read_json(os.path.join(folder, "pa3-ext.json")))
@@ -1256,7 +1257,58 @@ class Show:
         lines = ["%s: %s" % (k, re.sub(r"[\r\n]+", " ", str(v))) for k, v in fields.items()]
         fsutil.atomic_write_text(path, "---\n%s\n---\n%s\n" % ("\n".join(lines), body))
 
+    def _usage(self, msg):
+        """One assistant message's usage: its context (input, cache read, cache write) is `ctx`, the row's tokens and
+        the handoff's measure; its usage by message id is the live tally's (each content block repeats its message: the
+        last write counts). 3.32.7: an all-zero one, a reply's opening usage on OpenRouter, is no reading."""
+        u = _dict(msg.get("usage"))
+        c = sum(v for v in (u.get(k) for k in ("input_tokens", "cache_read_input_tokens",
+                                                "cache_creation_input_tokens")) if isinstance(v, int))
+        if c <= 0:
+            return
+        self.ctx = c
+        if isinstance(msg.get("id"), str):
+            model = msg.get("model")
+            self.usage[msg["id"]] = (model if isinstance(model, str) and model else self.model_id, u)
+
+    def _transcript(self):
+        """The child's transcript, <config folder>/projects/<project>/<child sid>.jsonl, once Claude Code made it."""
+        if self.tpath is None and self.child_sid:
+            hits = glob.glob(os.path.join(self.folder, "projects", "*", glob.escape(self.child_sid) + ".jsonl"))
+            self.tpath = hits[0] if hits else None
+        return self.tpath
+
+    def read_usage(self):
+        """3.32.7: each request's usage from the child's transcript, read on from where the last read stopped (whole
+        lines only), then the facts. The stream's assistant events carry a reply's opening usage, which OpenRouter
+        sends as zeros, its counts coming at the reply's end; Claude Code writes those into its transcript."""
+        path = self._transcript()
+        if path is None:
+            return
+        try:
+            with open(path, "rb") as fh:
+                fh.seek(self.tpos)
+                data = fh.read()
+        except OSError:
+            return
+        whole = data[:data.rfind(b"\n") + 1]     # a line still being written waits for the next read
+        self.tpos += len(whole)
+        for ln in whole.splitlines():
+            try:
+                rec = json.loads(ln.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if isinstance(rec, dict) and rec.get("type") == "assistant":
+                self._usage(_dict(rec.get("message")))
+        self.facts()
+
     def start(self):
+        path = self._transcript()
+        if path is not None:                    # 3.32.7: a resumed run's transcript: only what this run adds
+            try:
+                self.tpos = os.path.getsize(path)
+            except OSError:
+                pass
         self.journal("spawn", {"agent": self.agent, "type": "ext-coder", "model": self.model_id, "name": self.name,
                                "effort": self.effort, "label": self.label, "parent": self.psid},
                      "External coder %s started on %s." % (self.label, self.name))
@@ -1308,13 +1360,7 @@ class Show:
         t = ev.get("type")
         if t == "assistant":
             msg = _dict(ev.get("message"))
-            u = _dict(msg.get("usage"))
-            if u:
-                self.ctx = sum(v for v in (u.get(k) for k in ("input_tokens", "cache_read_input_tokens",
-                                                              "cache_creation_input_tokens")) if isinstance(v, int))
-                if isinstance(msg.get("id"), str):   # each content block repeats its message: the last write counts
-                    model = msg.get("model")
-                    self.usage[msg["id"]] = (model if isinstance(model, str) and model else self.model_id, u)
+            self._usage(msg)
             for b in msg.get("content") if isinstance(msg.get("content"), list) else []:
                 b = _dict(b)
                 if b.get("type") == "text" and isinstance(b.get("text"), str) and b["text"].strip():
@@ -1540,6 +1586,8 @@ def drive(proc, run_dir, brief, state, beat):
     _send(proc, brief)
     closed, seen, nudged, last_beat = False, 0, 0, time.time()
     while True:
+        if state.get("show") is not None:      # 3.32.7: the context from the transcript, for the ask below and the row
+            _quiet(state["show"].read_usage)
         if not closed:
             _relay(proc, run_dir)
             h, sh = state.get("handoff"), state.get("show")
@@ -1668,7 +1716,7 @@ def run(target, brief_path, out=print, cwd=None, resume=None):
         except OSError as e:
             raise Blocked("could not start %s: %s" % (_fwd(argv[0]), e))
         state = _new_state()
-        show = Show(proj, psid, label, name, model_id, effort, config, folder)
+        show = Show(proj, psid, label, name, model_id, effort, config, folder, sid)
         _quiet(show.start)
         state["show"] = show
         try:

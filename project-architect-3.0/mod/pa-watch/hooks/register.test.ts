@@ -845,6 +845,21 @@ describe('background shells (3.28.1 T15)', () => {
     await $.tool.call({ tool: 'Bash', command: 'make gate', run_in_background: true, agentId: 'C1' } as never)
     expect(shells(m)['C1']?.map(s => s.name)).toEqual(['external T4.c1', 'external T4.c2', 'pa_ext.py', 'make'])
   })
+
+  test('3.32.7: a pa_ext.py run refused at its start (exit 4) leaves no record; other failures stay until the agent reports', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
+    let n = 0
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `x${String(n += 1)}` } }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: 'python tools/pa_ext.py run openrouter/deepseek .run/3.40/ext/T4.c1.md', run_in_background: true, agentId: 'C1' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'python tools/pa_ext.py run openrouter/deepseek .run/3.40/ext/T4.c2.md', run_in_background: true, agentId: 'C1' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'make gate', run_in_background: true, agentId: 'C1' } as never)
+    await append($, notice('x1', 'failed', 'Background command "run c1" failed with exit code 4'))
+    await append($, notice('x2', 'failed', 'Background command "run the c2" failed with exit code 3'))
+    await append($, notice('x3', 'failed', 'Background command "make gate" failed with exit code 4'))
+    expect(shells(m)['C1']?.map(s => [s.name, s.exit])).toEqual([['external T4.c2', 3], ['make', 4]])
+  })
 })
 
 // 3.29.9: the router's display trim: the watcher answers the router's `pa-trim` compaction of the main conversation with
