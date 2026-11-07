@@ -218,7 +218,7 @@ def run(inp, cfg):
     why = ext_rules.network_reason(tool, ti)
     if why:
         return decide("deny", "network", "network: %s" % why, NET_MSG % why)
-    path = ext_rules.outside_path(tool, ti, proj, dirs, own, keep=keep)
+    path = ext_rules.outside_path(tool, ti, proj, dirs, own, keep=keep, cwd=cwd)   # 3.32.9: the shell's own folder
     if path:
         return decide("deny", "outside", "outside the project: %s" % _fwd(path),
                       OUTSIDE_MSG % (_fwd(path), _fwd(proj)))

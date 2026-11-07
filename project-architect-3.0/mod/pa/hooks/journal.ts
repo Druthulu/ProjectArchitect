@@ -30,16 +30,18 @@ export function entryPath(date: string, hhmmss: string, seq: number, writer: str
   return `${JOURNAL_DIR}/${date}/${hhmmss}-${String(seq).padStart(3, '0')}${writer}-${who}-${kind}.md`
 }
 
-export type EntryName = { date: string; time: string; seq: number; writer: Writer; who: string; kind: Kind }
+/** 3.32.9: a read entry's writer may also be `x`, an external coder's (tools/pa_ext.py); only r and w write here. */
+export type EntryName = { date: string; time: string; seq: number; writer: Writer | 'x'; who: string; kind: Kind }
 
 /**
  * The parts of an entry path (or its tail from the date folder on), or null when it is not one. Both forms: the live
  * `<date>/<stem>.md` and the rolled `<date>.md#<stem>` (tools/journal_rollup.py, 3.23 T7).
  */
 export function parseEntryPath(path: string): EntryName | null {
-  const m = /(?:^|\/)([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\/|\.md#)([0-9]{6})-([0-9]{3})([rw])-(T[0-9]+|[a-z]+)-([a-z]+)(\.md)?$/.exec(path)
+  // 3.32.9: an external coder's entries (x) and a watcher's past its 999th (four digits) parse too
+  const m = /(?:^|\/)([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\/|\.md#)([0-9]{6})-([0-9]{3,})([rwx])-(T[0-9]+|[a-z]+)-([a-z]+)(\.md)?$/.exec(path)
   if (!m || !isWho(m[5]) || !isKind(m[6]) || (m[7] === undefined) !== path.includes('.md#')) return null
-  return { date: m[1], time: m[2], seq: Number(m[3]), writer: m[4] as Writer, who: m[5], kind: m[6] as Kind }
+  return { date: m[1], time: m[2], seq: Number(m[3]), writer: m[4] as Writer | 'x', who: m[5], kind: m[6] as Kind }
 }
 
 /** A rolled day's file `.claude-state/journal/<date>.md` (tools/journal_rollup.py). */
@@ -47,7 +49,7 @@ export function dayFilePath(date: string): string {
   return `${JOURNAL_DIR}/${date}.md`
 }
 
-const STEM = /^[0-9]{6}-[0-9]{3}[rw]-(?:T[0-9]+|[a-z]+)-[a-z]+$/
+const STEM = /^[0-9]{6}-[0-9]{3,}[rwx]-(?:T[0-9]+|[a-z]+)-[a-z]+$/ // 3.32.9: as journal_rollup.py STEM_RE
 
 /**
  * The entries of a rolled day file (journal_rollup.py split_day): each `## <stem>` heading starts one, its text the

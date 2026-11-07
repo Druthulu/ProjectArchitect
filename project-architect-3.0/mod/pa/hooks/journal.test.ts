@@ -53,6 +53,16 @@ describe('journal naming (vectors shared with pa-watch)', () => {
     expect(parseEntryPath('.claude-state/journal/2026-10-06.md#143005-008w-partner-thinking.md')).toBe(null)
     expect(parseEntryPath('.claude-state/journal/2026-10-06.md')).toBe(null)
   })
+
+  test('3.32.9: an external coder\'s entry (x) and a sequence past 999 parse; the mod still writes only r and w', async () => {
+    expect(parseEntryPath('.claude-state/journal/2026-10-22/093845-002x-coder-thinking.md')).toEqual({
+      date: '2026-10-22', time: '093845', seq: 2, writer: 'x', who: 'coder', kind: 'thinking',
+    })
+    expect(parseEntryPath('.claude-state/journal/2026-10-17.md#050646-1000w-coder-thinking')).toEqual({
+      date: '2026-10-17', time: '050646', seq: 1000, writer: 'w', who: 'coder', kind: 'thinking',
+    })
+    expect(() => entryPath('2026-10-07', '143005', 7, 'x', 'dev', 'msg')).toThrow()
+  })
 })
 
 describe('journal rolled days (3.23 T7)', () => {
@@ -72,6 +82,13 @@ describe('journal rolled days (3.23 T7)', () => {
     expect(es[0]?.body).toBe('Rolled hello\n\n## not a stem\nmore')
     expect(es[1]?.body).toBe('Rolled answer')
     expect(dayFilePath('2026-10-06')).toBe('.claude-state/journal/2026-10-06.md')
+  })
+
+  test('3.32.9: splitDay keeps an external coder\'s and a four-digit stem as entries of their own', async () => {
+    const more = `${day}## 080020-001x-coder-note\n${rolledAns}## 080030-1000w-coder-thinking\n${rolledAns}`
+    expect(splitDay('2026-10-06', more).map((e) => e.path.split('#')[1])).toEqual([
+      '080000-001r-dev-msg', '080010-002r-claude-answer', '080020-001x-coder-note', '080030-1000w-coder-thinking',
+    ])
   })
 
   test('the index of a rolled day plus a live day; indexAgrees on both forms', async () => {

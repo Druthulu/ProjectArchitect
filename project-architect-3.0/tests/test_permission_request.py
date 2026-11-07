@@ -296,6 +296,32 @@ class ExtRulesTest(unittest.TestCase):
         self.assertEqual(self.out("Glob", {"pattern": "**/*.c"}), "")
         self.assertEqual(self.out("Edit", {"file_path": "src/a.c"}), "")
 
+    def test_outside_path_follows_the_shells_folder(self):
+        """3.32.9: relative words are taken from the shell's folder and each cd the rule can follow; a quoted relative
+        string, a word with a variable and anything past a cd it cannot follow go to the judge; absolute, ~ and $HOME
+        words are checked as before (bfm-decomp's refusals: 8 of 11 were such words)."""
+        f = lambda p: p.replace("\\", "/")     # noqa: E731
+        item = os.path.join(self.proj, ".run", "P40", "T11", "RM3", "func_a")
+        rm3 = "cd ../func_b && sed -n '1,9p' ../../../../../src/x.c > orig.c && diff prev.c orig.c"
+        self.assertEqual(self.out("Bash", {"command": rm3}, cwd=item), "")                       # bfm cRM3
+        self.assertEqual(self.out("Bash", {"command": rm3}), os.path.normpath(os.path.join(self.home, "func_b")))
+        self.assertEqual(self.out("Bash", {"command": "cd .run/P40/T11/G30 && ls ../bin/ ../"}), "")   # bfm cG30
+        self.assertEqual(self.out("Bash", {"command": 'cd %s; python3 x/splice.py src/m/m.c "../shared/f.h"' % f(self.proj)}),
+                         "")                                                                      # bfm cG23x
+        self.assertEqual(self.out("Bash", {"command": "d=.run/a/b; bash $d/../../bin/sweep.sh $d"}), "")   # bfm cG16
+        self.assertEqual(self.out("Bash", {"command": "cd $D && cat ../../../x"}), "")          # a cd it cannot follow
+        self.assertEqual(self.out("Bash", {"command": "(cd sub && make) && cat ../../x"}), "")   # nor one in a subshell
+        self.assertEqual(self.out("Bash", {"command": "cat ../.ssh/id_rsa"}),
+                         os.path.normpath(os.path.join(self.home, ".ssh", "id_rsa")))          # unquoted: as before
+        self.assertEqual(self.out("Bash", {"command": 'cat "%s/.ssh/id_rsa"' % f(self.home)}),
+                         os.path.normpath(os.path.join(self.home, ".ssh", "id_rsa")))          # a quoted absolute one
+        self.assertEqual(self.out("Bash", {"command": "find %s -maxdepth 3 -iname gcc" % f(self.home)}),
+                         os.path.normpath(self.home))                                          # bfm cG14b: real
+        self.assertEqual(self.out("Bash", {"command": "cd ../.. && cat ../x"}, cwd=item),
+                         "")                                                                    # still inside
+        self.assertEqual(self.out("Bash", {"command": "cd %s && cat ../x" % f(self.proj)}, cwd=item),
+                         os.path.normpath(os.path.join(self.home, "x")))                       # cd'd back to the root
+
     def test_remember_ok(self):
         for rule, ok in (("Bash(mipsel-linux-gnu-objdump:*)", True), ("Bash(make:*)", True),
                          ("Bash(tools/bin/gcc-2.7.2-psx/cc1:*)", True), ("Bash(python3 .run/P40/gen.py:*)", True),
@@ -324,8 +350,9 @@ class ExtRulesTest(unittest.TestCase):
                              {"by": "judge-error", "decision": "deny", "reason": "exit 1", "what": "x"},
                              {"by": "outside", "decision": "deny", "what": "cat ~/x", "reason": "outside"},
                              {"by": "learned", "decision": "allow"}])
-        self.assertEqual(t, {"allowed": 2, "denied": 1, "learned": ["Bash(make:*)"], "network": 0, "outside": 1,
-                             "again": 1, "judge_s": 3.5, "examples": ["x: exit 1", "cat ~/x: outside"]})
+        self.assertEqual(t, {"allowed": 2, "denied": 0, "unanswered": 1, "learned": ["Bash(make:*)"], "network": 0,
+                             "outside": 1, "again": 1, "judge_s": 3.5,
+                             "examples": ["x: exit 1", "cat ~/x: outside"]})       # 3.32.9: no answer is no refusal
 
 
 if __name__ == "__main__":

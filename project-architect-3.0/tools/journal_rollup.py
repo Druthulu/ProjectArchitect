@@ -25,7 +25,8 @@ import time
 
 JOURNAL_DIR = os.path.join(".claude-state", "journal")
 DAY_RE = re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
-STEM_RE = re.compile(r"^[0-9]{6}-[0-9]{3}[rw]-(?:T[0-9]+|[a-z]+)-[a-z]+$")
+# 3.32.9: an external coder's entries (writer x, tools/pa_ext.py) and a watcher's past its 999th (four digits) roll too
+STEM_RE = re.compile(r"^[0-9]{6}-[0-9]{3,}[rwx]-(?:T[0-9]+|[a-z]+)-[a-z]+$")
 INDEX_RE = re.compile(r"^INDEX-[0-9]{4}-[0-9]{2}\.md$")
 LINE_RE = re.compile(r"^([^|]*) \| ([^|]*) \| ([^|]*) \| (.*) \| ([^|]+)$")   # journal.ts parseIndex
 PATH_RE = re.compile(r"^(.*?)([0-9]{4}-[0-9]{2}-[0-9]{2})/([^/#]+)\.md$")
@@ -117,8 +118,54 @@ def main(argv=None):
     if not days:
         sys.stdout.write("nothing to roll\n")
         return 0
+    if a.dry_run:
+        return _roll(jdir, days, True)
+    lock = _take_lock(os.path.abspath(a.root))
+    if lock is None:
+        sys.stdout.write("another roll-up is running\n")
+        return 0
+    try:
+        return _roll(jdir, days, False)
+    finally:
+        try:
+            os.remove(lock)
+        except OSError:
+            pass
+
+
+LOCK_STALE_S = 600      # 3.32.9: a roll-up takes seconds; an older lock is a crashed one's
+
+
+def _take_lock(root):
+    """3.32.9: ``<root>/.run/journal_rollup.lock``, created exclusively (an older-than-LOCK_STALE_S one is taken over);
+    None while another roll-up holds it: the session start's and the 8-hour timer's, or two sessions' of one project,
+    never merge the same day at once."""
+    d = os.path.join(root, ".run")
+    os.makedirs(d, exist_ok=True)
+    path = os.path.join(d, "journal_rollup.lock")
+    for _attempt in (0, 1):
+        try:
+            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            try:
+                if time.time() - os.path.getmtime(path) < LOCK_STALE_S:
+                    return None
+                os.remove(path)
+            except OSError:
+                return None
+            continue
+        except OSError:
+            return None
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write("%d\n" % os.getpid())
+        return path
+    return None
+
+
+def _roll(jdir, days, dry_run):
+    """Roll ``days`` (``due_days``): each into its day file, the index lines pointed at it, the entry files deleted."""
     for date, folder, stems in days:
-        if a.dry_run:
+        if dry_run:
             sys.stdout.write("would roll: %s (%d entries)\n" % (date, len(stems)))
             continue
         day_file = os.path.join(jdir, date + ".md")
@@ -127,7 +174,7 @@ def main(argv=None):
             entries[stem] = _read(os.path.join(folder, stem + ".md"))
         _write(day_file, render_day(date, entries))
         sys.stdout.write("rolled: %s (%d entries)\n" % (date, len(stems)))
-    if a.dry_run:
+    if dry_run:
         return 0
     dates = set(d for d, _f, _s in days)
     for name in sorted(os.listdir(jdir)):
@@ -139,7 +186,10 @@ def main(argv=None):
                 _write(path, new)
     for _date, folder, stems in days:
         for stem in stems:
-            os.remove(os.path.join(folder, stem + ".md"))
+            try:
+                os.remove(os.path.join(folder, stem + ".md"))
+            except FileNotFoundError:     # 3.32.9: gone already (a hand-run roll-up's)
+                pass
         if not os.listdir(folder):
             os.rmdir(folder)
     return 0

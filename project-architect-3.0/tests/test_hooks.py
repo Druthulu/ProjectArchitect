@@ -1755,6 +1755,44 @@ class DetachedRebuildTest(LedgerCase):
                 self.assertTrue(os.path.exists(self.dirty))
         self.assertFalse(any("pa.summary" in c for c, _e in self.toasts))
 
+    def test_a_newer_install_hands_the_loop_to_a_fresh_child(self):
+        """3.32.9: between passes, a child that finds a newer VERSION installed stops looping (it keeps the code it
+        started with) and requests a fresh child, leaving it the stamp; without one it takes the stamp and goes on."""
+        from unittest import mock
+
+        self.run_rebuilds = False
+        passes = []
+
+        def one_pass(conn, cfg, sessions_only=False):
+            passes.append(sessions_only)
+            if len(passes) == 1:
+                summary._mark_dirty(self.dirty, False)       # a hook asks for a full rebuild during the pass
+
+        for newer, want_passes, want_spawned in ((True, [True], 1), (False, [True, False], 0)):
+            with self.subTest(newer=newer):
+                self._clear()
+                del passes[:]
+                with mock.patch.object(summary, "rebuild", side_effect=one_pass), \
+                        mock.patch.object(summary, "_newer_installed", return_value=newer):
+                    summary.run_rebuild(sessions_only=True)
+                self.assertEqual(passes, want_passes)
+                self.assertEqual(len(self.rebuilds), want_spawned)
+                self.assertEqual(os.path.exists(self.dirty), newer)    # the stamp waits for the fresh child
+                if newer:
+                    self.assertIn("--sessions-only", self.rebuilds[0][0])
+                    with open(self.dirty, encoding="utf-8") as fh:
+                        self.assertEqual(fh.read().strip(), "full")
+
+    def test_newer_installed_reads_the_version_on_disk(self):
+        """3.32.9: the check compares the VERSION file now with the version this process loaded."""
+        from unittest import mock
+
+        import pa
+        with mock.patch.object(pa, "_read_version", return_value=pa.__version__):
+            self.assertFalse(summary._newer_installed())
+        with mock.patch.object(pa, "_read_version", return_value=pa.__version__ + ".1"):
+            self.assertTrue(summary._newer_installed())
+
     def test_full_request_wins_the_dirty_stamp(self):
         self.run_rebuilds = False
         self._clear()

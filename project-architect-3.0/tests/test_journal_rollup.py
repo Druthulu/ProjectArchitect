@@ -83,6 +83,35 @@ class RollupTest(unittest.TestCase):
         self.assertEqual((self._read("2026-10-05.md"), self._read("2026-10-06.md"),
                           self._read("INDEX-2026-10.md")), snapshot)
 
+    def test_external_coder_and_four_digit_entries_roll(self):
+        """3.32.9: an external coder's entries (writer x) and a watcher's past its 999th (four digits) roll with the
+        rest; they had stayed loose forever (bfm-decomp: 4,927 files)."""
+        date, stems = "2026-10-03", ["101500-001x-coder-spawn", "101600-1000w-coder-thinking", "101700-002r-claude-answer"]
+        old = time.time() - 7200
+        os.makedirs(os.path.join(self.jdir, date))
+        for stem in stems:
+            p = os.path.join(self.jdir, date, stem + ".md")
+            with open(p, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(_entry(date, stem))
+            os.utime(p, (old, old))
+        self.assertTrue(self._run().startswith("rolled: 2026-10-03 (3 entries)\n"))
+        self.assertFalse(os.path.exists(os.path.join(self.jdir, date)))
+        self.assertEqual(JR.split_day(self._read(date + ".md")), dict((s, _entry(date, s)) for s in stems))
+
+    def test_one_roll_up_at_a_time(self):
+        """3.32.9: a roll-up holds <root>/.run/journal_rollup.lock; another one meanwhile (the 8-hour timer's and a
+        start's, or two sessions of one project) rolls nothing; a lock older than ten minutes is a crashed one's."""
+        lock = os.path.join(self.root, ".run", "journal_rollup.lock")
+        os.makedirs(os.path.dirname(lock))
+        with open(lock, "w", encoding="utf-8") as fh:
+            fh.write("1\n")
+        self.assertEqual(self._run(), "another roll-up is running\n")
+        self.assertTrue(os.path.isdir(os.path.join(self.jdir, "2026-10-05")))
+        old = time.time() - 1200
+        os.utime(lock, (old, old))
+        self.assertTrue(self._run().startswith("rolled: 2026-10-05 (2 entries)\n"))
+        self.assertFalse(os.path.exists(lock))
+
     def test_recent_day_waits(self):
         p = os.path.join(self.jdir, "2026-10-06", "120002-002r-claude-answer.md")
         os.utime(p, None)                      # touched now: under 1 h old

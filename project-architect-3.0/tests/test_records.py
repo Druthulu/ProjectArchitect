@@ -134,6 +134,13 @@ class RecordsTest(unittest.TestCase):
         self.assertEqual(lines[7], "R5 | 2026-10-30 | decision | in force | journal records | "
                          "File records after 15 quiet minutes. | %s/2026-10-30/090000-002r-claude-record.md" % J)
 
+    def test_a_record_past_the_999th_entry_is_read(self):
+        """3.32.9: a record whose sequence has four digits is a record (it was invisible to the seed and the index)."""
+        self._live("2026-10-30", "091500-1000r-claude-record", "2026-10-30T09:15:00Z",
+                   "topic: long sessions\ndecision: Records past the 999th entry count.\nheadline: four digits\n")
+        self.assertEqual([e["path"] for e in R.read_entries(self.root)],
+                         ["%s/2026-10-30/091500-1000r-claude-record.md" % J])
+
     def test_reading_the_journal_writes_no_credit_note(self):
         """3.32.8: a read credits nothing (its note counted the whole journal as typed output and as carried
         context, most of a busy week's measured savings)."""

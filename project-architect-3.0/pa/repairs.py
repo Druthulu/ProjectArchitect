@@ -477,7 +477,8 @@ def apply_handback_answer(conn, cfg, plan):
 # and this step deletes the rows already booked, clears the reading runs' savings rows (a run that falls to nothing
 # would keep its old row: write_savings skips it) and rewrites their sessions' savings.
 
-_RECORDS_READ_SQL = " FROM tool_calls WHERE script='records.py' AND sub='read'"
+_RECORDS_READ_WHERE = " WHERE script='records.py' AND sub='read'"
+_RECORDS_READ_SQL = " FROM tool_calls" + _RECORDS_READ_WHERE
 
 
 def detect_records_read(conn, cfg):
@@ -486,12 +487,15 @@ def detect_records_read(conn, cfg):
 
 
 def apply_records_read(conn, cfg, plan):
-    """Delete the read rows, clear their runs' savings rows, rewrite their sessions' savings, rebuild the summary.
-    Each statement stands alone (the ledger autocommits, as in the 3.30.8 step)."""
+    """Zero the read rows (no emission, no carry), clear their runs' savings rows, rewrite their sessions' savings,
+    rebuild the summary, and delete the rows last.  Each statement stands alone (the ledger autocommits, as in the
+    3.30.8 step); 3.32.9: the rows go last, so a run cut off anywhere before that leaves them for the next start,
+    which redoes the whole step (it had deleted them first: a run cut before the rewrite then stamped "nothing")."""
     from . import ledger_cli, summary
 
     pairs = conn.execute("SELECT DISTINCT run_id, session_id" + _RECORDS_READ_SQL).fetchall()
-    rows = conn.execute("DELETE" + _RECORDS_READ_SQL).rowcount
+    conn.execute("UPDATE tool_calls SET file_tokens=0, emission_tokens=0, result_tokens=0, kept_tokens=0"
+                 + _RECORDS_READ_WHERE)
     runs = sorted(set(p[0] for p in pairs if p[0]))
     for run_id in runs:
         conn.execute("DELETE FROM savings WHERE run_id=?", (run_id,))
@@ -499,6 +503,7 @@ def apply_records_read(conn, cfg, plan):
     for sid in sids:
         ledger_cli.write_savings(conn, sid, cfg)
     summary.rebuild(conn, cfg)
+    rows = conn.execute("DELETE" + _RECORDS_READ_SQL).rowcount
     return {"rows": rows, "runs": len(runs), "sessions": len(sids)}
 
 

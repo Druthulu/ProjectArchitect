@@ -1234,10 +1234,10 @@ def _line_project(payload, ctx, cfg, sl, now):
             segments.append(v[1])
             fold_seg = v[2]
 
-    # multi-account marker (T10)
+    # multi-account marker (T10); 3.32.9: its text without a "· " of its own (the join adds one: "· · 2 accounts")
     if isinstance(by_account, dict) and len(by_account) > 1:
         if segments:
-            segments.append(_seg("· %d accounts" % len(by_account), DIM, colors))
+            segments.append(_seg("%d accounts" % len(by_account), DIM, colors))
 
     if not segments:
         return ""

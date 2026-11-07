@@ -43,7 +43,7 @@ import {
   announces, editHead, feedLook, type FeedRecord, feedText, fromLog, missingNs, NUDGE, nudgeName, replyRecord, restartGate, seenBeat, senderOf, shownOf, speakerOf, staleOf, unseenFeed,
 } from './feed'
 import { driveOf, EXT_SEEN, EXT_STATUS, extAt, externalReminder, INTAKE_WAITS, intakeDue, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, queuedTo, RESTART_LINE, sessionTitle, setupNotice, SHELLS_FILE, shellsOf, shellsOut, statusWord, talkLine } from './loop'
-import { PARENTS_FILE, parentsOf, withParents } from './loop'
+import { PARENTS_FILE, parentsOf, RELEASE_CHECK_MS, withParents } from './loop'
 import {
   answerLine, APPROVED, askBody, decisionLine, dialogCopy, DIALOG_FILE, dialogJson, FALLBACK_OPTIONS, FALLBACK_QUESTION, fallbackLine, installs, isReplan,
   dialogKey, dropAgentDialogs, holdingAgent, learnedFile, PLAN_PANE, planBody, planFilePath, planLogLines, presentHold, slugArgv, slugFile, trialLine,
@@ -459,6 +459,8 @@ export const register: Register = (on, options) => {
       const pingAfterMs = Number((await $.env.get('PA_MOD_PING_AFTER_MS')) ?? '') || undefined
       // Trial knob (3.31 T6): the filing's quiet time in ms instead of pa.json's journal.file_quiet_min.
       const fileQuietMs = Number((await $.env.get('PA_MOD_FILE_QUIET_MS')) ?? '') || undefined
+      // Trial knob (3.32.9): the journal roll-up's period in ms instead of RELEASE_CHECK_MS (8 h, the update check's).
+      const rollupEveryMs = Number((await $.env.get('PA_MOD_ROLLUP_EVERY_MS')) ?? '') || RELEASE_CHECK_MS
       const jdir = `${root}/${JOURNAL_DIR}`
       // Both forms (3.23 T7): a live day folder `<date>/` and a rolled day file `<date>.md` (tools/journal_rollup.py).
       const days = async (): Promise<string[]> => {
@@ -528,6 +530,22 @@ export const register: Register = (on, options) => {
       if (why === 'start') {
         const argv = pruneArgv(paSetting(paText, 'python'), base, [sidNow, lastSid ?? ''], PRUNE_DAYS)
         if (argv !== null) {
+          // The journal's daily roll-up (3.23 T7): finished days only, so safe in any session; then the month's index.
+          const rollUp = async (reason: string): Promise<void> => {
+            try {
+              const ran = await $.process.run([python, 'tools/journal_rollup.py'], { cwd: root, timeoutMs: 60_000 })
+              await log('rollup', { reason, exitCode: ran.exitCode, stdout: clip(ran.stdout, 600), stderr: clip(ran.stderr, 300) })
+              await syncIndex(stamp(await $.clock.now())[0].slice(0, 7))
+            } catch (err) {
+              await log('rollup.error', { reason, err: clip(String(err), 300) })
+            }
+          }
+          // 3.32.9: and every RELEASE_CHECK_MS (8 h, the update check's rhythm) while the session runs: a session can last
+          // weeks, and the start's run alone left every finished day loose until the next launch. One chain per process:
+          // only a session start arms it.
+          const everyEightHours = (): void => {
+            $.clock.after(rollupEveryMs, () => { void rollUp('timer').finally(everyEightHours) })
+          }
           $.clock.after(0, () => {
             void (async () => {
               try {
@@ -540,14 +558,8 @@ export const register: Register = (on, options) => {
                   await $.fs.write(...ev('prune.error', { err: clip(String(err), 300) })).catch(quiet)
                 }
               }
-              // The journal's daily roll-up (3.23 T7): finished days only, so safe in any session; then the month's index.
-              try {
-                const ran = await $.process.run([python, 'tools/journal_rollup.py'], { cwd: root, timeoutMs: 60_000 })
-                await log('rollup', { exitCode: ran.exitCode, stdout: clip(ran.stdout, 600), stderr: clip(ran.stderr, 300) })
-                await syncIndex(stamp(await $.clock.now())[0].slice(0, 7))
-              } catch (err) {
-                await log('rollup.error', { err: clip(String(err), 300) })
-              }
+              await rollUp('start')
+              everyEightHours()
             })()
           })
         }

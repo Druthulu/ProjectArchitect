@@ -1952,10 +1952,11 @@ class MultiAccountProjectLineTest(LedgerCase):
         self.assertIn("· 2 accounts", project_line)
 
     def test_multi_account_marker(self):
-        """T10: 2 accounts marker appears when by_account has two entries."""
+        """T10: 2 accounts marker appears when by_account has two entries; 3.32.9: one separator before it."""
         self._summary_two_accounts()
         project_line = [l for l in self.lines() if "Project:" in l][0]
-        self.assertIn("2 accounts", project_line)
+        self.assertIn("· 2 accounts", project_line)
+        self.assertNotIn("· · ", project_line)
 
     def test_marker_absent_for_single_account(self):
         """T10: no accounts marker for a single-account project."""

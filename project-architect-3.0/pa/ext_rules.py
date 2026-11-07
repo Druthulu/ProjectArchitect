@@ -173,9 +173,10 @@ def _inside(p, root):
     return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
 
 
-def _expand(word, proj, home):
-    """An absolute path for a path-like word (absolute, ~, $HOME, a drive, or a relative path that climbs with ..);
-    None for any other word."""
+def _expand(word, base, home):
+    """An absolute path for a path-like word (absolute, ~, $HOME, a drive, or a relative path that climbs with ..,
+    taken from `base`); None for any other word. 3.32.9: a climbing word with no known `base`, or with a variable the
+    rule cannot expand (`$d/../..`), is None too: the judge decides it."""
     w = word
     for pre in ("${HOME}", "$HOME"):
         if w == pre or w.startswith(pre + "/"):
@@ -189,8 +190,27 @@ def _expand(word, proj, home):
     if w.startswith("/") or _DRIVE_RE.match(w):
         return os.path.normpath(w)
     if w.startswith("..") or "/../" in w or "\\..\\" in w:
-        return os.path.normpath(os.path.join(proj, w))
+        if base is None or "$" in w:
+            return None
+        return os.path.normpath(os.path.join(base, w))
     return None
+
+
+_CD = frozenset(("cd", "pushd"))
+
+
+def _after_cd(here, args, home, scoped):
+    """3.32.9: the shell's folder after `cd <args>` from `here`; None when the rule cannot follow it (a variable,
+    `cd -`, `popd`, a cd inside a subshell or a command substitution, or no known folder before it)."""
+    target = next((a for a in args if a not in ("-L", "-P", "-e", "-@", "--")), None)
+    if scoped or here is None:
+        return None
+    if target is None:
+        return home
+    if target == "-" or "$" in target or "`" in target:
+        return None
+    p = _expand(target, here, home)
+    return p if p is not None else os.path.normpath(os.path.join(here, target))
 
 
 def _executable(p):
@@ -212,24 +232,28 @@ def _foreign(p, home):
     return f.startswith(_MOUNTS)
 
 
-def outside_path(tool, inp, proj, dirs=(), own=(), home=None, keep=()):
+def outside_path(tool, inp, proj, dirs=(), own=(), home=None, keep=(), cwd=None):
     """"" or the path outside the project a call names. A file tool: any path outside the project, except reads in a
     declared folder (`dirs`) or the coder's own session folder (`own`). A command: a word under the home folder or
     on another drive, outside the project, `dirs` and `own`; a program being run (its first word, any executable
-    file, the paths in `keep`) is never one."""
+    file, the paths in `keep`) is never one.
+    3.32.9: a relative path is taken from the shell's folder (`cwd`, the hook's, else the project), following each
+    `cd` in the command; past a `cd` it cannot follow, a quoted relative string (a C include) or a word with a
+    variable, the fixed rule leaves the word to the judge (bfm-decomp: 8 of its 11 refusals were such words)."""
     inp = inp or {}
     home = home if home is not None else os.path.expanduser("~")
+    here = cwd if cwd and os.path.isabs(str(cwd)) else proj
     if tool in FILE_TOOLS:
         key, write = FILE_TOOLS[tool]
         vals = [inp.get(key)] + ([inp.get("pattern")] if tool == "Glob" else [])
         for v in vals:
             if not isinstance(v, str) or not v.strip():
                 continue
-            p = _expand(v.strip(), proj, home)
+            p = _expand(v.strip(), here, home)
             if p is None:
                 if tool == "Glob" and v is inp.get("pattern"):
                     continue
-                p = os.path.normpath(os.path.join(proj, v.strip()))
+                p = os.path.normpath(os.path.join(here, v.strip()))
             if _inside(p, proj):
                 continue
             if not write and any(_inside(p, d) for d in list(dirs) + list(own)):
@@ -240,8 +264,13 @@ def outside_path(tool, inp, proj, dirs=(), own=(), home=None, keep=()):
         return ""
     cmd = str(inp.get("command") or "")
     kept = [_norm(k) for k in keep if k]
+    scoped = any(ch in cmd for ch in "()`")       # a subshell or a command substitution: a cd in it is not followed
+
+    def quoted(word):
+        return '"%s"' % word in cmd or "'%s'" % word in cmd
+
     for words in segments(cmd) or [cmd.split()]:
-        prog, _rest = _program(words)
+        prog, rest = _program(words)
         skip_prog = True
         for w in words:
             if skip_prog and w == prog:
@@ -253,13 +282,17 @@ def outside_path(tool, inp, proj, dirs=(), own=(), home=None, keep=()):
             if len(w) > 2 and w.startswith("-") and (w[2:3] in ("/", "~") or _DRIVE_RE.match(w[2:])):
                 cands.append(w[2:])
             for c in cands:
-                p = _expand(c, proj, home)
+                p = _expand(c, None if quoted(c) else here, home)
                 if p is None or _inside(p, proj) or any(_inside(p, d) for d in list(dirs) + list(own)):
                     continue
                 if _norm(p) in kept or _executable(p):
                     continue
                 if _foreign(p, home):
                     return p
+        if _base(prog) in _CD:
+            here = _after_cd(here, rest, home, scoped)
+        elif _base(prog) == "popd":
+            here = None
     return ""
 
 
@@ -417,10 +450,11 @@ def decisions(run_dir):
 
 
 def tally(decs):
-    """The hook's decisions in a run: the judge's allows and refusals (an unanswered call is a refusal), what it
-    learned, the fixed rules' refusals (network, outside), the calls learned decisions answered again."""
-    t = {"allowed": 0, "denied": 0, "learned": [], "network": 0, "outside": 0, "again": 0, "judge_s": 0.0,
-         "examples": []}
+    """The hook's decisions in a run: the judge's allows and refusals, what it learned, the fixed rules' refusals
+    (network, outside), the calls learned decisions answered again. 3.32.9: a call the judge could not answer (a
+    usage limit, an error) is `unanswered`, not a refusal of its own: learning mode does not count it."""
+    t = {"allowed": 0, "denied": 0, "unanswered": 0, "learned": [], "network": 0, "outside": 0, "again": 0,
+         "judge_s": 0.0, "examples": []}
     for d in decs:
         by, beh = d.get("by"), d.get("decision")
         if by in ("network", "outside"):
@@ -428,7 +462,7 @@ def tally(decs):
         elif by == "learned":
             t["again"] += 1
         elif by in ("judge", "judge-error"):
-            t["allowed" if beh == "allow" else "denied"] += 1
+            t["allowed" if beh == "allow" else "unanswered" if by == "judge-error" else "denied"] += 1
             t["judge_s"] += float(d.get("s") or 0)
             if d.get("remember") and d.get("remember") not in t["learned"]:
                 t["learned"].append(d["remember"])

@@ -465,6 +465,20 @@ class TestSecondRun(ProjectCase):
         self.assertEqual(read(self.path("HOW_WE_WORK.md")), "# hand written\n")
         self.assertEqual(read(self.path("rules", "M4.md")), "# edited rule\n")
 
+    def test_upgrade_adds_the_journal_line_to_an_older_block(self):
+        """3.32.9: a project installed before keeps its .gitignore, plus the journal's day folders line under the PA3
+        marker; a rerun changes nothing."""
+        self.install()
+        old = read(self.path(".gitignore")).replace(pj.JOURNAL_IGNORE + "\n", "")
+        write(self.path(".gitignore"), old)
+        out = self.install()
+        text = read(self.path(".gitignore"))
+        self.assertEqual(text.count(pj.JOURNAL_IGNORE), 1, out)
+        self.assertIn(pj.GITIGNORE_MARKER + "\n" + pj.JOURNAL_IGNORE + "\n", text)
+        before = tree_hash(self.repo)
+        self.install()
+        self.assertEqual(tree_hash(self.repo), before)
+
     def test_upgrade_swaps_rhythm_for_drive(self):
         # 3.32.1: rhythm with no drive becomes drive autopilot; beside a drive it just goes; a rerun changes nothing
         rel = self.path(".claude", "pa.json")
@@ -1360,6 +1374,36 @@ class TestSafety(ProjectCase):
         first = pj.gitignore_text("target/\n")
         self.assertTrue(first.endswith(pj.GITIGNORE_BLOCK))
         self.assertIsNone(pj.gitignore_text(first))
+
+    def test_gitignore_helper_adds_the_journal_line_to_an_older_block(self):
+        """3.32.9: under the marker, once, in the file's own line ending."""
+        old = "target/\n" + pj.GITIGNORE_MARKER + "\n.run/\n__pycache__/\n"
+        new = pj.gitignore_text(old)
+        self.assertEqual(new, "target/\n" + pj.GITIGNORE_MARKER + "\n" + pj.JOURNAL_IGNORE + "\n.run/\n__pycache__/\n")
+        self.assertIsNone(pj.gitignore_text(new))
+        crlf = pj.gitignore_text(old.replace("\n", "\r\n"))
+        self.assertIn(pj.GITIGNORE_MARKER + "\r\n" + pj.JOURNAL_IGNORE + "\r\n", crlf)
+        self.assertEqual(pj.gitignore_text(pj.GITIGNORE_MARKER), pj.GITIGNORE_MARKER + "\n" + pj.JOURNAL_IGNORE + "\n")
+
+    @unittest.skipUnless(shutil.which("git"), "git not on PATH")
+    def test_git_ignores_the_live_day_folders_only(self):
+        """3.32.9: git ignores a live day folder's entries; the rolled day files, the index, TOPICS.md and the history
+        import's folder stay committed."""
+        import subprocess
+        import tempfile
+        d = tempfile.mkdtemp(prefix="pa3-gitignore-")
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        subprocess.run(["git", "init", "-q", d], check=True)
+        with open(os.path.join(d, ".gitignore"), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(pj.GITIGNORE_BLOCK)
+
+        def ignored(rel):
+            return subprocess.run(["git", "-C", d, "check-ignore", "-q", "--no-index", rel]).returncode == 0
+        J = ".claude-state/journal/"
+        self.assertTrue(ignored(J + "2026-11-06/090000-001r-dev-msg.md"))
+        self.assertTrue(ignored(J + "2026-11-06/090001-1000w-coder-thinking.md"))
+        for rel in (J + "2026-11-06.md", J + "INDEX-2026-11.md", J + "TOPICS.md", J + "history/2025-01-02.md"):
+            self.assertFalse(ignored(rel), rel)
 
 
 _HAS_GIT = shutil.which("git") is not None

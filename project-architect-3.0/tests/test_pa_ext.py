@@ -535,6 +535,7 @@ class RunTest(_RunBase):
         self.assertEqual((rec["config"], rec["alias"], rec["model"], rec["parent_sid"]),
                          ("local", "deepseek", DS, "parent-sid"))
         self.assertEqual((rec["turns"], rec["health"]), (2, {"denied": {"Bash": 1}, "sandbox": 0, "guard": 0,
+                                                              "blocked": 0, "unanswered": 0,   # 3.32.9
                                                               "retries": 0, "nudges": 0}))   # 3.30: for the review
         self.assertGreaterEqual(rec["ended"], rec["started"])
         # argv
@@ -836,7 +837,8 @@ class ShowTest(_ModBase):
                  ("Bash", "mipsel-linux-gnu-objdump -drz a.o", denied), ("Bash", "mipsel-linux-gnu-objdump -d b.o", denied),
                  ("Bash", "X=1 bash .run/T1/bin/dt.sh d", denied), ("Write", "/etc/x", denied),
                  ("Bash", "ls", "Exit code 1 bwrap: Can't find source path /h/.mcp.json"),
-                 ("Bash", "cat big.c", "PreToolUse:Bash hook error: big.c is 113.4k chars")]
+                 ("Bash", "cat big.c", "PreToolUse:Bash hook error: big.c is 113.4k chars, over "
+                                       "guard.whole_read_chars (20000):")]
         for i, (tool, arg, text) in enumerate(calls):
             h.record(ev("assistant", {"type": "tool_use", "id": "t%d" % i, "name": tool,
                                       "input": {"file_path" if tool == "Write" else "command": arg}}))
@@ -863,6 +865,22 @@ class ShowTest(_ModBase):
         self.assertEqual((out[0], out[1], out[-1]), ("done: fixed", lines[0],
                                                        "external coder T5.c1: DeepSeek · 3 turns · 0 tokens · denials 0"))
         self.assertEqual(state["report"], "done: fixed")
+
+    def test_health_splits_read_guards_other_guards_and_an_unanswered_judge(self):
+        """3.32.9: a read guard's block is `guard`, another guard's is `blocked`, and a call PA3's judge could not
+        answer is `unanswered`, kept out of the denied kinds, Claude Code's permission_denials included."""
+        h = pa_ext.Health()
+        ev = lambda t, b: {"type": t, "message": {"content": [b]}}   # noqa: E731
+        calls = [("Read", "PreToolUse:Read hook error: src/a.c is 86.2k chars, over guard.whole_read_chars (20000):"),
+                 ("Read", "PreToolUse:Read hook error: src/a.c is unchanged and already in this context (read at 1)"),
+                 ("Bash", "PreToolUse:Bash hook error: A search from a filesystem root walks the whole disk"),
+                 ("Bash", "Refused by PA3: its permission judge gave no answer (exit 1: limit). Use a command ...")]
+        for i, (tool, text) in enumerate(calls):
+            h.record(ev("assistant", {"type": "tool_use", "id": "u%d" % i, "name": tool, "input": {"command": "x"}}))
+            h.record(ev("user", {"type": "tool_result", "tool_use_id": "u%d" % i, "is_error": True, "content": text}))
+        s = h.summary([{"tool_name": "Bash", "tool_use_id": "u3", "tool_input": {"command": "x"}}])
+        self.assertEqual((s["guard"], s["blocked"], s["unanswered"], s["denied"]), (2, 1, 1, {}))
+        self.assertIn("- other guard blocks 1 (e.g. a search from a filesystem root)", h.lines())
 
     def test_health_verb_reads_the_runs_transcript(self):
         """3.30: `health <label>` finds the run's transcript by its record's config and child session."""
@@ -1118,8 +1136,9 @@ class JudgeRunTest(_ModBase):
                       "`Bash(mipsel-linux-gnu-objdump:*)`; refused by the fixed rules: network 1, outside the project 0 "
                       "(e.g. curl x: network: curl)", out.splitlines())
         rec = self._record()
-        self.assertEqual(rec["health"]["judge"], {"allowed": 1, "denied": 0, "network": 1, "outside": 0, "again": 0,
-                                                  "judge_s": 4.2, "learned": ["Bash(mipsel-linux-gnu-objdump:*)"]})
+        self.assertEqual(rec["health"]["judge"], {"allowed": 1, "denied": 0, "unanswered": 0, "network": 1, "outside": 0,
+                                                  "again": 0, "judge_s": 4.2,
+                                                  "learned": ["Bash(mipsel-linux-gnu-objdump:*)"]})
         self.assertFalse(pa_ext.run_clean(self.proj, rec))
 
     def test_learned_rules_reach_the_next_coder_runs_lists_them_and_forget_drops_them(self):
@@ -1212,6 +1231,14 @@ class LearningTest(_RunBase):
         self.assertTrue(pa_ext.run_clean(self.proj, rec))
         rec["health"]["sandbox"] = 1      # 3.30.7: two coders' sandboxes colliding (bfm G18) is no friction either
         self.assertTrue(pa_ext.run_clean(self.proj, rec))
+        # 3.32.9: a read guard's block (the outline served, a range read next) and an unanswered judge are no friction;
+        # another guard's block (a search from a filesystem root) is; a record from before has no `blocked`
+        rec["health"].update(guard=2, blocked=0, unanswered=3)
+        rec["health"]["judge"] = {"allowed": 4, "denied": 0, "unanswered": 3, "network": 0, "outside": 0}
+        self.assertTrue(pa_ext.run_clean(self.proj, rec))
+        self.assertFalse(pa_ext.run_clean(self.proj, dict(rec, health=dict(rec["health"], blocked=1))))
+        old = {k: v for k, v in rec["health"].items() if k not in ("blocked", "unanswered")}
+        self.assertFalse(pa_ext.run_clean(self.proj, dict(rec, health=old)))
         pa_ext._log_note(self.proj, "model", "local/glm", "another model's note")
         self.assertTrue(pa_ext.run_clean(self.proj, rec))
         pa_ext._log_note(self.proj, "model", "local/deepseek", "use the whole budget")

@@ -4,6 +4,7 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, On } from 'claude-code'
 
 import { pingUsd } from './policy'
+import { RELEASE_CHECK_MS } from './loop'
 
 const ROOT = '/r'
 const BASE = `${ROOT}/.run/mod`
@@ -1301,6 +1302,24 @@ describe('router journal, rotation, warming, toast', () => {
     expect(n.runs.findIndex(r => r[1] === '-c')).toBeLessThan(i)
     const f = w.writes.find(p => p.endsWith('-pa.rollup.json')) ?? ''
     expect(w.files.get(f)).toContain('rolled: 2026-10-13 (2 entries)')
+  })
+
+  test('3.32.9: the roll-up runs again every 8 hours while the session runs, not only at its start', async ($, on) => {
+    expect(RELEASE_CHECK_MS).toBe(8 * 3_600_000)                         // the period without the trial knob
+    const clock = mock.clock(on, { now: OCT })
+    world(on, { [`${ROOT}/.claude/pa.json`]: PY }, { USERPROFILE: 'H', PA_MOD_ROLLUP_EVERY_MS: '5000' })
+    const n = net(on)
+    n.run = () => ({ exitCode: 0, stdout: '', stderr: '' })
+    const rollups = (): number => n.runs.filter(r => r[1] === 'tools/journal_rollup.py').length
+    await $.session.start(START)
+    await clock.settle()
+    expect(rollups()).toBe(1)
+    await clock.advance(4_000)
+    expect(rollups()).toBe(1)
+    await clock.advance(1_000)
+    expect(rollups()).toBe(2)
+    await clock.advance(5_000)
+    expect(rollups()).toBe(3)
   })
 
   test('3.23 T7: a fresh seed reads a rolled day and a live day, with LOOP and MEMORY', async ($, on) => {

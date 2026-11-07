@@ -2,6 +2,28 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.9 — A tidier journal, and fixes that take effect at once
+
+- The journal no longer fills git with thousands of small files. Each entry is still written as its own file, so
+  several agents can write at once, but git now gets only the day files PA3 packs them into, plus the index and the
+  records list. The update adds the `.gitignore` line that keeps the live day folders out.
+- A finished day is packed at the next session start, and now also every 8 hours of a session that stays open, since
+  a session can run for weeks.
+- Entries from external coders, and entries numbered past 999 in a long session, are packed and read like the rest.
+  They used to stay behind as loose files (one project had nearly 5,000), and a decision numbered past 999 would not
+  have been seen.
+- After an update, the usage summary runs the new version right away. A busy session could keep the old one running
+  for an hour, so a fix to the statusline's figures seemed not to work.
+- 3.32.8's one-time savings repair now finishes even if it is interrupted partway through.
+- The Project line no longer shows an empty `· ·` before "2 accounts".
+- External coders' "outside the project" rule reads a relative path from the folder the coder's shell is in and
+  follows each `cd` in the command, instead of reading it from the project root. A quoted string (such as a C
+  `#include`) and a path with a variable now go to PA3's judge instead of being refused outright. On one project
+  8 of the rule's 11 refusals had been wrong.
+- Learning mode no longer counts a whole read of a big file that the read guard turned into the file's outline, or
+  a call PA3's judge couldn't answer because your plan hit its usage limit. On one project that alone would have
+  let 9 more of its last 60 runs count as clean.
+
 ## 3.32.8 — Honest savings, steadier statusline rows
 
 - The savings were inflated. Each time an agent read PA3's journal of decisions, the ledger counted the whole

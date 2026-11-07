@@ -51,7 +51,9 @@ COMMIT_MSG = "chore: install Project Architect 3.0"
 CLAUDE_MARKER = "Project Architect 3.0"
 RETIRED_CLAUDE = "docs/retired/CLAUDE.pre-pa3.md"
 GITIGNORE_MARKER = "# Project Architect 3.0"
-GITIGNORE_BLOCK = GITIGNORE_MARKER + "\n.run/\n__pycache__/\n"
+# 3.32.9: the journal's live day folders stay out of git; their rolled day files, the index and TOPICS.md are committed
+JOURNAL_IGNORE = ".claude-state/journal/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/"
+GITIGNORE_BLOCK = GITIGNORE_MARKER + "\n.run/\n__pycache__/\n" + JOURNAL_IGNORE + "\n"
 DEFAULT_TAGLINE = "<one line: what this project is -- edit me>"
 FAILSAFES = ("never push", "the milestone gate is the arbiter")
 NO_PROJECT_RULES = "(none yet -- add headlines with tools/rules_add.py promote)"
@@ -894,9 +896,16 @@ def pa_json_text(env):
 
 
 def gitignore_text(current):
-    """``current`` plus the PA3 block, appended once (returns ``None`` when present)."""
+    """``current`` plus the PA3 block, appended once (returns ``None`` when nothing changes). 3.32.9: a block written
+    before gets the journal's day folders line after its marker, in the file's own line ending."""
     if GITIGNORE_MARKER in current:
-        return None
+        if JOURNAL_IGNORE in current:
+            return None
+        eol = current.find("\n", current.index(GITIGNORE_MARKER))
+        nl = "\r\n" if "\r\n" in current else "\n"
+        if eol < 0:
+            return current + nl + JOURNAL_IGNORE + nl
+        return current[:eol + 1] + JOURNAL_IGNORE + nl + current[eol + 1:]
     if not current:
         return GITIGNORE_BLOCK
     sep = "" if current.endswith("\n\n") else ("\n" if current.endswith("\n") else "\n\n")
@@ -912,11 +921,15 @@ def bootstrap(env, skip=None):
     """
     if env.layout == "pa3":
         changed = pa_json_mod(env)                       # 3.24 T5: mod on, upgrade, bash
-        if not changed:
+        gi = gitignore_text(fsutil.read_text(env.path(".gitignore"), ""))   # 3.32.9: the journal's day folders
+        if gi is not None:
+            write_changed(env, ".gitignore", gi, backup=False)
+        if not changed and gi is None:
             step("P2", "bootstrap", "SKIP", "pa3 upgrade: the project tree is already bootstrapped")
             return "SKIP"
-        step("P2", "bootstrap", "SKIP" if env.dry_run else "DONE",
-             "pa3 upgrade: .claude/pa.json %s" % ", ".join(k for k, _o, _n in changed))
+        what = ([".claude/pa.json %s" % ", ".join(k for k, _o, _n in changed)] if changed else []) + \
+            ([".gitignore: the journal's live day folders"] if gi is not None else [])
+        step("P2", "bootstrap", "SKIP" if env.dry_run else "DONE", "pa3 upgrade: %s" % "; ".join(what))
         for key, old, new in changed:
             note("~ pa.json   %s: %s -> %s" % (key, json.dumps(old), json.dumps(new)))
         return "SKIP" if env.dry_run else "DONE"

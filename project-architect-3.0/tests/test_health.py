@@ -355,6 +355,7 @@ class HealthFixtureTest(unittest.TestCase):
             self.assertGreater(key("3.32.6"), key("3.32.5"), key)
             self.assertGreater(key("3.32.7"), key("3.32.6"), key)
             self.assertGreater(key("3.32.8"), key("3.32.7"), key)
+            self.assertGreater(key("3.32.9"), key("3.32.8"), key)
         self.bump("3.30.1")
         self.assertEqual(health.newer_release(self.pa3, self.clone), "3.30.1")
 

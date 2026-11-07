@@ -840,12 +840,17 @@ def run_clean(proj, rec):
     learned rule reaches the coders already running at their next call, a note only those that start after it (bfm:
     every batch's own scratch scripts were learned, so no run could come back clean). 3.30.7: nor is a sandbox
     (`bwrap:`) failure, two coders' sandboxes colliding, which the coder just runs again (bfm G18: counted, running
-    side by side would put a model back to one at a time by itself)."""
+    side by side would put a model back to one at a time by itself). 3.32.9: nor is a read guard's block (a whole
+    read of a big file: the guard serves its outline and the coder reads a range or searches; bfm: 9 of its last 60
+    runs had no other friction), nor a call PA3's judge could not answer (a usage limit, an error); the other
+    guards' blocks (a search from a filesystem root) still are. A record from before 3.32.9 has no `blocked`: its
+    `guard` counts."""
     h = _dict(rec.get("health"))
     if rec.get("status") != "done" or rec.get("report_word") is False or not h:
         return False
     j = _dict(h.get("judge"))
-    if any(h.get(k) for k in ("denied", "guard", "nudges")) or any(
+    blocked = h.get("blocked") if "blocked" in h else h.get("guard")
+    if any(h.get(k) for k in ("denied", "nudges")) or blocked or any(
             j.get(k) for k in ("denied", "network", "outside")):
         return False
     ended, target = int(rec.get("ended") or 0), "%s/%s" % (rec.get("config"), rec.get("alias"))
@@ -1093,6 +1098,11 @@ def _fetch_key(url, key):
 
 DENY_RE = re.compile(r"permission[^.\n]{0,40}denied|haven't granted|requires approval|refused by pa3|"
                      r"blocks reads outside", re.I)
+# 3.32.9: a read guard routes a read (it serves the outline; the coder reads a range or searches): no friction
+READ_GUARD_RE = re.compile(r"over guard\.whole_read_chars|is unchanged and already in this context|"
+                           r"a spilled result is grepped or tailed")
+# 3.32.9: PA3's judge gave no answer (a usage limit, an error): not the coder's doing, no friction
+UNANSWERED_RE = re.compile(r"its permission judge gave no answer")
 
 
 def _deny_kind(tool, cmd):
@@ -1121,6 +1131,8 @@ class Health:
     def __init__(self):
         self.uses, self.denied, self.sandbox, self.guard, self.retries, self.nudges = {}, [], 0, 0, 0, 0
         self.judge = {}     # 3.30.1: ext_rules.tally of the run's decisions.jsonl
+        self.blocked = 0    # 3.32.9: the other guards' blocks (a search from a filesystem root, ...): friction
+        self.unanswered = set()     # 3.32.9: the calls PA3's judge could not answer (their tool_use ids)
 
     def record(self, rec):
         t, msg = rec.get("type"), _dict(rec.get("message"))
@@ -1137,12 +1149,16 @@ class Health:
                     continue
                 text = _result_text(b)
                 tool, inp = self.uses.get(b.get("tool_use_id"), ("", {}))
-                if DENY_RE.search(text):
+                if UNANSWERED_RE.search(text):
+                    self.unanswered.add(b.get("tool_use_id"))
+                elif DENY_RE.search(text):
                     self.denied.append((tool, str(inp.get("command") or inp.get("file_path") or "")))
                 elif "bwrap:" in text:
                     self.sandbox += 1
-                elif "PreToolUse" in text:
+                elif READ_GUARD_RE.search(text):
                     self.guard += 1
+                elif "PreToolUse" in text:
+                    self.blocked += 1
         elif t == "system" and rec.get("subtype") == "api_retry":
             self.retries += 1
 
@@ -1150,7 +1166,8 @@ class Health:
         """[(kind, count, an example)] of the denied calls, most first. `denials`: the result's permission_denials,
         Claude Code's own list, over the stream's (a transcript has no result)."""
         denied = [(_dict(d).get("tool_name") or "", str(_dict(_dict(d).get("tool_input")).get("command")
-                   or _dict(_dict(d).get("tool_input")).get("file_path") or "")) for d in denials] if denials else self.denied
+                   or _dict(_dict(d).get("tool_input")).get("file_path") or "")) for d in denials
+                  if _dict(d).get("tool_use_id") not in self.unanswered] if denials else self.denied
         groups = {}
         for tool, cmd in denied:
             g = groups.setdefault(_deny_kind(tool, cmd), [0, cmd])
@@ -1161,7 +1178,8 @@ class Health:
         """What the run record keeps for the phase-end review (3.30): denied calls by kind, and the other counts;
         3.30.1: the judge's tally (`judge`), when the hook decided anything."""
         out = {"denied": dict((k, n) for k, n, _ in self.kinds(denials)), "sandbox": self.sandbox,
-               "guard": self.guard, "retries": self.retries, "nudges": self.nudges}
+               "guard": self.guard, "blocked": self.blocked, "unanswered": len(self.unanswered),
+               "retries": self.retries, "nudges": self.nudges}
         if self.judge:
             out["judge"] = dict((k, v) for k, v in self.judge.items() if k != "examples")
         return out
@@ -1176,10 +1194,11 @@ class Health:
                 for k, n, ex in kinds[:8]),
                 "; +%d more kinds" % (len(kinds) - 8) if len(kinds) > 8 else ""))
         j = self.judge
-        if j and (j.get("allowed") or j.get("denied") or j.get("network") or j.get("outside")):
+        if j and (j.get("allowed") or j.get("denied") or j.get("unanswered") or j.get("network") or j.get("outside")):
             parts = []
-            if j.get("allowed") or j.get("denied"):
-                parts.append("PA3's judge allowed %d, refused %d" % (j.get("allowed", 0), j.get("denied", 0)))
+            if j.get("allowed") or j.get("denied") or j.get("unanswered"):
+                parts.append("PA3's judge allowed %d, refused %d" % (j.get("allowed", 0), j.get("denied", 0)) + (
+                    ", gave no answer %d (a usage limit or an error)" % j["unanswered"] if j.get("unanswered") else ""))
             if j.get("learned"):
                 parts.append("learned for this project: %s" % ", ".join("`%s`" % r for r in j["learned"]))
             if j.get("network") or j.get("outside"):
@@ -1191,6 +1210,8 @@ class Health:
             out.append("- sandbox (bwrap) failures %d, each re-run" % self.sandbox)
         if self.guard:
             out.append("- read-guard blocks %d (whole reads of big files)" % self.guard)
+        if self.blocked:
+            out.append("- other guard blocks %d (e.g. a search from a filesystem root)" % self.blocked)
         if self.retries or self.nudges:
             out.append("- API retries %d; nudges after a turn with no report %d" % (self.retries, self.nudges))
         return ["HEALTH (for the expert: friction a later external coder would hit too):"] + out if out else []

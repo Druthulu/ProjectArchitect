@@ -517,7 +517,7 @@ class RecordsReadCreditTest(RepairsCase):
                                         "file_tokens": tokens, "emission_tokens": tokens, "result_tokens": 0,
                                         "model": "claude-opus-5-5"})
 
-    def test_read_rows_go_and_savings_are_rewritten_once(self):
+    def seed(self):
         db.upsert_session(self.conn, {"session_id": RR_SID, "account": A, "started": "2026-11-01T00:00:00Z"})
         db.upsert_agent_run(self.conn, {"run_id": "aexp", "session_id": RR_SID, "kind": "expert",
                                         "agent_type": "pa-expert", "status": "completed"})
@@ -527,6 +527,31 @@ class RecordsReadCreditTest(RepairsCase):
         self.call("c-card", "aexp", "2026-11-01T10:00:40Z", "card.py", "slice", 1000)
         db.upsert_savings(self.conn, {"run_id": "aexp", "session_id": RR_SID, "measured_saved_usd": 99.0,
                                       "locked": 1})
+
+    def test_a_run_cut_off_before_the_rewrite_is_redone(self):
+        """3.32.9: the rows go last: a run killed after the savings rows were cleared leaves the read rows (zeroed),
+        and the next run redoes the step instead of stamping "nothing"."""
+        from unittest import mock
+
+        from pa import ledger_cli
+        self.seed()
+        with mock.patch.object(ledger_cli, "write_savings", side_effect=KeyboardInterrupt):   # a kill, not an error
+            with self.assertRaises(KeyboardInterrupt):
+                repairs.run(self.cfg, conn=self.conn)
+        self.assertIsNone(db.get_meta(self.conn, "repair." + RR))
+        self.assertIsNone(db.get_meta(self.conn, "repairs_version"))
+        self.assertEqual(tuple(self.conn.execute(
+            "SELECT emission_tokens, file_tokens FROM tool_calls WHERE id='c-read'").fetchone()), (0, 0))
+        self.assertIsNone(self.conn.execute("SELECT 1 FROM savings WHERE run_id='aexp'").fetchone())
+
+        res = repairs.run(self.cfg, conn=self.conn)
+        self.assertEqual(res[RR], {"rows": 1, "runs": 1, "sessions": 1})
+        self.assertEqual([r[0] for r in self.conn.execute("SELECT id FROM tool_calls ORDER BY id")], ["c-card"])
+        self.assertLess(self.conn.execute("SELECT measured_saved_usd FROM savings WHERE run_id='aexp'").fetchone()[0],
+                        1.0)
+
+    def test_read_rows_go_and_savings_are_rewritten_once(self):
+        self.seed()
         self.assertEqual(repairs.detect_records_read(self.conn, self.cfg), {"rows": 1})
 
         res = repairs.run(self.cfg, conn=self.conn)

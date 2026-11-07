@@ -1873,15 +1873,26 @@ def _recheck_answers(conn, cfg):
         log.log("answers_recheck_failed", error=str(exc)[:200])
 
 
+def _newer_installed():
+    """3.32.9: the VERSION on disk is not the one this process loaded: an update landed since it started."""
+    from . import __version__, _read_version
+
+    return _read_version() != __version__
+
+
 def run_rebuild(sessions_only=False):
     """The child: rebuild, rebuild again while a dirty stamp exists, release the lock.
 
+    3.32.9: a newer install between passes ends the loop and requests a fresh child, which takes the stamp: a process
+    keeps the code it started with, and a busy session's child looped for an hour on the old one (bfm-decomp,
+    2026-11-06: the ?/? fix came live only when it went idle).
     Writes nothing to stdout; failures go to the hooks log.
     """
     from . import config, log
     from .hooks import close_db, open_db
 
     lock, dirty = _rebuild_files()
+    handover = False
     try:
         _write_lock(lock, "rebuild")
         cfg = config.load()
@@ -1897,6 +1908,9 @@ def run_rebuild(sessions_only=False):
                 rebuild(conn, cfg, sessions_only=sessions_only)
             finally:
                 close_db(conn)
+            if os.path.exists(dirty) and _newer_installed():
+                handover = True
+                break
             pending = _take_dirty(dirty)
             if pending is None:
                 break
@@ -1909,6 +1923,9 @@ def run_rebuild(sessions_only=False):
             os.remove(lock)
         except OSError:
             pass
+    if handover:
+        log.log("summary_rebuild_handover")
+        request_rebuild(sessions_only=True)               # the stamp left in place says whether it runs in full
 
 
 def main(argv=None):
