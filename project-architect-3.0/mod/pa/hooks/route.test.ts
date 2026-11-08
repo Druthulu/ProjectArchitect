@@ -6,7 +6,7 @@ import {
   replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds, handbackKey, newHandback,
   bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS, bangOf, bangText,
   nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, todoBlock, enqueue, withImageSources,
-  withSourceLines, imagesPending, IMAGE_WAIT_MS,
+  withSourceLines, imagesPending, IMAGE_WAIT_MS, resumeCheck, RESUME_CHECK_MS,
 } from './route'
 import type { Entry } from './journal'
 import { defaultState } from './state'
@@ -68,6 +68,34 @@ describe('turns', () => {
     }
     expect(Object.keys(r.kinds).length).toBe(64)
     expect(r.kinds['T99']).toEqual({ kind: 'stub' })
+  })
+})
+
+// 3.32.10 (GitHub #13): the 30 s check repeated an answered partner's message to a fresh one.
+describe('resumeCheck', () => {
+  const wait = { agentId: 'P', text: 'what does rule T2 do?', at: 100 }
+  const base = { ...defaultState('S', 1), partner: newPartner('P', 'opus', 1), awaiting: wait }
+  const late = 100 + RESUME_CHECK_MS
+
+  test('the wait cleared or replaced while the list was read: gone, never lost', async () => {
+    expect(resumeCheck(wait, null, 'completed', late)).toBe('gone')
+    expect(resumeCheck(wait, { ...base, awaiting: { ...wait, at: 150 } }, 'completed', late)).toBe('gone')
+    // the race: the tick read the wait, then the partner's answer cleared it while the list was read
+    expect(resumeCheck(wait, applyReply(base, 1, '/r/1.md', 'P:k', late - 10, null), 'completed', late)).toBe('gone')
+  })
+
+  test('running is seen; a turn end or a reply of the partner since the send is an answer', async () => {
+    expect(resumeCheck(wait, base, 'running', late)).toBe('seen')
+    expect(resumeCheck(wait, { ...base, partner: { ...newPartner('P', 'opus', 1), lastTurnAt: 100 } }, 'completed', late)).toBe('answered')
+    expect(resumeCheck(wait, takeReply(base, replyKey('P', 'T2 needs your decision.'), 120).state, 'completed', late)).toBe('answered')
+    // another agent's reply, or the partner's from before the send, is not one
+    expect(resumeCheck(wait, takeReply(base, replyKey('Q', 'done'), 120).state, 'completed', late)).toBe('lost')
+    expect(resumeCheck(wait, takeReply(base, replyKey('P', 'done'), 99).state, 'completed', late)).toBe('lost')
+  })
+
+  test('no sign of the partner: wait, then lost at 30 s (after --resume the old one is gone)', async () => {
+    expect(resumeCheck(wait, base, 'completed', late - 1)).toBe('wait')
+    expect(resumeCheck(wait, base, undefined, late)).toBe('lost')
   })
 })
 

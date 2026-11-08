@@ -86,4 +86,8 @@ of this project, unless `PROJECT_CONTEXT.md` names the harness as the product.
   for a phase plan the previous PhaseEnd's `Rules proposed` lines and `phase-ends/current/AUDIT.md`'s `- Tool candidate:`
   and `- Rule candidate:` lines (each with its saving and size; one the draft already schedules says `(drafted as T<n>)`).
   Claude passes those to the plan tool; never retell the plan in the report.
+- Under each rule and candidate line, its note: the card the developer reads in the main session before that line's
+  picker, right after approval. Two to four short sentences in simple English: why it is proposed (what went wrong,
+  with the numbers; a retriever reads the task summary that proposed it, or the audit row), what it will fix, and what
+  it costs. A line with no note reaches the developer as a bare picker.
 - Feedback comes back from Claude as the developer's words: edit the same draft, lint again, report again.

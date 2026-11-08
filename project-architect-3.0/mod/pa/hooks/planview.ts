@@ -55,9 +55,13 @@ export function presentOf(req: { id: string; kind: string; caller: string; input
  * running agents), a draft in the prompt box (the dialog would take its focus). One dialog at a time is the tick's flag.
  * 3.28.1 T7: whatever the loop is doing, a running task included (developer 2026-10-14).
  */
-export function presentHold(o: { busy: boolean; draft: string }): string {
+export function presentHold(o: { busy: boolean; draft: string; cards?: boolean }): string {
   if (o.busy) {
     return 'agent busy'
+  }
+  // 3.32.10: a loop picker waits while a card queued before it (a proposed rule's note) is still to be drawn.
+  if (o.cards === true) {
+    return 'card'
   }
   return o.draft.trim() !== '' ? 'draft' : ''
 }

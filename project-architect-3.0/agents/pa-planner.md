@@ -58,5 +58,11 @@ LINT: OK | <the lint output> | — (generation)
 RESEARCH: <report ids written for this plan, comma-separated, or —>
 DECIDE: <one line per item the developer must settle, each with your recommendation, or —>
 RULES PROPOSED: <phase: the previous PhaseEnd's `Rules proposed` lines, one each, or —>
+  <under each line, its note>
 TOOL CANDIDATES: <phase: `phase-ends/current/AUDIT.md`'s Tool and Rule candidate lines with saving and size, `(drafted as T<n>)` when scheduled, or —>
+  <under each line, its note>
 ```
+Each note is the card the developer reads in the main session before that line's picker: two to four short sentences
+in simple English, for someone who has not seen the phase: why it is proposed (what went wrong, with the numbers, from
+the task summary that proposed it, `phase-ends/phase-<N>/tasks/T<n>.md`, or the audit row), what it will fix, and what
+it costs. No id, flag or file name it does not explain.

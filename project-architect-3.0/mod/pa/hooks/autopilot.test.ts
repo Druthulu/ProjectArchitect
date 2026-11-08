@@ -1901,9 +1901,11 @@ describe('plan install (T6a1)', () => {
       asked.push(q)
       return { result: { questions: [], answers: { [q]: picks.shift() ?? '' } } } as never
     })
+    // 3.32.10: an entry's lines after its first are the planner's note, drawn as a card before its picker
+    const WHY = 'Why: a push in phase 1.0 sent unreviewed work out.\nWhat it fixes: nothing leaves this machine unless you push it.'
     installReq(w, NOW, {
-      kind: 'phase', path: '.run/plans/phase.md', title: 'P', rules: ['M13: never push', 'keep logs terse'],
-      candidates: ['Tool candidate: lintfix | does: fixes lint | replaces: hand edits', 'Tool candidate: cache | does: x', 'Tool candidate: old | does: y'],
+      kind: 'phase', path: '.run/plans/phase.md', title: 'P', rules: [`M13: never push\n${WHY}`, 'keep logs terse'],
+      candidates: ['Tool candidate: lintfix | does: fixes lint | replaces: hand edits\nWhy: coders fixed lint by hand 9 times.', 'Tool candidate: cache | does: x', 'Tool candidate: old | does: y'],
     })
     await $.session.start(START)
     for (let i = 0; i < 30 && toCaller(w).length === 0; i += 1) {
@@ -1911,6 +1913,13 @@ describe('plan install (T6a1)', () => {
     }
     expect(asked).toEqual(['Add this rule? M13: never push', 'Add this rule? keep logs terse', 'Tool candidate: lintfix | does: fixes lint | replaces: hand edits',
       'Tool candidate: cache | does: x', 'Tool candidate: old | does: y'])
+    // the two cards, each written before its picker's request; none for an entry with no note
+    const inbox = [...w.files.keys()].filter(p => p.startsWith(`${INBOX}/`) && /-(card|ask)\.json$/.test(p)).sort()
+      .map(p => JSON.parse(w.files.get(p) ?? '{}') as { kind?: string; input: { text?: string; question?: string } })
+    expect(inbox.map(r => r.input.text ?? r.input.question)).toEqual([
+      `**🟪 Planning · Proposed rule M13**\n\n> never push\n\n${WHY}`, 'Add this rule? M13: never push', 'Add this rule? keep logs terse',
+      '**🟪 Planning · Tool candidate lintfix**\n\n> lintfix | does: fixes lint | replaces: hand edits\n\nWhy: coders fixed lint by hand 9 times.',
+      'Tool candidate: lintfix | does: fixes lint | replaces: hand edits', 'Tool candidate: cache | does: x', 'Tool candidate: old | does: y'])
     expect(ran(w, 'tools/rules_add.py')).toEqual([['py', 'tools/rules_add.py', 'add', '--id', 'M13', '--title', 'never push', '--origin', 'phase 1.1 plan']])
     expect(ran(w, 'tools/plan_edit.py add-task')).toEqual([['py', 'tools/plan_edit.py', 'add-task', '--title', 'tool candidate lintfix: fixes lint',
       '--done-when', 'hand edits', '--coder', 'opus55', '--by', 'developer']])

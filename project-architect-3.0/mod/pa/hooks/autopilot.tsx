@@ -80,7 +80,7 @@ import type { Band, HoldName, LoopState, LoopTask, Shell, ToastOut } from '../ty
 
 import { paSetting, versionAtLeast } from './activation'
 import { auditorBrief, curatorBrief, expertBrief, type ExpertOpts, type External, fixBrief, intakeBrief, type PlanTask, upgradeBrief } from './brief'
-import { acceptedCard, type BandAgent, bandIds, bandRows, bandStepOf, intakeCard, intakeDoneCard } from './card'
+import { acceptedCard, type BandAgent, bandIds, bandRows, bandStepOf, intakeCard, intakeDoneCard, proposalCard } from './card'
 import { CHAIN_SCRIPTS, parseAuditorReturn, parseExpertContract, splitCommand } from './contract'
 import { clip, eventFile, isStale } from './debug'
 import { BUILD } from './build'
@@ -90,7 +90,7 @@ import { JOURNAL_DIR, stamp, type Meta } from './journal'
 import { processLines, PROCESS_MS, PROCESSES_POSIX, PROCESSES_WIN, snapshotText, stallFile, type Tail, transcriptTail } from './stall'
 import {
   agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
-  nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, RULE_OPTIONS, runEnded, nextTaskOf,
+  nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, proposalOf, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, RULE_OPTIONS, runEnded, nextTaskOf,
   serializeLoop, silenceReleases, steerText, stoppedText, quietReply, liveness, ABSENT_MS, takesOver, WAIT_MAX_MS, WAIT_POLL_MS, waitSpec, windowResumes,
   contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
@@ -2161,8 +2161,16 @@ ${REPLAN_NOTICE}`)
             const items = [...inst.rules, ...inst.candidates]
             while (inst.i < items.length) {
               const rule = inst.i < inst.rules.length
-              const item = items[inst.i] ?? ''
+              const { line: item, note } = proposalOf(items[inst.i] ?? '')
               if (inst.asked === '') {
+                // 3.32.10: the planner's note on it, in simple English, drawn as a card before its picker (the router
+                // holds a loop picker until the cards before it are drawn).
+                if (note !== '') {
+                  const [, , id = '', , title = item] = ruleArgs(item, '', '')
+                  await drawCard(rule
+                    ? proposalCard(`Proposed rule${id === '' ? '' : ` ${id}`}`, title, note)
+                    : proposalCard(`Tool candidate ${candidateOf(item).name}`, item.replace(/^\s*-?\s*(?:Tool|Rule)\s+candidate:\s*/i, ''), note))
+                }
                 nseq += 1
                 const r = requestFile(await $.clock.now(), nseq, 'ask', 'loop', rule
                   ? { question: `Add this rule? ${item}`, options: [...RULE_OPTIONS] }

@@ -13,7 +13,7 @@ import { CTX_MAX, decideRoute, ratesFrom } from './policy'
 import { localStamp } from './seed'
 import type { LoopState } from '../types'
 import type {
-  Child, JournalOut, OutMsg, Partner, PriceCache, ReplyMark, RouterState, ToastOut, TurnKind, TurnRegistry, YourTurn,
+  Awaiting, Child, JournalOut, OutMsg, Partner, PriceCache, ReplyMark, RouterState, ToastOut, TurnKind, TurnRegistry, YourTurn,
 } from './state'
 
 /** The stub answer of every main-loop turn that carries no reply; its row draws nothing. */
@@ -314,6 +314,40 @@ export function stepFactsOf(text: string | null): { model: string; effort: strin
 }
 
 export const isLive = (status: string | undefined): boolean => status === 'running' || status === 'pending'
+
+/**
+ * 3.32.10 (GitHub #13): whether the partner a send waits on answered after it (`at`, stamped before the send): a turn of
+ * its ended (`lastTurnAt`), or a reply of its was taken (`replies`, keyed by agent id: an answer or a hand-back).
+ */
+export function answeredSince(s: RouterState, wait: { agentId: string; at: number }): boolean {
+  const p = s.partner
+  if (p !== null && p.agentId === wait.agentId && p.lastTurnAt >= wait.at) {
+    return true
+  }
+  return Object.entries(s.replies).some(([key, m]) => key.startsWith(`${wait.agentId}:`) && m.at >= wait.at)
+}
+
+/**
+ * The route tick's check of a send that waits on the partner (`wait`, as the tick read it before `$.agent.list()`;
+ * `now` the state read after it, `status` the partner's listed status): `gone` (the wait was cleared or replaced
+ * meanwhile), `seen` (running: the send is taken), `answered`, `lost` (30 s and no sign of it: after `--resume` the old
+ * partner is gone, and the message seeds a fresh one), else `wait`. 3.32.10 (GitHub #13): a turn end or a hand-back
+ * landing while the list was read, or a hand-back alone, made an answered partner look lost; its message then went to a
+ * fresh partner, which answered it again.
+ */
+export function resumeCheck(wait: Awaiting, now: RouterState | null, status: string | undefined, at: number): 'gone' | 'seen' | 'answered' | 'lost' | 'wait' {
+  const w = now?.awaiting ?? null
+  if (now === null || w === null || w.agentId !== wait.agentId || w.at !== wait.at) {
+    return 'gone'
+  }
+  if (isLive(status)) {
+    return 'seen'
+  }
+  if (answeredSince(now, wait)) {
+    return 'answered'
+  }
+  return at - wait.at >= RESUME_CHECK_MS ? 'lost' : 'wait'
+}
 
 /** 3.24 T17g: the agents still at work for the your-turn toast, `except` left out: running, pending or `waiting` (held
  * on an Agent call or background work it owns). Round 4: the planner, waiting on its first retriever spawn, counted as

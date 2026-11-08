@@ -607,6 +607,13 @@ export function lintErrors(out: string): string {
   return out.split(/\r?\n/).map(l => l.trim()).filter(l => l.startsWith('ERROR')).join('; ')
 }
 
+/** 3.32.10: a `rules` or `candidates` entry: its line (the first) and the planner's note under it, '' when none (the
+ * simple-English why the mod draws as a card before the line's picker). */
+export function proposalOf(entry: string): { line: string; note: string } {
+  const [first = '', ...rest] = entry.split(/\r?\n/)
+  return { line: first.trim(), note: rest.join('\n').trim() }
+}
+
 /** A rules line (`M13: <title>`, else the title alone under `nextId`) as `rules_add.py add` arguments. */
 export function ruleArgs(line: string, nextId: string, origin: string): string[] {
   const m = /^\s*(?:-\s*)?([A-Za-z]+\d+(?:\.\d+)?)\s*[:|—]\s*(.+)$/.exec(line)

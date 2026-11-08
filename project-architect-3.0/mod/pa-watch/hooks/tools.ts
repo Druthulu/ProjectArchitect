@@ -16,7 +16,7 @@ const NO_REPLY = 'Returns at once; no reply follows.'
 export const TOOL_SPECS: readonly { name: ToolName; description: string; inputSchema: Record<string, unknown> }[] = [
   {
     name: 'plan',
-    description: `Presents the plan file at \`path\` to the developer in the plan-mode view. \`kind\` generation or phase: on approval the mod installs and commits it (a phase plan's \`rules\` and \`candidates\` lines are put to the developer one by one); a phase plan sent while REPLAN.md sits beside the approved plan is not shown: it is installed at the next task boundary; adhoc (the default): any other plan. ${LATER}`,
+    description: `Presents the plan file at \`path\` to the developer in the plan-mode view. \`kind\` generation or phase: on approval the mod installs and commits it (a phase plan's \`rules\` and \`candidates\` lines are put to the developer one by one; an entry's lines after its first are its note in simple English, drawn as a card before its picker); a phase plan sent while REPLAN.md sits beside the approved plan is not shown: it is installed at the next task boundary; adhoc (the default): any other plan. ${LATER}`,
     inputSchema: {
       type: 'object',
       properties: {

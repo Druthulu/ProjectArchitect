@@ -53,7 +53,7 @@ import {
   addAttach, addReply, applyReply, bangOf, bangText, childOut, classify, clearTurn, dueMarkers, emptyTurns, enqueue, entryUsage, fileEntry,
   framedOther, handbackChild, hideAssistant, hideSpinner, hideUser, isBusy, isLive, isSeedName, journalOut, localAnswer, markerReply,
   markerText, newestPartner, newPartner, otherTarget, PARTNER_TYPE, stepFactsOf, nextMarker, outboxHeld, parentOf, partnerReport, partnerRoute, partnerTurnEnded, priceCacheOf,
-  registerTurn, replyKey, RESUME_CHECK_MS, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
+  registerTurn, replyKey, resumeCheck, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
   isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending, newHandback,
   withImageSources, withSourceLines, dropFiling, endFiling, filingRequest, filingTurnEnded, recordBody, startFiling, todoBlock,
@@ -895,10 +895,15 @@ export const register: Register = (on, options) => {
             const aw = st.awaiting
             if (aw !== null) {
               const listed = (await $.agent.list()).find(a => a.id === aw.agentId)
-              if (isLive(listed?.status)) {
+              // 3.32.10 (#13): judged on the state read after the list, where the partner's turn end may have landed.
+              const fresh = await read($, stateAtom)
+              const check = resumeCheck(aw, fresh, listed?.status, now)
+              if (check === 'gone') {
+                st = fresh
+              } else if (check === 'seen' || check === 'answered') {
                 st = await step(x => ({ ...x, awaiting: null }))
-                await log('route.seen', { agentId: aw.agentId, status: listed?.status })
-              } else if (now - aw.at >= RESUME_CHECK_MS) {
+                await log(`route.${check}`, { agentId: aw.agentId, status: listed?.status ?? 'unlisted' })
+              } else if (check === 'lost') {
                 // After --resume the old partner is gone: the message seeds a fresh one.
                 await log('route.resume.fail', { agentId: aw.agentId, status: listed?.status ?? 'unlisted' })
                 await step(x => ({ ...x, awaiting: null }))
@@ -974,10 +979,11 @@ export const register: Register = (on, options) => {
                 }
               }
               if (p !== null && route === 'resume') {
+                // 3.32.10 (#13): stamped before the send, so an answer that comes before the send returns counts as after it.
+                const at = await $.clock.now()
                 const sent = await $.session.send({ to: { agentId: p.agentId }, text: msg.text })
                 await log('route.send', { agentId: p.agentId, kind: msg.kind, sent })
                 if (sent.isDelivered) {
-                  const at = await $.clock.now()
                   st = await step(x => ({ ...x, awaiting: { agentId: p.agentId, text: msg.text, at }, sentKind: msg.kind, sentAt: at }))
                   continue
                 }
@@ -1280,7 +1286,10 @@ export const register: Register = (on, options) => {
           presenting = true
           try {
             const holder = holdingAgent(head, await $.agent.list(), await read($, dialogsAtom)) // an ask waits only for real conflicts
-            const hold = presentHold({ busy: holder !== null, draft: (await $.prompt.read()).text })
+            // 3.32.10: a loop picker after a card (a proposed rule's note) opens once the card is sent; only where the
+            // route sends markers (off in a non-interactive session, where it would wait forever).
+            const cards = head.caller === 'loop' && (await read($, routeAtom)) && ((await read($, stateAtom))?.pendingMarkers.length ?? 0) > 0
+            const hold = presentHold({ busy: holder !== null, draft: (await $.prompt.read()).text, cards })
             if (hold !== '') {
               const seen = `${hold}|${holder?.id ?? ''}|${holder?.status ?? ''}`
               if (seen !== lastHold) {

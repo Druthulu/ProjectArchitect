@@ -40,6 +40,11 @@ export function cardText(role: CardRole, what: string, body: string, opts: { don
 
 export type Card = { role: CardRole; done: boolean; title: string; body: string; diff: string }
 
+/** 3.32.10: the card before a proposed rule's or tool candidate's picker at plan approval: `what` names it (`Proposed
+ * rule T2`, `Tool candidate lintfix`), the line it puts to the developer, then the planner's note in simple English. */
+export const proposalCard = (what: string, line: string, note: string): string =>
+  cardText('planning', what, `> ${line}\n\n${note.trim()}`)
+
 const INTAKE_STEP_TEXT: Record<IntakeStep, string> = {
   memories: 'Sort its memories',
   'living docs': "Map its docs and write the card's living docs",

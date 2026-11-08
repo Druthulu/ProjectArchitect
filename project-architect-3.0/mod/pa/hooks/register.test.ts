@@ -177,6 +177,8 @@ type Net = {
   /** 3.32.4: what happens inside the mod's next(e), where Claude Code enters the prompt: its rows (a pasted image's
    * source row), maybe its turn's start. The test's own `$` does it (the kit refuses a test hook's own calls). */
   enter?: (text: string) => Promise<void>
+  /** 3.32.10: what happens while a send is in flight (the test's own `$`). */
+  onSend?: (text: string) => Promise<void>
 }
 
 function net(on: On): Net {
@@ -199,6 +201,7 @@ function net(on: On): Net {
   on('session.send', async ($, e) => {
     n.sends.push({ to: e.to, text: e.text })
     n.order.push(`send:${e.text}`)
+    await n.onSend?.(e.text)
     return n.deliver === false ? { isDelivered: false, reason: 'no such agent' } : { isDelivered: true }
   })
   on('prompt.submit', async ($, e) => {
@@ -344,6 +347,43 @@ describe('router route', () => {
     expect(n.spawns[0]?.startsWith('JOURNAL SEED\n')).toBe(true)
     expect(n.spawns[0]?.endsWith('\n\nstill there?')).toBe(true)
     expect(stateOf(w).partner?.agentId).toBe('P1')
+  })
+
+  // 3.32.10 (GitHub #13): the 30 s check took an answered partner for one lost after --resume and sent its message to a
+  // fresh one, which answered it again (two replies, or two pickers for one question).
+  // (The answer landing while the check reads the list is resumeCheck's `gone`, in route.test.ts: here the 500 ms band
+  // timer reads the list first.)
+  const answered = async ($: Engine, on: On, how: 'before-send-returns' | 'hand-back-only') => {
+    const clock = mock.clock(on, { now: 1_000 })
+    const prior = JSON.stringify({ v: 1, gen: 1, sid: 'S1', partner: { agentId: 'P1' } })
+    world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior }, { PA_MOD_DEBUG: '1' })
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'completed' }] // never seen running: its turn ran between two ticks
+    const answer = async (): Promise<void> => {
+      await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: 'T2 needs your decision.', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    }
+    if (how === 'before-send-returns') {
+      n.onSend = answer
+    }
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'what does rule T2 do?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect(n.sends.map(s => s.text)).toEqual(['what does rule T2 do?'])
+    if (how === 'hand-back-only') {
+      const hb = handback('P1', 'T2 needs your decision.')
+      await $.prompt.submit({ text: hb, origin: { kind: 'peer' }, wait: false })
+      await $.turn.start({ text: hb, turnId: 'H1' })
+    }
+    await clock.advance(34_000) // the send was at 2 s: past the check's 30 s
+    return n
+  }
+
+  test('3.32.10 #13: an answer that comes before the send returns counts as after it', async ($, on) => {
+    expect((await answered($, on, 'before-send-returns')).spawns).toEqual([])
+  })
+
+  test('3.32.10 #13: the partner\'s hand-back alone confirms the send', async ($, on) => {
+    expect((await answered($, on, 'hand-back-only')).spawns).toEqual([])
   })
 
   test('a coder hand-back with an idle parent is forwarded once; the partner hand-back is not', async ($, on) => {
@@ -1995,6 +2035,41 @@ describe('plans via the loop (T6a1)', () => {
     release()
     await clock.advance(1_000)
     expect(JSON.parse(w.files.get(`${BASE}/S1/dialog.json`) ?? '{}')).toMatchObject({ open: false })
+  })
+
+  test('3.32.10: a loop picker queued after a card (a proposed rule\'s note) opens only once the card is sent', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const CARD = '**🟪 Planning · Proposed rule M13**\n\n> never push\n\nWhy: a push in phase 1.0 sent unreviewed work out.'
+    const [r1, b1] = callerReq(OCT - 500, 1, 'card', 'loop', { text: CARD })
+    const [r2, b2] = callerReq(OCT - 500, 2, 'ask', 'loop', { question: 'Add this rule? M13: never push', options: ['add (Recommended)', 'reject'] })
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: P1(), [r1]: b1, [r2]: b2 }, { PA_MOD_DEBUG: '1' })
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    // the route tick is busy on a send, so the card cannot go out yet
+    let release: () => void = () => undefined
+    const gate = new Promise<void>(res => {
+      release = res
+    })
+    n.onSend = async () => {
+      await gate
+    }
+    const d = dialog(on, w)
+    d.answer = 'add (Recommended)'
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'hello', origin: { kind: 'composer' }, wait: false })
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(1_000)
+    }
+    expect(d.calls).toEqual([])                     // held: its card is not sent
+    expect(debugKinds(w)).toContain('pa.present.defer')
+    release()
+    for (let i = 0; i < 3; i += 1) {
+      await clock.advance(1_000)
+    }
+    expect(d.calls).toEqual(['ask:Add this rule? M13: never push'])
+    const kinds = debugKinds(w)
+    expect(kinds.indexOf('pa.route.marker')).toBeGreaterThan(-1)
+    expect(kinds.indexOf('pa.route.marker')).toBeLessThan(kinds.indexOf('pa.present.answer'))
   })
 
   test('PA_MOD_TRIAL_APPROVE=1: no dialog; a phase plan becomes install, the loop\'s ask an answer, an adhoc plan a reply', async ($, on) => {

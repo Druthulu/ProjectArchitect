@@ -2,6 +2,22 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.10 — Rules explained before you choose, and three fixes from GitHub
+
+- When you approve a phase plan that proposes rules, each rule now comes with a short card in plain English before
+  its question: why it is proposed, with what went wrong last phase, what it will fix and what it costs. The planner
+  writes it from the task that proposed the rule. Tool candidates get the same card. The questions and their
+  recommended answers are as before.
+- A reopened task now counts for the tasks that wait on it. When T30.8 is reopened as T30.9 and T30.9 is done, a
+  task that depends on T30.8 (or on T30) starts. It used to stay blocked until the old versions were marked done by
+  hand. (GitHub #11)
+- The usage summary is rebuilt by one process at a time. A rebuild that ran longer than 10 minutes let a second one
+  start, and each one removed the lock when it finished, so copies piled up at full CPU. A rebuild that takes a
+  minute or more now leaves its time in `hooks.log`. (GitHub #12)
+- Claude no longer answers one message twice. When Claude answered quickly, PA3 could take it for lost and give the
+  message to a fresh Claude, which answered it again, sometimes with a second picker for the same question.
+  (GitHub #13)
+
 ## 3.32.9 — A tidier journal, and fixes that take effect at once
 
 - The journal no longer fills git with thousands of small files. Each entry is still written as its own file, so

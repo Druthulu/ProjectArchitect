@@ -1732,6 +1732,10 @@ def patch_session(sid, fields):
 
 _LOCK_STALE_S = 600            # any lock older than 10 min is stale
 _START_GRACE_S = 30            # a requester's lock outlives the requester while the child starts
+# 3.32.10 (GitHub #12): rebuild children piled up, four or five at full CPU. A pass longer than 10 min let the next
+# request take a live child's lock over, and every child removed the lock on exit, whoever held it.
+HEARTBEAT_S = 30               # a live child refreshes its lock this often, so a long pass never looks stale
+SLOW_PASS_S = 60               # a pass this slow is logged with its time (why theirs ran past 10 min is not known)
 
 
 def _rebuild_files():
@@ -1767,6 +1771,25 @@ def _write_lock(lock, role):
     from . import fsutil
 
     fsutil.atomic_write_text(lock, "%d %s\n" % (os.getpid(), role))
+
+
+def _owns(lock):
+    """3.32.10: whether ``lock`` names this process; a child that lost it never rewrites or removes it."""
+    try:
+        with open(lock, encoding="utf-8") as fh:
+            return int(fh.read().split()[0]) == os.getpid()
+    except (OSError, IndexError, ValueError):
+        return False
+
+
+def _heartbeat(lock, stop):
+    """3.32.10: refresh ``lock``'s mtime every HEARTBEAT_S while it names this process, until ``stop`` is set."""
+    while not stop.wait(HEARTBEAT_S):
+        if _owns(lock):
+            try:
+                os.utime(lock, None)
+            except OSError:
+                pass
 
 
 def _take_lock(lock):
@@ -1886,15 +1909,21 @@ def run_rebuild(sessions_only=False):
     3.32.9: a newer install between passes ends the loop and requests a fresh child, which takes the stamp: a process
     keeps the code it started with, and a busy session's child looped for an hour on the old one (bfm-decomp,
     2026-11-06: the ?/? fix came live only when it went idle).
+    3.32.10 (GitHub #12): the lock is refreshed while the child lives (_heartbeat) and removed only by its owner; a
+    child that lost it stops; a pass of SLOW_PASS_S or more is logged with its time.
     Writes nothing to stdout; failures go to the hooks log.
     """
+    import threading
+
     from . import config, log
     from .hooks import close_db, open_db
 
     lock, dirty = _rebuild_files()
     handover = False
+    stop = threading.Event()
     try:
         _write_lock(lock, "rebuild")
+        threading.Thread(target=_heartbeat, args=(lock, stop), daemon=True).start()
         cfg = config.load()
         pending = _take_dirty(dirty)
         if pending is False:
@@ -1903,11 +1932,17 @@ def run_rebuild(sessions_only=False):
             conn = open_db(create=False)
             if conn is None:
                 break
+            t0 = time.time()
             try:
                 _recheck_answers(conn, cfg)
                 rebuild(conn, cfg, sessions_only=sessions_only)
             finally:
                 close_db(conn)
+            took = time.time() - t0
+            if took >= SLOW_PASS_S:
+                log.log("summary_rebuild_slow", seconds=round(took, 1), sessions_only=bool(sessions_only))
+            if not _owns(lock):
+                break                                      # taken over: its owner takes the stamp
             if os.path.exists(dirty) and _newer_installed():
                 handover = True
                 break
@@ -1919,10 +1954,12 @@ def run_rebuild(sessions_only=False):
     except Exception as exc:
         log.log("summary_rebuild_child_failed", error=str(exc)[:200])
     finally:
-        try:
-            os.remove(lock)
-        except OSError:
-            pass
+        stop.set()
+        if _owns(lock):
+            try:
+                os.remove(lock)
+            except OSError:
+                pass
     if handover:
         log.log("summary_rebuild_handover")
         request_rebuild(sessions_only=True)               # the stamp left in place says whether it runs in full

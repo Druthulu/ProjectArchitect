@@ -1732,6 +1732,73 @@ class DetachedRebuildTest(LedgerCase):
         self.blocks = dict((e, inp) for e, inp in read_blocks("probe1.log") if e in self.EVENTS)
         self.lock, self.dirty = summary._rebuild_files()
 
+    def test_a_live_childs_lock_is_never_taken_over(self):
+        """3.32.10 (GitHub #12): a pass longer than the 10 min stale age let the next request take a live child's lock
+        and start a second child (four or five piled up). The child's heartbeat keeps its lock fresh: the request only
+        marks the stamp, and the same child runs the next pass."""
+        from unittest import mock
+
+        self.run_rebuilds = False
+        self._clear()
+        passes, spawned = [], []
+
+        def long_pass(conn, cfg, sessions_only=False):
+            passes.append(sessions_only)
+            if len(passes) == 1:
+                old = time.time() - 700                    # the pass has run past _LOCK_STALE_S
+                os.utime(self.lock, (old, old))
+                time.sleep(0.3)                            # several heartbeats
+                spawned.append(summary.request_rebuild(self.cfg))   # (an assert here: run_rebuild logs it away)
+
+        with mock.patch.object(summary, "HEARTBEAT_S", 0.05), mock.patch.object(summary, "rebuild", side_effect=long_pass):
+            summary.run_rebuild(sessions_only=True)
+        self.assertEqual(spawned, [False])
+        self.assertEqual(self.rebuilds, [])                # no second child
+        self.assertEqual(passes, [True, False])           # the stamp ran in this child, in full
+        self.assertFalse(os.path.exists(self.lock))
+        self.assertFalse(os.path.exists(self.dirty))
+
+    def test_a_child_that_lost_its_lock_leaves_it_and_stops(self):
+        """3.32.10 (GitHub #12): every child removed the lock on exit, whoever held it, so a third child could start
+        beside the other two. A child whose lock another took stops after its pass and leaves the lock and the stamp."""
+        from unittest import mock
+
+        self.run_rebuilds = False
+        self._clear()
+        other = "%d rebuild\n" % os.getppid()             # a live process that is not this one
+        passes = []
+
+        def taken_over(conn, cfg, sessions_only=False):
+            passes.append(sessions_only)
+            if len(passes) == 1:
+                with open(self.lock, "w", encoding="utf-8") as fh:
+                    fh.write(other)
+                summary._mark_dirty(self.dirty, False)
+
+        with mock.patch.object(summary, "rebuild", side_effect=taken_over):
+            summary.run_rebuild(sessions_only=True)
+        self.assertEqual(passes, [True])
+        self.assertTrue(os.path.exists(self.lock))        # the owner's lock, left in place
+        with open(self.lock, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), other)
+        self.assertTrue(os.path.exists(self.dirty))       # and its stamp to take
+
+    def test_a_slow_pass_is_logged_with_its_time(self):
+        """3.32.10 (GitHub #12): why the reporter's passes ran past 10 minutes is not known; a pass of SLOW_PASS_S or
+        more leaves its time in hooks.log, so the next report shows it."""
+        from unittest import mock
+
+        from pa import log
+
+        self.run_rebuilds = False
+        self._clear()
+        with mock.patch.object(summary, "SLOW_PASS_S", 0), mock.patch.object(summary, "rebuild"), \
+                mock.patch.object(log, "log") as logged:
+            summary.run_rebuild(sessions_only=True)
+        slow = [c for c in logged.call_args_list if c.args[:1] == ("summary_rebuild_slow",)]
+        self.assertEqual([sorted(c.kwargs) for c in slow], [["seconds", "sessions_only"]])
+        self.assertIs(slow[0].kwargs["sessions_only"], True)
+
     def _clear(self):
         for p in (self.lock, self.dirty):
             if os.path.exists(p):

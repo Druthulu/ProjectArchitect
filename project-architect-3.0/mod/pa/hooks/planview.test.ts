@@ -69,6 +69,9 @@ describe('queue items and deferral', () => {
     expect(presentHold({ busy: true, draft: '' })).toBe('agent busy')
     expect(presentHold({ busy: false, draft: 'typing' })).toBe('draft')
     expect(presentHold({ busy: false, draft: '  ' })).toBe('')
+    // 3.32.10: a loop picker waits for the cards queued before it (a proposed rule's note)
+    expect(presentHold({ busy: false, draft: '', cards: true })).toBe('card')
+    expect(presentHold({ busy: true, draft: '', cards: true })).toBe('agent busy')
   })
 
   // 3.23 T13d.c7: an ask waits only for its caller running or pending; a plan for any busy agent. 3.24 T8: `waiting` no

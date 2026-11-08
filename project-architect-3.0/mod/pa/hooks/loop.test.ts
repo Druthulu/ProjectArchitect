@@ -7,8 +7,18 @@ import {
   quietReply, nextPhaseOf, recalcSessions, withPhaseSid, archiveOf, bgJobOf, curateQuestion, firstRunLine, intakeCapNotice, intakeDue, intakeOwed, intakeTriesOf,
   markerOf, modFilesKey, externalReminder, setupNotice, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
   extHealthOf, extHealthNotice, generalizableCount, bankQuestion, bankTask, bankNotice, startCheckOffline, startCheckState,
-  batchDoneNotice, batchOf, driveOf, talkLine, withDrive, doneInName, STALL_NOTICE_MS,
+  batchDoneNotice, batchOf, driveOf, talkLine, withDrive, doneInName, STALL_NOTICE_MS, proposalOf,
 } from './loop'
+
+// 3.32.10: a rules or candidates entry carries the planner's simple-English note under its line (the card's body).
+describe('proposalOf', () => {
+  test('the first line is the line; the rest, trimmed, the note; none for a bare line', async () => {
+    expect(proposalOf('T2 — a batch is not done until its residue ran\nWhy: 124 functions had no rows.\r\nWhat it fixes: rows stay right.'))
+      .toEqual({ line: 'T2 — a batch is not done until its residue ran', note: 'Why: 124 functions had no rows.\nWhat it fixes: rows stay right.' })
+    expect(proposalOf('  M13: never push  ')).toEqual({ line: 'M13: never push', note: '' })
+    expect(proposalOf('')).toEqual({ line: '', note: '' })
+  })
+})
 
 describe('the one-time cookbook banking (3.30)', () => {
   test('marks counted as task_log.py counts them: a list item or a labelled line; not other kinds, not empty', () => {

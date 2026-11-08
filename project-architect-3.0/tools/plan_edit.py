@@ -415,8 +415,12 @@ def deps_done(task, by_id):
         if t.status == "done":
             continue
         if t.status == "superseded":
-            kids = [x for x in by_id.values() if x.id.startswith(d + ".")]
-            if kids and all(k.status == "done" for k in kids):
+            # 3.32.10 (GitHub #11): the newest version of a reopened task stands for every earlier one. A reopen counts
+            # up at the same level (T30 -> T30.1, T30.8 -> T30.9), so a dependency on T30 or on T30.8 is met when every
+            # version of T30 still standing is done; the superseded versions never are.
+            root = d.split(".")[0]
+            live = [x for x in by_id.values() if x.id.startswith(root + ".") and x.status != "superseded"]
+            if live and all(k.status == "done" for k in live):
                 continue
         return False
     return True

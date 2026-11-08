@@ -360,6 +360,22 @@ class TestPlanEdit(ToolCase):
         self.assertIn("- T1.3 | next", text)
         self.assertIn("router: reopened T1.2 as T1.3", text)
 
+    def test_the_newest_version_meets_deps_on_every_earlier_one(self):
+        """3.32.10 (GitHub #11): T4 depends on T3.1; reopened as T3.2 and done, T3.2 lets T4 run. A task depending on T3
+        (superseded twice over) is met by the same T3.2: superseded versions never count as done."""
+        scratch = os.path.join(self.root, ".run", "plan_deps.md")
+        shutil.copyfile(PLAN_FIXTURE, scratch)
+        plan = ("plan_edit.py", "--file", scratch)
+        self.ok(self.tool(*plan, "reopen", "T3.1", "--title", "seams again", "--done-when", "seams listed", "--by", "router"))
+        root_dep = self.ok(self.tool(*plan, "add-task", "--title", "after the seams", "--done-when", "d", "--deps", "T3",
+                                     "--by", "router")).split()[0]
+        nxt = lambda: json.loads(self.ok(self.tool(*plan, "next", "--brief", "--json")))   # noqa: E731
+        self.assertEqual(nxt()["task"]["id"], "T3.2")
+        self.ok(self.tool(*plan, "set-status", "T3.2", "done"))
+        self.assertEqual(nxt()["task"]["id"], "T4")            # deps: T3.1
+        self.ok(self.tool(*plan, "set-status", "T4", "done"))
+        self.assertEqual(nxt()["task"]["id"], root_dep)        # deps: T3 (T5 is blocked)
+
     def test_add_task_allocates_the_next_free_integer_id(self):
         # a retired coder is refused in one line (3.9.5 T9); the plan is untouched
         before = read(self.plan)
