@@ -58,13 +58,17 @@ const STEM = /^[0-9]{6}-[0-9]{3,}[rwx]-(?:T[0-9]+|[a-z]+)-[a-z]+$/ // 3.32.9: as
  * entry file unchanged; paths `.claude-state/journal/<date>.md#<stem>`.
  */
 export function splitDay(date: string, text: string): Entry[] {
-  const out: Entry[] = []
+  return daySections(text).map(([stem, t]) => ({ path: `${dayFilePath(date)}#${stem}`, ...(parseEntry(t) ?? { meta: {}, body: t }) }))
+}
+
+/** 3.32.12: a rolled day file's `[stem, text]` sections, each text the entry file unchanged (splitDay parses them; the
+ * recovery digest reads them raw). */
+export function daySections(text: string): [string, string][] {
+  const out: [string, string][] = []
   let stem = ''
   let buf: string[] = []
   const flush = (): void => {
-    if (stem === '') return
-    const t = buf.join('\n')
-    out.push({ path: `${dayFilePath(date)}#${stem}`, ...(parseEntry(t) ?? { meta: {}, body: t }) })
+    if (stem !== '') out.push([stem, buf.join('\n')])
   }
   for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
     const m = /^## (\S+)$/.exec(line)

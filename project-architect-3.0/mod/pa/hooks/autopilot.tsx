@@ -86,7 +86,7 @@ import { clip, eventFile, isStale } from './debug'
 import { BUILD } from './build'
 import { isProgressEntry, recoveryDigest } from './digest'
 import { isLoopKind, noticeRequest, parseRequest, pendingRequests, type Request, requestFile } from './inbox'
-import { JOURNAL_DIR, stamp, type Meta } from './journal'
+import { daySections, JOURNAL_DIR, stamp, type Meta } from './journal'
 import { processLines, PROCESS_MS, PROCESSES_POSIX, PROCESSES_WIN, snapshotText, stallFile, type Tail, transcriptTail } from './stall'
 import {
   agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
@@ -962,6 +962,11 @@ export function armAutopilot(on: On): void {
             await notice(updateFailedNotice(failedVersion, manualUpdate(python), um.rc, tail))
           } else {
             await notice(updateDoneNotice(um, { restart, conflicts: upgrade !== null, loaded }, pa3, tail))
+            // 3.32.12: a restart already loaded it, and this notice says so: the next start says it no more
+            const raw = loaded ? objectOf((await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)) ?? '') : null
+            if (raw !== null) {
+              await $.fs.write(`${root}/${UPDATE_MARKER}`, `${JSON.stringify({ ...raw, told: true }, null, 1)}\n`).catch(quiet)
+            }
           }
           if (conflicts && upgrade === null) {
             await notice(upgradeLeftNotice(rounds))
@@ -1025,9 +1030,12 @@ export function armAutopilot(on: On): void {
         const rlLoaded = releaseOf(s)
         if (rlLoaded !== null && versionAtLeast(modLoaded, rlLoaded.version) === true) {
           await save({ ...s, release: null } as LoopState, 'release.loaded')
-          // 3.32.5: a failed update to a release above this one stands (its red line and hold) until PA3 is updated
+          // 3.32.5: a failed update to a release above this one stands (its red line and hold) until PA3 is updated.
+          // 3.32.12: so does any marker naming a release above this one (the start hook's `running` install), and an
+          // empty one is not rewritten.
           const relNow = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
-          if (relNow?.['state'] !== 'failed' || versionAtLeast(modLoaded, strOf(relNow['version'])) === true) {
+          const mv = strOf(relNow?.['version'])
+          if (relNow !== null && Object.keys(relNow).length > 0 && (mv === '' || versionAtLeast(modLoaded, mv) === true)) {
             await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
           }
         }
@@ -1760,7 +1768,8 @@ ${REPLAN_NOTICE}`)
           return true
         }
         // TASK_PROGRESS.md for a respawn after a restart (T5d1): the hook's kill digest when present (`claude --continue`),
-        // else the mod's: git status, the commits since the task's start, its agents' journal notes and reasoning.
+        // else the mod's: git status, the commits since the task's start, its agents' journal notes and reasoning (from
+        // the day folders and, 3.32.12, the packed day files).
         const progressDigest = async (t: LoopTask): Promise<string> => {
           if (await $.fs.exists(`${root}/${PROGRESS}`)) {
             return 'present, kept'
@@ -1771,11 +1780,22 @@ ${REPLAN_NOTICE}`)
           const jdir = `${root}/${JOURNAL_DIR}`
           const entries: [string, string][] = []
           if (await $.fs.exists(jdir)) {
-            for (const d of (await $.fs.list(jdir)).filter(f => f.kind === 'dir' && f.name >= day)) {
+            const listed = await $.fs.list(jdir)
+            for (const d of listed.filter(f => f.kind === 'dir' && f.name >= day)) {
               for (const f of (await $.fs.list(`${jdir}/${d.name}`)).filter(x => x.kind === 'file' && isProgressEntry(x.name))) {
                 const name = `${d.name}/${f.name}`
                 if (name >= `${day}/${time}`) {
                   entries.push([name, await $.fs.read(`${jdir}/${name}`).catch(() => '')])
+                }
+              }
+            }
+            // 3.32.12: a finished day is packed into `<date>.md` (journal_rollup.py, at a session start and every 8 hours),
+            // so an expert that started on an earlier day has its notes there; they were lost from the digest
+            for (const f of listed.filter(x => x.kind === 'file' && /^\d{4}-\d{2}-\d{2}\.md$/.test(x.name) && x.name.slice(0, 10) >= day)) {
+              for (const [stem, text] of daySections(await $.fs.read(`${jdir}/${f.name}`).catch(() => ''))) {
+                const name = `${f.name.slice(0, 10)}/${stem}.md`
+                if (isProgressEntry(name) && name >= `${day}/${time}` && !entries.some(e => e[0] === name)) {
+                  entries.push([name, text])
                 }
               }
             }
@@ -3314,24 +3334,50 @@ ${REPLAN_NOTICE}`)
     modLoaded = built.version !== '' ? built.version : installed
     modGit = built.git
     const runsInstalled = modLoaded === installed && (modGit === '' || sameCommit(modGit, gitOfVersion(versionText)))
+    // 3.32.12: the last update run (its marker). bfm, 3.32.11: this start's reset emptied the start hook's `running`
+    // release marker, so the install left no "installed" stage, no restart said it loaded, and Claude kept asking for a
+    // restart. Its loaded line is said once (`told` in the run marker; pa3_update.py writes a fresh one each run).
+    const runText = (await $.fs.read(`${root}/${UPDATE_MARKER}`).catch(() => null)) ?? ''
+    const run = markerOf(runText)
+    const runRaw = objectOf(runText)
+    let told = runRaw?.['told'] === true && run !== null && run.to.phase === installed // said for this release
+    const sayLoaded = async (): Promise<void> => {
+      nseq += 1
+      const r = noticeRequest(await $.clock.now(), nseq, loadedNotice(installed))
+      await $.fs.write(`${root}/.run/mod/${sid}/inbox/${r.name}`, r.body).catch(quiet)
+      if (run !== null && runRaw !== null && run.to.phase === installed && !told) {
+        await $.fs.write(`${root}/${UPDATE_MARKER}`, `${JSON.stringify({ ...runRaw, told: true }, null, 1)}\n`).catch(quiet)
+      }
+      told = true
+    }
     if (await $.fs.exists(`${root}/${RELEASE_MARKER}`)) {
       // 3.28.2 T16: the release the marker names is the installed one and this process runs it: this start loaded it;
       // Claude says so first, so the resumed conversation's last line (the restart) doesn't read as a loop.
-      const relm = objectOf((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '')
+      const relText = (await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? ''
+      const relm = objectOf(relText)
       const v = typeof relm?.['version'] === 'string' ? relm['version'] : ''
       // 3.32.4: or a newer one: the run installs the newest release, and a marker from before 3.32.4 names the one the
       // check found (sb: 3.32.2 named, 3.32.3 installed, and the restart said nothing). The line names what loaded.
       const reached = v !== '' && versionAtLeast(installed, v) === true && runsInstalled
-      if (reached) {
-        nseq += 1
-        const r = noticeRequest(await $.clock.now(), nseq, loadedNotice(installed))
-        await $.fs.write(`${root}/.run/mod/${sid}/inbox/${r.name}`, r.body).catch(quiet)
+      if (reached && !told) {
+        await sayLoaded()
       }
       // 3.28.1 T14: the restart loaded it. 3.29.2: but a release still installing (the start hook's run) stays.
-      // 3.32.5: and a failed update stays (its red line and hold) until PA3 reaches it
-      if (reached || (relm?.['state'] !== 'running' && relm?.['state'] !== 'failed')) {
+      // 3.32.5: and a failed update stays (its red line and hold) until PA3 reaches it. 3.32.12: an empty marker is
+      // left alone, and one that changed since the read above (the start hook's `running`, written while this process
+      // started) is not this start's to clear.
+      const empty = relm === null || Object.keys(relm).length === 0
+      if (!empty && (reached || (relm?.['state'] !== 'running' && relm?.['state'] !== 'failed')) &&
+        ((await $.fs.read(`${root}/${RELEASE_MARKER}`).catch(() => null)) ?? '') === relText) {
         await $.fs.write(`${root}/${RELEASE_MARKER}`, '{}\n').catch(quiet)
       }
+    }
+    // 3.32.12: no marker said it, but the last run installed the release this process runs and was reported before this
+    // start (its restart line said): this start loaded it
+    const seenAt = updateSeenOf(parseLoop(await $.fs.read(`${root}/${LOOP_FILE}`).catch(() => null)))
+    if (!told && run !== null && run.state === 'done' && run.rc === 0 && run.mode !== 'repair' && run.to.phase === installed &&
+      runsInstalled && seenAt >= run.atMs) {
+      await sayLoaded()
     }
     // 3.29 T6: the one-time `.run/` cleanup, offered once per project when `.run/` holds work from before 3.29.
     // 3.29.5: a marker counts once the picker was shown (`asked`, '' when there was nothing to offer); an older one

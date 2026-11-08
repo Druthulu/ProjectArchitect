@@ -2,6 +2,17 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.12 — Updates that say they loaded, and notes kept across midnight
+
+- After an update installs on its own at a session start, the restart now always opens with "Project Architect
+  <version> is installed and loaded", and work goes on. The start could wipe the note the install left, so the
+  statusline showed no "installing" while it ran, no restart said the update had loaded, and Claude kept asking for
+  one more restart. Updating to this release is the last time that can happen.
+- When a task's expert is cut off without leaving its progress file (a crash, a closed terminal, a restart), PA3
+  writes one for the fresh expert from the journal: what was committed, what the expert and its coders noted, and
+  their last reasoning. An expert that had started on an earlier day lost that part, because PA3 packs each finished
+  day of the journal into one file, and the fresh expert started from git alone. PA3 now reads the packed days too.
+
 ## 3.32.11 — Planning at max on Max, and a card for each new phase
 
 - On Max (the plan called Max 5x until October 30), the planner now drafts plans at max effort, as on Ultra (the

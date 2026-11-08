@@ -1531,10 +1531,10 @@ describe('visible and steerable (T5c)', () => {
 // T5d1: the heartbeat, a takeover's recovery (continue:, then a respawn with PROGRESS), the mod's digest.
 const PROGRESS_FILE = `${ROOT}/phase-ends/current/TASK_PROGRESS.md`
 /** A task T1 running under S0 (expert E0, dead with its session), heartbeat `beat`. */
-const orphan = (beat: number): string => JSON.stringify({
+const orphan = (beat: number, spawnedAt = NOW - 120_000): string => JSON.stringify({
   v: 1, ownerSid: 'S0', heartbeatAt: beat, state: 'running', holds: [], nextId: 'T2',
   task: { id: 'T1', title: 'add function', agent: 'pa-expert', coder: 'opus55', effort: 'medium', attempt: 1, kind: 'task',
-    agentId: 'E0', startSha: 'abc', spawnedAt: NOW - 120_000, lastCompleteAt: NOW - 90_000, contract: null, plan: T1 },
+    agentId: 'E0', startSha: 'abc', spawnedAt, lastCompleteAt: spawnedAt + 30_000, contract: null, plan: T1 },
 })
 type Loop3 = Loop & { ownerSid: string; heartbeatAt: number; task: (Loop['task'] & { recovery?: { phase: string } | null }) | null }
 const loop3 = (w: W): Loop3 => JSON.parse(w.files.get(LOOP) ?? '{}') as Loop3
@@ -1585,6 +1585,25 @@ describe('recovery and loop ownership (T5d1)', () => {
     expect(r[1]).toContain('recovery: sent E0 continue: (delivered)')
     expect(r[2]).toContain('respawned with PROGRESS')
     expect(r[2]).toContain('written by the mod (1 journal entries)')
+  })
+
+  test('3.32.12: an expert that started on an earlier day: its notes come from the packed day file', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const since = NOW - 30 * 3_600_000 // the day before: journal_rollup.py packed its folder into `<date>.md`
+    const [day, t1] = stamp(since + 60_000)
+    const [, t2] = stamp(since + 120_000)
+    const entry = (at: number, body: string): string => `---\nts: ${new Date(at).toISOString()}\n---\n${body}\n`
+    const packed = `# Journal ${day} (2 entries, rolled by tools/journal_rollup.py)\n` +
+      `## ${t1}-001w-T1-note\n${entry(since + 60_000, 'Briefing the coder for add.py, from the packed day.')}` +
+      `## ${t2}-002w-coder-thinking\n${entry(since + 120_000, 'The import path is wrong; fixing it.')}`
+    const w = world(on, { [LOOP]: orphan(NOW - 50_000, since), [`${JDIR}/${day}.md`]: packed })
+    await $.session.start(START)
+    await clock.advance(40_000)
+    expect(experts(w).length).toBe(1)
+    const digest = w.files.get(PROGRESS_FILE) ?? ''
+    expect(digest).toContain('Briefing the coder for add.py, from the packed day.')
+    expect(digest).toContain('The import path is wrong; fixing it.')
+    expect(recovers(w).some(t => t.includes('written by the mod (2 journal entries)'))).toBe(true)
   })
 
   test('continue: delivered and the expert seen running: no respawn; the run ends only after its next turn', async ($, on) => {
@@ -3007,6 +3026,51 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     await $.session.start(START)
     await clock.advance(20_000)
     expect(notices(w).filter(n => n.input.text.includes('is installed and loaded')).length).toBe(0)
+  })
+
+  // bfm, 2026-11-08: during 3.32.11's install the start's reset emptied the start hook's `running` marker, so no
+  // restart said the release loaded, and Claude kept asking for one.
+  test('3.32.12: no release marker, a reported run that installed this release: the start says it loaded, once', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.28.3 is installed and loaded. Ready to continue work.**'
+    const at = (NOW - 600_000) / 1000
+    const w = world(on, { [RELM]: '{}\n', '/.claude/pa3/VERSION': '3.28.3\n',
+      [MARKER]: marker({ at, from: { phase: '3.28.2', git: 'aaaa1111cc' }, to: { phase: '3.28.3', git: 'bbbb2222dd' } }),
+      [LOOP]: JSON.stringify({ v: 1, state: 'off', holds: [], updateSeenAt: at * 1000 }),
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+    expect((JSON.parse(w.files.get(MARKER) ?? '{}') as { told?: unknown }).told).toBe(true)
+    await $.session.start(START) // the next start: said once
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+  })
+
+  test('3.32.12: a run whose report already says it loaded (a run while Claude Code was closed): no second line', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const LOADED = '**Project Architect 3.28.3 is installed and loaded. Ready to continue work.**'
+    const w = world(on, { '/.claude/pa3/VERSION': '3.28.3\n', [`${BASE}/update.log`]: 'pa3_update: done\n',
+      [MARKER]: marker({ at: (NOW - 60_000) / 1000, from: { phase: '3.28.2', git: 'aaaa1111cc' }, to: { phase: '3.28.3', git: 'bbbb2222dd' } }),
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes(LOADED)).length).toBe(1)
+  })
+
+  test('3.32.12: a loaded release record is dropped, but a marker naming a newer release (installing) stays', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const running = '{"version":"3.28.4","kind":"hotfix","state":"running"}'
+    const w = world(on, { [RELM]: running, '/.claude/pa3/VERSION': '3.28.3\n',
+      [LOOP]: JSON.stringify({ v: 1, state: 'off', holds: [], release: { version: '3.28.2', kind: 'hotfix', asked: '', step: 'done' } }),
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(relOf(w)).toBe(null)
+    expect(w.files.get(RELM)).toBe(running)
   })
 
   test('3.29 T6: the first start offers the one-time .run/ cleanup when .run/ holds older work, once', async ($, on) => {
