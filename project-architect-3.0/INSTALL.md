@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.32.10: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.32.11: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -174,22 +174,22 @@ Restart Claude Code after it (`/exit`, then `claude`).
 
 PA3 reads your plan from the Claude Code login (`rateLimitTier` and `subscriptionType` in the
 credentials file the usage poller already opens) and stamps it on your account in the ledger at
-session start: Max 20x → `max20`, Max 5x → `max5`, Pro → `pro`; anything else (team, enterprise, an
+session start: Ultra (called Max 20x until 2026-10-30) → `max20`, Max (Max 5x) → `max5`, Pro → `pro`; anything else (team, enterprise, an
 unknown value) → the install interview's answer, `.claude/pa.json` `tier`, default `max5`. The tier
 picks a preset for six agents and Claude's starting model (Opus 5.5 at medium; Sonnet 5.5 at medium on Pro);
 every other agent is the same on every tier (the retrievers run Haiku 5.5 at medium).
 The task's effort picks the expert's row; the deep row is the thinker spawned with `[effort deep]`.
 
-| row | max20 | max5 | pro |
+| row | max20 (Ultra) | max5 (Max) | pro |
 |---|---|---|---|
 | pa-expert | Opus 5.5 medium | Opus 5.5 medium | Opus 5.5 low |
 | pa-expert, `effort: high` | Fable 5.1 medium | Opus 5.5 high | Opus 5.5 high |
 | pa-coder | Opus 5.5 medium | Opus 5.5 medium | Sonnet 5.5 medium |
 | pa-thinker | Opus 5.5 max | Opus 5.5 max | Opus 5.5 medium |
 | pa-thinker, deep | Fable 5.1 max | Fable 5.1 max | the thinker's row |
-| auditor | Fable 5.1 medium | Fable 5.1 medium | Opus 5.5 medium |
+| auditor | Fable 5.1 medium | Opus 5.5 medium | Opus 5.5 medium |
 | memory-curator | Opus 5.5 medium | Opus 5.5 medium | Opus 5.5 medium |
-| pa-planner | Opus 5.5 max | Opus 5.5 high | Opus 5.5 medium |
+| pa-planner | Opus 5.5 max | Opus 5.5 max | Opus 5.5 medium |
 
 - **Managed lines.** The `model:` and `effort:` lines of these six agents are written by PA3 (install,
   update and every session start re-render them from the package file plus the preset); do not

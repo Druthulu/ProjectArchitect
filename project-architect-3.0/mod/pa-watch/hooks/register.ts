@@ -73,8 +73,9 @@ const quiet = (): undefined => undefined
 
 /** 3.28.1 T15: background shells (Bash `run_in_background`) per agent, `.run/mod/<sid>/shells.json` (pa loop.ts
  * SHELLS_FILE, shellsOf): `{ <agentId>: [{ id, name, at, type, exit?, moved? }] }`, from the call to its completion notice;
- * 3.32.1 T3: `moved` when Claude Code pushed a foreground call into the background at its time limit. */
-type ShellRec = { id: string; name: string; at: number; type: string; exit?: number; moved?: boolean }
+ * 3.32.1 T3: `moved` when Claude Code pushed a foreground call into the background at its time limit; 3.32.11 T2:
+ * `ended` (ms) beside a failed shell's `exit`: the band drops its red row 2 minutes after it. */
+type ShellRec = { id: string; name: string; at: number; type: string; exit?: number; ended?: number; moved?: boolean }
 let shellsChain: Promise<unknown> = Promise.resolve() // one read-modify-write at a time
 /** A shell's name: the last script-like token's basename (`bake_rest.sh`), else the last command's first word; 3.3 T7:
  * a `pa_ext.py run` is `external <stem>`, its brief's basename without the extension (`external T4.c1`). 3.32.8: the
@@ -549,6 +550,7 @@ export const register: Register = on => {
         : (Array.isArray(content) ? content : []).map(b => (typeof b === 'object' && b !== null && (b as { type?: unknown }).type === 'text' ? String((b as { text?: unknown }).text ?? '') : '')).join('\n')
       const end = text.includes('<task-notification>') ? shellEnd(text) : null
       if (end !== null && (await read($, activeAtom).catch(() => false))) {
+        const ended = await $.clock.now() // 3.32.11 T2
         const gone = (x: ShellRec): boolean => x.id === end.id
           && (end.exit === undefined || (end.exit === EXT_REFUSED && x.name.startsWith('external ')))
         await shellsEdit($, s => {
@@ -556,7 +558,7 @@ export const register: Register = on => {
             return null
           }
           return Object.fromEntries(Object.entries(s).map(([a, l]) => [a, l.filter(x => !gone(x))
-            .map(x => (x.id === end.id ? { ...x, exit: end.exit } : x))]))
+            .map(x => (x.id === end.id ? { ...x, exit: end.exit, ended } : x))]))
         })
       }
     } catch {

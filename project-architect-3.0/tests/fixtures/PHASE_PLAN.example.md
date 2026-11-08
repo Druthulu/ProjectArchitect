@@ -30,7 +30,7 @@ R24-001 (mask seams), R24-002 (weight normalisation)
   Reopened from T3: the first report collapsed the four biomes into one row, which
   hides the only seam class the milestone cares about.
   Keep the old output format; add a biome column.
-- T4 | queued     | expert-fable      | coder: opus46 | effort: high | title: overnight bake | files: pa/bake.py | done-when: the overnight bake finishes and the gate is green | verify: python -m unittest tests.test_bake | reads: tasks/T3.1.md | deps: T3.1 | est-ctx: 150k | review: yes | wait-for: tools/run.sh --wait bake --max 3000
+- T4 | queued     | expert-fable      | coder: opus46 | effort: high | title: overnight bake | files: pa/bake.py | done-when: the overnight bake finishes and the gate is green | verify: python -m unittest tests.test_bake | reads: tasks/T3.1.md | deps: T3.1 | est-ctx: 150k | review: yes | wait-for: .run/bake.done contains DONE
 - T5 | blocked    | expert-opus55     | coder: none | effort: medium | title: bake report | files: docs/ops/bake.md | done-when: the report quotes the bake numbers | verify: grep -c seams docs/ops/bake.md | reads: tasks/T4.md | deps: T4 | est-ctx: 30k | review: no | wait-for: —
 
 ## Risks

@@ -30,8 +30,9 @@ export function entryPath(date: string, hhmmss: string, seq: number, writer: str
   return `${JOURNAL_DIR}/${date}/${hhmmss}-${String(seq).padStart(3, '0')}${writer}-${who}-${kind}.md`
 }
 
-/** 3.32.9: a read entry's writer may also be `x`, an external coder's (tools/pa_ext.py); only r and w write here. */
-export type EntryName = { date: string; time: string; seq: number; writer: Writer | 'x'; who: string; kind: Kind }
+/** 3.32.9: a read entry's writer may also be `x`, an external coder's (tools/pa_ext.py); only r and w write here.
+ * 3.32.11 T1: any who and kind of the name's shape (the expert's, planner's, …, `spawn`), as journal_rollup.py. */
+export type EntryName = { date: string; time: string; seq: number; writer: Writer | 'x'; who: string; kind: string }
 
 /**
  * The parts of an entry path (or its tail from the date folder on), or null when it is not one. Both forms: the live
@@ -40,8 +41,9 @@ export type EntryName = { date: string; time: string; seq: number; writer: Write
 export function parseEntryPath(path: string): EntryName | null {
   // 3.32.9: an external coder's entries (x) and a watcher's past its 999th (four digits) parse too
   const m = /(?:^|\/)([0-9]{4}-[0-9]{2}-[0-9]{2})(?:\/|\.md#)([0-9]{6})-([0-9]{3,})([rwx])-(T[0-9]+|[a-z]+)-([a-z]+)(\.md)?$/.exec(path)
-  if (!m || !isWho(m[5]) || !isKind(m[6]) || (m[7] === undefined) !== path.includes('.md#')) return null
-  return { date: m[1], time: m[2], seq: Number(m[3]), writer: m[4] as Writer | 'x', who: m[5], kind: m[6] as Kind }
+  // 3.32.11 T1: any writer and kind of the shape (was: isWho/isKind, which left other agents' entries out of the index)
+  if (!m || (m[7] === undefined) !== path.includes('.md#')) return null
+  return { date: m[1], time: m[2], seq: Number(m[3]), writer: m[4] as Writer | 'x', who: m[5], kind: m[6] }
 }
 
 /** A rolled day's file `.claude-state/journal/<date>.md` (tools/journal_rollup.py). */

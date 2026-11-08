@@ -43,7 +43,8 @@ def _r(model, effort):
     return {"model": model, "effort": effort}
 
 
-# 3.24 T17f: the planner's effort per tier (developer 2026-10-12): Max 20x max, Max 5x high, Pro medium
+# 3.24 T17f: the planner's effort per tier (developer 2026-10-12): Max 20x max, Max 5x high, Pro medium;
+# 3.32.11 (developer 2026-11-08): Max 5x plans at max too
 # 3.25 T6a: the role rows carry the old agents' values: pa-expert@high was expert-fable (Fable medium on max20,
 # None on max5/pro, now Opus high there), pa-thinker was thinker, pa-thinker@deep was deep-thinker
 def _roles(expert_high, thinker_deep):
@@ -61,7 +62,7 @@ PRESETS = {
     "max5": dict(_roles(_r(_OPUS, "high"), _r(_FABLE, "max"))
                  + [(a, _r(_OPUS, "medium")) for a in _JUDGES]
                  + [("memory-curator", _r(_OPUS, "medium"))]
-                 + [("pa-planner", _r(_OPUS, "high"))]),
+                 + [("pa-planner", _r(_OPUS, "max"))]),
     # 3.27 T11 (developer 2026-10-13, the 3.27 benches): Pro runs pa-expert Opus low, pa-coder Sonnet medium,
     # pa-thinker Opus medium; were Opus medium, Opus medium, Opus max (the base rows)
     "pro": dict(_roles(_r(_OPUS, "high"), None)

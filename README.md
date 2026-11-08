@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="version 3.32.10" src="https://img.shields.io/badge/version-3.32.10-3b82f6">
+  <img alt="version 3.32.11" src="https://img.shields.io/badge/version-3.32.11-3b82f6">
   <img alt="for Claude Code" src="https://img.shields.io/badge/for-Claude%20Code-d97757">
   <img alt="Windows, WSL, Linux, macOS" src="https://img.shields.io/badge/runs%20on-Windows%20%7C%20WSL%20%7C%20Linux%20%7C%20macOS-64748b">
 </p>
@@ -24,7 +24,7 @@ words.
   stops to ask unless a decision is genuinely yours.
 - **Savings you can see.** A local ledger prices every request, and the statusline shows, live, what the helpers kept
   out of your context.
-- **Models that fit your plan.** Max 20x, Max 5x or Pro: PA3 reads which from your login and picks its models to
+- **Models that fit your plan.** Ultra, Max or Pro: PA3 reads which from your login and picks its models to
   match.
 - **Cheaper coders when you want them.** A task's coding can run on DeepSeek or GLM through OpenRouter, on your own
   key, while planning and judgment stay on Claude.
@@ -41,7 +41,7 @@ them. [Every number, line by line](https://github.com/Druthulu/ProjectArchitect/
 
 ## Install
 
-You need Claude Code 2.1.292 or newer, a Claude subscription (Max 20x, Max 5x or Pro), Python 3.12 or newer, and git.
+You need Claude Code 2.1.292 or newer, a Claude subscription (Ultra, Max or Pro), Python 3.12 or newer, and git.
 
 1. **Once per machine.** Download this repository (**Code → Download ZIP**, then extract) and open its
    `project-architect-3.0` folder. On Windows, double-click **`install.cmd`**; on WSL, Linux or macOS, run

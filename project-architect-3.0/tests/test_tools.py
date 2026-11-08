@@ -248,7 +248,7 @@ class TestPlanEdit(ToolCase):
         self.ok(self.tool("plan_edit.py", "set-status", "T3.1", "done"))
         out = self.ok(self.tool("plan_edit.py", "next"))
         self.assertTrue(out.startswith("T4 |"), out)
-        self.assertIn("WAIT-FOR: tools/run.sh --wait bake --max 3000", out)
+        self.assertIn("WAIT-FOR: .run/bake.done contains DONE", out)
         self.assertIn("PROMOTED: T4 queued -> next", out)
         self.assertIn("- T4 | next", read(self.plan))
         # T5 is blocked behind T4
@@ -469,6 +469,21 @@ class TestPlanEdit(ToolCase):
         self.assertIn("FAILED:", p.out)
         self.assertLessEqual(len(p.out.rstrip().split("\n")), 40)
 
+    def test_lint_fails_a_free_text_wait_for(self):
+        """3.32.11 T4: a wait-for the mod's `waitSpec` refuses fails lint; `<file> contains <literal>` and `-` pass."""
+        text = read(self.plan)
+        line = next(l for l in text.split("\n") if l.startswith("- T5 "))
+        for wf, ok in (("the developer's answer to R32 (was the headless Ghidra meant to run)", False),
+                       (".run/x.txt contains READY", True), ("-", True)):
+            write(self.plan, text.replace(line, re.sub(r"wait-for: [^|]*$", "wait-for: " + wf, line)))
+            p = self.tool("plan_edit.py", "lint")
+            if ok:
+                self.assertNotIn("T5 wait-for", p.out)
+            else:
+                self.assertEqual(p.returncode, 1, p.out)
+                self.assertIn("T5 wait-for is not '<file> contains <literal>'", p.out)
+                self.assertIn("review: yes", p.out)
+
     def test_lint_warns_on_a_missing_title(self):
         """3.11 T13 (developer): a task without `title:` draws a warning and still passes, so the planner
         names every task while approvals and the bench's grading stay as they were."""
@@ -572,12 +587,12 @@ class TestPlanEdit(ToolCase):
         brief_lines = out2.strip().split("\n")
         self.assertEqual(len(brief_lines), 3, out2)
         self.assertTrue(brief_lines[0].startswith("T4 |"), brief_lines[0])
-        self.assertEqual(brief_lines[1], "WAIT-FOR: tools/run.sh --wait bake --max 3000")
+        self.assertEqual(brief_lines[1], "WAIT-FOR: .run/bake.done contains DONE")
         self.assertEqual(brief_lines[2], "PROMOTED: T4 queued -> next")
         # T4 is next now: the brief keeps its WAIT-FOR line, no PROMOTED
         out3 = self.ok(self.tool("plan_edit.py", "next", "--brief"))
         self.assertEqual(out3.strip().split("\n")[1:],
-                         ["WAIT-FOR: tools/run.sh --wait bake --max 3000"])
+                         ["WAIT-FOR: .run/bake.done contains DONE"])
 
     def test_next_brief_on_fixture_copy_under_240(self):
         """The milestone's wc check: cp fixture, next --brief, ≤ 240 bytes."""

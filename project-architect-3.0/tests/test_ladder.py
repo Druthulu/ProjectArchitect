@@ -116,11 +116,11 @@ class TestMismatches(unittest.TestCase):
     def test_mismatches(self):
         self.place("max5")
         self.assertEqual(ladder.mismatches(self.dir, "max5"), [])
-        self.assertEqual(ladder.mismatches(self.dir, "max20"), ["auditor", "pa-planner"])  # 3.24 T17f: planner max5 high, max20 max; 3.32: auditor
+        self.assertEqual(ladder.mismatches(self.dir, "max20"), ["auditor"])  # 3.32: auditor; 3.32.11: the planner is max on both
         self.assertEqual(ladder.mismatches(self.dir, "pro"),   # 3.24 T17e: the curator is Opus at medium on every tier
                          ["pa-expert", "pa-coder", "pa-thinker", "pa-planner"])  # 3.27 T11: Pro's role rows; 3.32: the auditor matches
         self.place("max20")
-        self.assertEqual(ladder.mismatches(self.dir, "max5"), ["auditor", "pa-planner"])
+        self.assertEqual(ladder.mismatches(self.dir, "max5"), ["auditor"])
         os.remove(os.path.join(self.dir, "pa-coder.md"))
         self.assertEqual(ladder.mismatches(self.dir, "max20"), ["pa-coder"])   # a missing base-row file
 
@@ -147,20 +147,20 @@ class TestThinkerRows(unittest.TestCase):
 
 
 class TestPlannerRows(unittest.TestCase):
-    """3.24 T17f: Opus 5.5 at max on Max 20x, high on Max 5x, medium on Pro (developer 2026-10-12); the file's own
-    default is Opus at high."""
+    """3.24 T17f: Opus 5.5 at max on Max 20x, medium on Pro (developer 2026-10-12); 3.32.11: max on Max 5x too
+    (developer 2026-11-08; was high). The file's own default is Opus at high."""
 
     def test_rows(self):
         opus = "claude-opus-5-5[1m]"
         self.assertEqual(ladder.row("pa-planner", "max20"), {"model": opus, "effort": "max"})
-        self.assertEqual(ladder.row("pa-planner", "max5"), {"model": opus, "effort": "high"})
+        self.assertEqual(ladder.row("pa-planner", "max5"), {"model": opus, "effort": "max"})
         self.assertEqual(ladder.row("pa-planner", "pro"), {"model": opus, "effort": "medium"})
         text = pkg_text("pa-planner")
         self.assertIn("\nmodel: %s\neffort: high\n" % opus, text)
-        self.assertEqual(ladder.render("pa-planner", text, "max5"), text)
-        diffs, same = diff_lines(text, ladder.render("pa-planner", text, "max20"))
-        self.assertTrue(same)
-        self.assertEqual(diffs, [("effort: high", "effort: max")])
+        for preset in ("max20", "max5"):
+            diffs, same = diff_lines(text, ladder.render("pa-planner", text, preset))
+            self.assertTrue(same, preset)
+            self.assertEqual(diffs, [("effort: high", "effort: max")], preset)
 
 
 class TestLadderRow(unittest.TestCase):
@@ -247,7 +247,7 @@ class TestLadderRow(unittest.TestCase):
         self.assertEqual(len(out.splitlines()), 1)
         doc = json.loads(out)
         self.assertEqual(list(doc), ["agent", "managed", "model", "effort", "tier", "source"])
-        self.assertEqual((doc["tier"], doc["source"], doc["effort"]), ("max5", "credentials", "high"))  # 3.24 T17f
+        self.assertEqual((doc["tier"], doc["source"], doc["effort"]), ("max5", "credentials", "max"))  # 3.32.11
         out = subprocess.run([sys.executable, os.path.join(PKG, "pa_ledger.py"), "ladder-row", "--agent",
                               "pa-thinker", "--effort", "deep", "--project", self.proj, "--json"], env=env,
                              stdout=subprocess.PIPE, timeout=60).stdout.decode("utf-8")
@@ -270,9 +270,12 @@ class TestLadderRow(unittest.TestCase):
         self.assertEqual(self.resolve("pa-planner")["effort"], "max")      # no field
         self.gen("3.2 B | milestone: m | status: open | planner-effort: lots")
         self.assertEqual(self.resolve("pa-planner")["effort"], "max")      # bad value
-        self.creds("default_claude_max_5x")                     # planner row: high
+        self.creds("default_claude_max_5x")                     # planner row: max (3.32.11)
+        self.gen("3.2 B | milestone: m | status: open | planner-effort: high")
+        self.assertEqual(self.resolve("pa-planner")["effort"], "high")     # lowered
+        self.creds(None, sub="pro")                             # planner row: medium
         self.gen("3.2 B | milestone: m | status: open | planner-effort: max")
-        self.assertEqual(self.resolve("pa-planner")["effort"], "high")     # never above the row
+        self.assertEqual(self.resolve("pa-planner")["effort"], "medium")   # never above the row
 
 
 class TestOnlyRenderWritesAgents(unittest.TestCase):

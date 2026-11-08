@@ -204,6 +204,7 @@ export function shellsOf(text: string | null): Record<string, Shell[]> {
       if (str(j['id']) === '') return []
       const sh: Shell = { id: str(j['id']), name: str(j['name']), at: num(j['at']), type: str(j['type']) }
       if (typeof j['exit'] === 'number') sh.exit = j['exit']
+      if (typeof j['ended'] === 'number') (sh as Shell & { ended?: number }).ended = j['ended'] // 3.32.11 T2: when a failed shell ended
       if (j['moved'] === true) sh.moved = true // 3.32.1 T3: Claude Code pushed it into the background at its time limit
       return [sh]
     })
@@ -620,6 +621,13 @@ export function ruleArgs(line: string, nextId: string, origin: string): string[]
   const id = m?.[1] ?? nextId
   const title = (m?.[2] ?? line.replace(/^\s*-\s*/, '')).trim()
   return ['add', '--id', id, '--title', title, '--origin', origin]
+}
+
+/** 3.32.11 T14: an auditor's `- Rule candidate: <sentence> | from: <the row>` line: the sentence and the row ('' when
+ * none); null for any other line (a tool candidate). */
+export function ruleCandidateOf(line: string): { sentence: string; from: string } | null {
+  const m = /^\s*(?:-\s*)?Rule\s+candidate:\s*(.+?)(?:\s*\|\s*from:\s*(.*))?$/i.exec(line)
+  return m === null ? null : { sentence: (m[1] ?? '').trim(), from: (m[2] ?? '').trim() }
 }
 
 /** The next free `M<n>` among rule file names. */
@@ -1129,6 +1137,17 @@ export function updateOutcome(log: string): { conflicts: boolean; restart: boole
   return { conflicts: /^\s*! \S.* kept yours; upstream staged\s*$/m.test(log), restart: /^\s*restart: needed\b/m.test(log) }
 }
 
+/** 3.32.11 T11 (session_start.py `release_kind`): an update whose first two numbers change crosses a feature release
+ * and is a feature update titled by the feature releases crossed; else a hotfix with its own title. An unknown
+ * installed version keeps the old rule (three numbers: a hotfix). */
+export function releaseKindText(from: string, to: string): string {
+  const two = (v: string): string | null => /^\d+\.\d+/.exec(v)?.[0] ?? null
+  const f = two(from), t = two(to)
+  if (f !== null && t !== null && f !== t) return "feature update (<the titles of the feature releases' CHANGES.md headings>)"
+  if (f !== null && t !== null) return 'hotfix (<the title of its CHANGES.md heading>)'
+  return `${to.split('.').length >= 3 ? 'hotfix' : 'feature update'} (<the title of its CHANGES.md heading>)`
+}
+
 const recordText = (r: RunRecord): string => (r.phase || '?') + (r.git === '' ? '' : ` (${r.git.slice(0, 8)})`)
 
 /** The finished run's notice to Claude: from X to Y and where the changes are, else the failure; a restart; conflicts. */
@@ -1147,7 +1166,7 @@ export function updateDoneNotice(m: UpdateMarker, o: { conflicts: boolean; resta
         // 3.28.2 T17: a restart already loaded the new mod before the run ended: the loaded line, no restart
         (o.loaded === true
           ? ` This session already runs ${m.to.phase} (a restart loaded it before the run ended): no restart for it. Then say this one line:\n\n**Project Architect ${m.to.phase} is installed and loaded. Ready to continue work.**\n\nThen carry on as usual.`
-          : ` Then tell them once, in this shape: the line "Project Architect ${m.to.phase}, a ${m.to.phase.split('.').length >= 3 ? 'hotfix' : 'feature update'} (<the title of its CHANGES.md heading>), is installed.", a blank line, then on its own line:\n\n${RESTART_LINE}\n\nStart no work until then: if they ask for work, say that bold line again.`)
+          : ` Then tell them once, in this shape: the line "Project Architect ${m.to.phase}, a ${releaseKindText(m.from.phase, m.to.phase)}, is installed.", a blank line, then on its own line:\n\n${RESTART_LINE}\n\nStart no work until then: if they ask for work, say that bold line again.`)
   return head +
     (o.restart ? ' A setting changed that takes effect only once Claude Code restarts (restart: needed): tell the developer to restart it.' : '') +
     (o.conflicts ? ` Some files the developer edited also changed in PA3 (${UPGRADE_MD}): an expert resolves them at the next boundary, then the project step runs once more.` : '')

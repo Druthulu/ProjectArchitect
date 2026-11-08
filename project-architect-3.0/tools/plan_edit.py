@@ -925,6 +925,15 @@ def cmd_approve(a, root, path, text, explicit):
     return 0
 
 
+def wait_spec_ok(spec):
+    """3.32.11 T4: the mod's `waitSpec` (mod/pa/hooks/loop.ts) accepts ``spec``: ``<file> contains <literal>``, a
+    quoted or backticked literal unwrapped, an empty literal refused. Mirrors its regexes exactly."""
+    m = re.match(r"^\s*`?(.+?)`?\s+contains\s+(.+?)\s*$", spec)
+    if m is None:
+        return False
+    return re.sub(r"^([\"'`])(.*)\1$", r"\2", m.group(2)) != ""
+
+
 def cmd_lint(a, root, path, text, explicit):
     problems = []
     warns = []
@@ -964,6 +973,10 @@ def cmd_lint(a, root, path, text, explicit):
         if coder and not coder_ok(coder) and coder not in _LEGACY_CODERS:
             problems.append("line %d: %s coder '%s' not in %s|<config>/<alias>"
                             % (n, t.id, coder, "|".join(CODERS)))
+        wf = t.get("wait-for", "").strip()
+        if wf not in ("", "-", DASH, "none", "no") and not wait_spec_ok(wf):
+            problems.append("line %d: %s wait-for is not '<file> contains <literal>' (a wait on the developer "
+                            "belongs in a 'review: yes' stop): %s" % (n, t.id, wf))
         if t.agent in _RETIRED_AGENTS:
             notes.append("note: %s names the retired %s; it runs %s"
                          % (t.id, t.agent, _RETIRED_AGENTS[t.agent]))
@@ -1043,7 +1056,9 @@ Everything else is optional at its default; parts are separated by ` | `:
   status (positional, after the id): done|next|queued|blocked|superseded (default queued)
   agent (positional, after the status): pa-expert (default; an old expert-* name reads as pa-expert)
   coder: opus55|in-house|none|<config>/<alias> (default pa.json's external coder, else opus55) | effort: medium|high (default medium)
-  files, verify, reads, deps, est-ctx, wait-for: <value or -> (default none) | review: yes|no (default no)
+  files, verify, reads, deps, est-ctx: <value or -> (default none) | review: yes|no (default no)
+  wait-for: <file> contains <literal> (the task starts once the file holds the text; default none); a wait on the
+    developer is a `review: yes` stop, never a wait-for
 A `key: value` part is a key, never the status or the agent.
 IDs are immutable; a reopened T3 becomes T3.1. Indented continuation lines belong to the task above."""
 

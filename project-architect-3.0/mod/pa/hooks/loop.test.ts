@@ -5,7 +5,7 @@ import {
   agentFor, effortFor, effortHint, bandLine, closeNotice, plannerIdOf, defaultLoop, keepSummary, summariesOf, editIsDecision, FORWARD_TTL_MS, NO_CONTRACT_QUIET_MS, OWNER_STALE_MS, ownsLoop, parseLoop, popHold, pushHold, queuedTo, releaseHold, routeStatus,
   runEnded, RUN_QUIET_MS, serializeLoop, silenceReleases, takesOver, taskPosIn, taskPosOf, topHold, waitSpec, windowResumes, planCounts, projectName, sessionTitle,
   quietReply, nextPhaseOf, recalcSessions, withPhaseSid, archiveOf, bgJobOf, curateQuestion, firstRunLine, intakeCapNotice, intakeDue, intakeOwed, intakeTriesOf,
-  markerOf, modFilesKey, externalReminder, setupNotice, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
+  markerOf, modFilesKey, shellsOf, externalReminder, setupNotice, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
   extHealthOf, extHealthNotice, generalizableCount, bankQuestion, bankTask, bankNotice, startCheckOffline, startCheckState,
   batchDoneNotice, batchOf, driveOf, talkLine, withDrive, doneInName, STALL_NOTICE_MS, proposalOf,
 } from './loop'
@@ -385,6 +385,10 @@ describe('the update run (3.24 T6)', () => {
     expect(runToReport(markerOf(mk({ state: 'running' })), 0, NOW)).toBe(false)
     expect(runToReport(null, 0, NOW)).toBe(false)
   })
+  test('3.32.11 T2: shellsOf keeps the end time of a failed shell; a record without one has none', async () => {
+    const got = shellsOf(JSON.stringify({ C1: [{ id: 'b1', name: 'make', at: 1, type: 'pa-coder', exit: 2, ended: 5 }, { id: 'b2', name: 'grep', at: 1, type: 'pa-coder', exit: 1 }] }))
+    expect((got['C1'] as { ended?: number }[]).map(s => s.ended)).toEqual([5, undefined])
+  })
   test('updateOutcome: the conflict and restart note lines only', async () => {
     expect(updateOutcome('  ! .claude/agents/x.md kept yours; upstream staged\n  restart: needed (settings)\n')).toEqual({ conflicts: true, restart: true })
     expect(updateOutcome('install ok\n  restart: not needed\n')).toEqual({ conflicts: false, restart: false })
@@ -397,8 +401,15 @@ describe('the update run (3.24 T6)', () => {
     expect(up).toContain('PA3 updated from 3.23 (aaaaaaaa) to 3.24 (bbbbbbbb)')
     expect(up).toContain('/h/.claude/pa3/CHANGES.md for the entries after 3.23 up to 3.24')
     expect(up).not.toContain('restart')
-    expect(up).toContain('"Project Architect 3.24, a feature update (<the title of its CHANGES.md heading>), is installed.", a blank line, ' +
+    expect(up).toContain('"Project Architect 3.24, a feature update (<the titles of the feature releases\' CHANGES.md headings>), is installed.", a blank line, ' +
       'then on its own line:\n\n**To load it: /exit, then claude --continue (not /clear)**\n\n') // 3.28.2 T16
+    // 3.32.11 T11: the label follows the jump: 3.30.9 to 3.32.1 crosses two feature releases; 3.32.9 to 3.32.10 is a hotfix
+    const jump = updateDoneNotice(markerOf(mk({ from: { phase: '3.30.9', git: 'a' }, to: { phase: '3.32.1', git: 'b' } }))!, no, '/p', '')
+    expect(jump).toContain('"Project Architect 3.32.1, a feature update (<the titles of the feature releases\' CHANGES.md headings>), is installed."')
+    const fix = updateDoneNotice(markerOf(mk({ from: { phase: '3.32.9', git: 'a' }, to: { phase: '3.32.10', git: 'b' } }))!, no, '/p', '')
+    expect(fix).toContain('"Project Architect 3.32.10, a hotfix (<the title of its CHANGES.md heading>), is installed."')
+    const unknown = updateDoneNotice(markerOf(mk({ from: { phase: '', git: 'a' }, to: { phase: '3.32.1', git: 'b' } }))!, no, '/p', '')
+    expect(unknown).toContain('"Project Architect 3.32.1, a hotfix (<the title of its CHANGES.md heading>), is installed."')
     const same = updateDoneNotice(markerOf(mk({ to: { phase: '3.23', git: 'aaaaaaaaaa11' } }))!, no, '/p', '')
     expect(same).toContain('the project stays at 3.23 (aaaaaaaa)')
     const rep = updateDoneNotice(markerOf(mk({ mode: 'repair' }))!, no, '/p', '')

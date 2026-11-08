@@ -45,7 +45,8 @@ Approved: <date>   Planner: <model/effort>   Plan-hash: <sha>
      Agent     : positional, after the status: pa-expert (default; the task's effort picks its model)
      Keys      : coder: opus55|none (default opus55) · effort: medium|high (default medium)
                  files: <paths, comma-separated> · verify: <command> · reads: <summaries/ids>
-                 deps: <task ids> · est-ctx: <n>k · review: yes|no (default no) · wait-for: <task id or batch>
+                 deps: <task ids> · est-ctx: <n>k · review: yes|no (default no)
+                 wait-for: <file> contains <literal> (a wait on the developer is review: yes)
      IDs are immutable; a reopened T3 becomes T3.1. Indented continuation lines belong to the
      task above them. -->
 

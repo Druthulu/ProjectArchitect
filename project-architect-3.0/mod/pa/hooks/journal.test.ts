@@ -42,7 +42,11 @@ describe('journal naming (vectors shared with pa-watch)', () => {
       who: 'partner',
       kind: 'thinking',
     })
-    expect(parseEntryPath('x/2026-10-07/143005-008w-expert-msg.md')).toBe(null)
+    // 3.32.11 T1: any who and kind of the name's shape, as journal_rollup.py (was: null for an expert's entry)
+    expect(parseEntryPath('x/2026-10-07/032608-330w-planner-spawn.md')).toEqual({
+      date: '2026-10-07', time: '032608', seq: 330, writer: 'w', who: 'planner', kind: 'spawn',
+    })
+    expect(parseEntryPath('x/2026-10-07/143005-008w-Expert-msg.md')).toBe(null)
     expect(parseEntryPath('.claude-state/journal/INDEX-2026-10.md')).toBe(null)
   })
 

@@ -166,6 +166,16 @@ describe('the band (3.23 T13)', () => {
     ])
   })
 
+  test('3.32.11 T2: a red row (shell or ✗ pa-coder) shows 1 minute after its end and leaves the band at 2', () => {
+    const agents = [ag({ id: 'E1', description: 'T5 bake', since: 0 })]
+    const shells = { E1: [{ id: 'b1', name: 'make', at: 0, type: 'pa-expert', exit: 1, ended: 60_000 },
+      { id: 'b2', name: 'external T5.c2', at: 0, type: 'pa-expert', exit: 3, ended: 60_000 },
+      { id: 'b3', name: 'grep', at: 0, type: 'pa-expert', exit: 1 }] }
+    const names = (now: number): string[] => bandRows(agents, [{ id: 'E1', task: 'T5' }], now, shells).slice(1).map(r => `${r.name} ${r.step}`)
+    expect(names(120_000)).toEqual(['✗ shell make', '✗ pa-coder ', '✗ shell grep'])
+    expect(names(180_000)).toEqual(['✗ shell grep'])
+  })
+
   test('3.30: an external coder\'s shell is drawn as pa-coder, its task from the label, its latest step (3.30.3: no model)', () => {
     const agents = [ag({ id: 'E1', description: 'T11 crack wave', since: 0 })]
     const shells = { E1: [{ id: 'b1', name: 'external T11.cG05', at: 0, type: 'pa-expert' },

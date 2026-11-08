@@ -1079,8 +1079,8 @@ def _update_check(inp, cfg):
 def check_main(argv):
     """3.28.1 T14: ``pa_ledger.py update-check <project>``, the mod's 2-hour release check: the same check as a
     session start (``_update_check``: the clone's fetch, the I48 version comparison). Prints ``{"mode",
-    "version", "kind", "title"}`` (3.28.6 T19: the facts only, never the hook's line and its steps) when a newer release is out (mode: the project's ``upgrade``; kind ``hotfix`` for a
-    third number, else ``feature update``; title: its CHANGES.md heading), else nothing; exit 0. The mod installs it
+    "version", "kind", "title"}`` (3.28.6 T19: the facts only, never the hook's line and its steps) when a newer release is out (mode: the project's ``upgrade``; kind and title: ``release_kind``,
+    3.32.11 T11: a jump across a feature release is a ``feature update`` titled by the feature releases crossed), else nothing; exit 0. The mod installs it
     at its next clean stop (no task running)."""
     import json as _json
     import re as _re
@@ -1096,18 +1096,38 @@ def check_main(argv):
     version = str(stamp.get("remote_version") or "") if isinstance(stamp, dict) else ""
     if not version:
         return 0
-    title = ""
+    changes = ""
     try:
         r = subprocess.run(["git", "-C", paths.package_clone_dir(), "show", "@{u}:project-architect-3.0/CHANGES.md"],
                            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
-        m = _re.search(r"^## %s\s+\S+\s+(.+)$" % _re.escape(version), r.stdout or "", _re.M)
-        title = m.group(1).strip() if m else ""
+        changes = r.stdout or ""
     except (OSError, subprocess.SubprocessError):
-        title = ""
-    kind = "hotfix" if len(version.split(".")) >= 3 else "feature update"
+        changes = ""
+    m = _re.search(r"\(version (\S+) -> ", line)
+    kind, title = release_kind(m.group(1) if m else "", version, changes)
     print(_json.dumps({"mode": health.upgrade_mode(root), "version": version, "kind": kind,
                        "title": title}))
     return 0
+
+
+def release_kind(installed, new, changes=""):
+    """3.32.11 T11: ``(kind, title)`` of the update from ``installed`` to ``new``. A jump across a feature release
+    (the first two numbers differ) is a ``feature update`` titled by the CHANGES.md headings ``## X.Y — <title>``
+    with installed < X.Y <= new, oldest first, joined with "; "; else a ``hotfix`` titled by the new version's own
+    heading. An unknown installed version keeps the old rule: three numbers make a hotfix."""
+    import re as _re
+    to_key = _version_key(new)
+    from_key = _version_key(installed)
+    heads = []
+    for m in _re.finditer(r"^## ([0-9][0-9.]*[0-9]|[0-9])\s+\S+\s+(.+)$", changes or "", _re.M):
+        heads.append((_version_key(m.group(1)), m.group(1), m.group(2).strip()))
+    if from_key and to_key and from_key[:2] != to_key[:2]:
+        crossed = sorted((k, t) for k, v, t in heads if len(k) == 2 and from_key < k <= to_key)
+        return "feature update", "; ".join(t for k, t in crossed)
+    own = next((t for k, v, t in heads if v == new), "")
+    if from_key and to_key:
+        return "hotfix", own
+    return ("hotfix" if len((new or "").split(".")) >= 3 else "feature update"), own
 
 
 def _auto_run(root, sid, line):
@@ -1133,7 +1153,8 @@ def _auto_run(root, sid, line):
         # statusline's "installing · please wait", then "installed · /exit, then claude --continue"
         v = _re.search(r"\(version (?:[^)]*-> )?([0-9][0-9.]*[0-9])\)", line)
         if v:
-            kind = "hotfix" if len(v.group(1).split(".")) >= 3 else "feature update"
+            f = _re.search(r"\(version (\S+) -> ", line)
+            kind = release_kind(f.group(1) if f else "", v.group(1))[0]
             _write_mod_json(root, "release.json", {"version": v.group(1), "kind": kind, "state": "running"})
     except Exception as exc:           # fail soft: the offer line stands
         log.log("auto_update_failed", session_id=sid, error=str(exc)[:200])

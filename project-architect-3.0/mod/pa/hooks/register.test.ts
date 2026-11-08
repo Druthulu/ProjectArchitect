@@ -1307,6 +1307,19 @@ describe('router journal, rotation, warming, toast', () => {
       '2026-10-14T09:00:05.000Z | partner | thinking | Pondering. | .claude-state/journal/2026-10-14/090005-001w-partner-thinking.md\n')
   })
 
+  test('3.32.11 T1: the index takes any writer and kind: a planner spawn and a retriever entry', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [sp, st] = entryFile('2026-10-14', '032608-330w-planner-spawn.md', '2026-10-14T03:26:08.000Z', 'Planner spawned')
+    const [rp, rt] = entryFile('2026-10-14', '032700-331w-retriever-thinking.md', '2026-10-14T03:27:00.000Z', 'Looking')
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [sp]: st, [rp]: rt }, {})
+    net(on)
+    await $.session.start(START)
+    await clock.settle()
+    expect(w.files.get(`${JDIR}/INDEX-2026-10.md`)).toBe(
+      '2026-10-14T03:26:08.000Z | planner | spawn | Planner spawned | .claude-state/journal/2026-10-14/032608-330w-planner-spawn.md\n' +
+      '2026-10-14T03:27:00.000Z | retriever | thinking | Looking | .claude-state/journal/2026-10-14/032700-331w-retriever-thinking.md\n')
+  })
+
   // 3.23 T7: a rolled day file (tools/journal_rollup.py) beside a live day folder.
   const rolledDay = (date: string, files: [string, string][]): string =>
     `# Journal ${date} (${String(files.length)} entries, rolled by tools/journal_rollup.py)\n` +

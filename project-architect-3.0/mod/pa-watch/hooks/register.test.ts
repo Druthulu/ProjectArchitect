@@ -821,7 +821,7 @@ describe('background shells (3.28.1 T15)', () => {
   })
 
   test('a failed shell keeps its record with the exit code until its agent reports', async ($, on) => {
-    mock.clock(on)
+    mock.clock(on, { now: 7_000 })
     const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, LIST)
     on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: 'b2' } }) as never)
     on('tool.call', { tool: 'SendMessage' }, async () => ({ result: 'sent' }) as never)
@@ -829,6 +829,8 @@ describe('background shells (3.28.1 T15)', () => {
     await $.tool.call({ tool: 'Bash', command: 'make gate', run_in_background: true, agentId: 'C1' } as never)
     await append($, notice('b2', 'failed', 'Background command "make gate" failed with exit code 2'))
     expect(shells(m)['C1']?.map(s => [s.name, s.exit])).toEqual([['make', 2]])
+    // 3.32.11 T2: with the time it ended (the band drops the red row 2 minutes after)
+    expect((shells(m)['C1'] as { ended?: number }[] | undefined)?.map(s => s.ended)).toEqual([7_000])
     await $.tool.call({ tool: 'SendMessage', to: 'E1', message: 'STATUS: blocked', agentId: 'C1' } as never)
     expect(shells(m)).toEqual({})
   })

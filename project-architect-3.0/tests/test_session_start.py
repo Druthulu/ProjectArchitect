@@ -863,6 +863,18 @@ class UpdateCheckTest(unittest.TestCase):
                          ("auto", "3.11.1", "hotfix", "The hotfix"))
         self.assertNotIn("line", doc)                     # 3.28.6 T19: no hook line (its pa3_update.py steps)
 
+    def test_release_kind_follows_the_jump(self):
+        """3.32.11 T11: a jump across feature releases is a feature update titled by the releases crossed; a jump
+        inside one stays a hotfix with its own title; an unknown installed version keeps the three-number rule."""
+        from pa.hooks import session_start
+        changes = ("# PA3 changes\n\n## 3.32.10 — Ten\n## 3.32.1 — Holds that answer\n"
+                   "## 3.32 — A project's past\n## 3.31 — The journal records\n"
+                   "## 3.30.9 — No wait\n## 3.30 — Old\n")
+        self.assertEqual(session_start.release_kind("3.30.9", "3.32.1", changes),
+                         ("feature update", "The journal records; A project's past"))
+        self.assertEqual(session_start.release_kind("3.32.9", "3.32.10", changes), ("hotfix", "Ten"))
+        self.assertEqual(session_start.release_kind("unknown", "3.32.1", changes), ("hotfix", "Holds that answer"))
+
     def test_check_main_says_offline(self):
         """3.32.5: a source that does not answer prints {"offline": true}: the mod's 8-hour check says so, with the
         command for a manual update."""

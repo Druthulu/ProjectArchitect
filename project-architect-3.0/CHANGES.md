@@ -2,6 +2,26 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.11 — Planning at max on Max, and a card for each new phase
+
+- On Max (the plan called Max 5x until October 30), the planner now drafts plans at max effort, as on Ultra (the
+  former Max 20x). Pro stays at medium. A generation plan can still lower it for a phase that needs less.
+- When planning starts, Claude now posts a short card in plain English: what the phase is for and what it unlocks,
+  what it builds, what must not change and how big it is. You know what is being planned while the planner works.
+- An update is now named by what it brings. One that crosses a feature release is "a feature update", titled by
+  the releases it brings: going from 3.30.9 to 3.32.1 used to say "a hotfix".
+- A rule the auditor proposes after a phase is now asked as a rule (add or reject) and goes into the project's
+  rules. It used to be asked as a tool to build.
+- The plan check now refuses a `wait-for` the loop can't run, such as a wait for your answer written in words. Such
+  a plan used to pass, then stop the loop when the task came up. A wait-for names a file and the text it must hold;
+  a wait on you is a review stop.
+- A background shell that failed now leaves the band 2 minutes after it ended, instead of staying red until its
+  agent reported. Coders also end a background command with the step that matters, so a count of zero at the end
+  no longer shows as a failed shell.
+- The journal's month index now lists every agent's entries. It left out the expert's, planner's, retriever's,
+  auditor's and curator's, about a third of the journal on one project.
+- The docs use the plans' new names: Ultra, Max and Pro. PA3 reads your plan from your login as before.
+
 ## 3.32.10 — Rules explained before you choose, and three fixes from GitHub
 
 - When you approve a phase plan that proposes rules, each rule now comes with a short card in plain English before

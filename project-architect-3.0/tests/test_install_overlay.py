@@ -22,7 +22,7 @@ sys.path.insert(0, PKG)
 from pa.install import build_parser, main as install_main  # noqa: E402
 from pa.install import detect as detect_mod                # noqa: E402
 from pa.install import project as pj                       # noqa: E402
-from tests.test_install_project import fixture_copy, steps, git  # noqa: E402
+from tests.test_install_project import fixture_copy, steps, git, redirect_home  # noqa: E402
 
 PY = sys.executable
 _STEP_RE = re.compile(r"^(P\d+)\s+\S.*?\s+(SKIP|DONE|FAIL)\s\s")
@@ -64,6 +64,7 @@ class OverlayCase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="pa3-ovl-")
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
         self.repo = fixture_copy("overlay", self.tmp)
+        redirect_home(self)
 
     def migrate(self, *extra, commit=True):
         rc, out = _run(self.repo, *extra, commit=commit)

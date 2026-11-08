@@ -1929,6 +1929,39 @@ describe('plan install (T6a1)', () => {
     expect(commits(w).length).toBe(1)
   })
 
+  test('3.32.11 T14: an auditor\'s Rule candidate is asked as a rule: its card, Add this rule?, rules_add on add; tool candidates unchanged', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = phaseWorld(on)
+    const asked: string[] = []
+    const picks = ['add (Recommended)', 'reject', 'defer']
+    on('prompt.read', async () => ({ value: { text: '', cursor: 0 } }))
+    on('tool.call', { tool: 'AskUserQuestion' }, async ($, e) => {
+      const q = ((e as { questions?: { question?: string }[] }).questions ?? [])[0]?.question ?? ''
+      asked.push(q)
+      return { result: { questions: [], answers: { [q]: picks.shift() ?? '' } } } as never
+    })
+    const WHY = 'Why: coders handed back red runs 4 times.'
+    installReq(w, NOW, {
+      kind: 'phase', path: '.run/plans/phase.md', title: 'P', rules: [],
+      candidates: [`- Rule candidate: coders run the gate before handing back | from: T3 hand-backs\n${WHY}`,
+        'Rule candidate: keep briefs short', 'Tool candidate: lintfix | does: fixes lint | replaces: hand edits'],
+    })
+    await $.session.start(START)
+    for (let i = 0; i < 30 && toCaller(w).length === 0; i += 1) {
+      await clock.advance(1_000)
+    }
+    expect(asked).toEqual(['Add this rule? coders run the gate before handing back', 'Add this rule? keep briefs short',
+      'Tool candidate: lintfix | does: fixes lint | replaces: hand edits'])
+    const inbox = [...w.files.keys()].filter(p => p.startsWith(`${INBOX}/`) && /-(card|ask)\.json$/.test(p)).sort()
+      .map(p => JSON.parse(w.files.get(p) ?? '{}') as { input: { text?: string; question?: string } })
+    expect(inbox[0]?.input.text).toBe(`**🟪 Planning · Proposed rule**\n\n> coders run the gate before handing back\n\n${WHY}`)
+    expect(ran(w, 'tools/rules_add.py')).toEqual([['py', 'tools/rules_add.py', 'add', '--id', 'M1', '--title', 'coders run the gate before handing back',
+      '--origin', 'phase 1.1 plan (audit: T3 hand-backs)']])
+    expect(ran(w, 'tools/plan_edit.py add-task')).toEqual([])
+    expect(toCaller(w)).toEqual(['Plan decision: approved\ninstalled: phase 1.1 plan (PHASE_PLAN.md approved); rule M1 added; ' +
+      'rule rejected: keep briefs short; candidate lintfix deferred'])
+  })
+
   test('release question with REPLAN.md: replan-written, held(plan), the REPLAN notice; no expert resumed', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: held('question', NOW - 60_000), [REPLAN_MD]: '# replan\n' })

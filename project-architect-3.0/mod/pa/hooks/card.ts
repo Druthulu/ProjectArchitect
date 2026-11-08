@@ -281,6 +281,11 @@ export const bandRole = (type: string): string => {
   return r === 'planner' ? 'planning' : r   // 3.28.1: ROLE_HEX names the planners' purple `planning`
 }
 
+/** 3.32.11 T2: a failed shell's red row (shell or `✗ pa-coder`) leaves the band this long after its end; a record with no
+ * end time stays until its agent reports, as before. */
+export const RED_ROW_MS = 120_000
+const redGone = (s: Shell & { ended?: number }, now: number): boolean => s.exit !== undefined && s.ended !== undefined && now - s.ended >= RED_ROW_MS
+
 /** The band's rows: one per live agent under the roots, its role, name, task (`T<n>`, `T<n> · c<k>` for a coder), step and
  * elapsed time at `now`; 3.28.1 T15: under each agent a row per background shell of its (`shells`, pa-watch's
  * shells.json): `◐ shell` (the spinner's frame from the clock; `✗` once it ended badly), its task, its name, its time.
@@ -301,7 +306,7 @@ export function bandRows(agents: readonly BandAgent[], roots: readonly BandRoot[
     return [{
       role, name: a.name || a.type, task: rowTask, step: (a.step ?? '').replace(/\s+/g, ' ').trim(),
       elapsed: elapsedText(now - a.since),
-    }, ...(shells[id] ?? []).map(s => {
+    }, ...(shells[id] ?? []).filter(s => !redGone(s, now)).map(s => {
       const label = /^external (\S+)$/.exec(s.name)?.[1]
       if (label !== undefined) {
         const [lt = '', lk] = label.split('.')

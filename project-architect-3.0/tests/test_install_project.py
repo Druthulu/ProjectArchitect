@@ -119,6 +119,7 @@ class ProjectCase(unittest.TestCase):
         self._old_config_dir = os.environ.get("CLAUDE_CONFIG_DIR")
         os.environ["CLAUDE_CONFIG_DIR"] = os.path.join(self.tmp, "claude-config")
         self.set_tier("max20")
+        redirect_home(self)
 
     def tearDown(self):
         if self._old_ledger_dir is not None:
@@ -965,6 +966,25 @@ FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "fixtures")
 
 
+def redirect_home(case):
+    """3.32.11 T7: point the home folder at ``<case.tmp>/home`` for the test, so the installer's memory link
+    (``paths.projects_dir()``) never writes into the real ``~/.claude/projects``; restored at cleanup. git keeps the
+    real home's global config and ignore file, as before; the installer's cached refuse set follows the home."""
+    case.real_home = os.path.expanduser("~")
+    case.fake_home = os.path.join(case.tmp, "home")
+    os.makedirs(case.fake_home, exist_ok=True)
+    env = {"USERPROFILE": case.fake_home, "HOME": case.fake_home,
+           "GIT_CONFIG_GLOBAL": os.environ.get("GIT_CONFIG_GLOBAL") or os.path.join(case.real_home, ".gitconfig"),
+           "XDG_CONFIG_HOME": os.environ.get("XDG_CONFIG_HOME") or os.path.join(case.real_home, ".config")}
+    for var, val in env.items():
+        old = os.environ.get(var)
+        case.addCleanup(lambda v=var, o=old: os.environ.__setitem__(v, o) if o is not None
+                        else os.environ.pop(v, None))
+        os.environ[var] = val
+    pj._REFUSE_PATTERNS = None
+    case.addCleanup(setattr, pj, "_REFUSE_PATTERNS", None)
+
+
 def fixture_copy(name, tmp):
     """Copy a named fixture to *tmp*/<name>, ``git init`` + one commit; return the path."""
     src = os.path.join(FIXTURES_DIR, name)
@@ -1156,26 +1176,7 @@ def _is_link(path):
 class TestMemoryLink(ProjectCase):
     """P6: .claude-state/memory/ linked from the projects dir."""
 
-    def setUp(self):
-        super().setUp()
-        # redirect home so paths.projects_dir() resolves to a temp location
-        self.fake_home = os.path.join(self.tmp, "home")
-        os.makedirs(self.fake_home)
-        self._old_home = os.environ.get("USERPROFILE")
-        self._old_home2 = os.environ.get("HOME")
-        os.environ["USERPROFILE"] = self.fake_home
-        os.environ["HOME"] = self.fake_home
-
-    def tearDown(self):
-        if self._old_home is not None:
-            os.environ["USERPROFILE"] = self._old_home
-        else:
-            os.environ.pop("USERPROFILE", None)
-        if self._old_home2 is not None:
-            os.environ["HOME"] = self._old_home2
-        else:
-            os.environ.pop("HOME", None)
-        super().tearDown()
+    # home is redirected by ProjectCase.setUp (redirect_home, 3.32.11 T7): self.fake_home
 
     def _proj_mem(self):
         from pa import paths as pp
@@ -1336,7 +1337,7 @@ class TestLedgerSlices(ProjectCase):
 class TestSafety(ProjectCase):
 
     def test_nothing_is_written_under_the_real_claude_dir(self):
-        home = os.path.expanduser("~")
+        home = self.real_home
         claude = os.path.join(home, ".claude")
         before = os.path.getmtime(claude) if os.path.isdir(claude) else None
         self.install()

@@ -90,7 +90,7 @@ import { JOURNAL_DIR, stamp, type Meta } from './journal'
 import { processLines, PROCESS_MS, PROCESSES_POSIX, PROCESSES_WIN, snapshotText, stallFile, type Tail, transcriptTail } from './stall'
 import {
   agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
-  nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, proposalOf, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, RULE_OPTIONS, runEnded, nextTaskOf,
+  nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, proposalOf, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, ruleCandidateOf, RULE_OPTIONS, runEnded, nextTaskOf,
   serializeLoop, silenceReleases, steerText, stoppedText, quietReply, liveness, ABSENT_MS, takesOver, WAIT_MAX_MS, WAIT_POLL_MS, waitSpec, windowResumes,
   contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
@@ -2160,8 +2160,12 @@ ${REPLAN_NOTICE}`)
           if (inst.step === 'asks') {
             const items = [...inst.rules, ...inst.candidates]
             while (inst.i < items.length) {
-              const rule = inst.i < inst.rules.length
-              const { line: item, note } = proposalOf(items[inst.i] ?? '')
+              const { line, note } = proposalOf(items[inst.i] ?? '')
+              // 3.32.11 T14: an auditor's `Rule candidate:` line is asked as a rule (its sentence; the origin names its row)
+              const rc = inst.i < inst.rules.length ? null : ruleCandidateOf(line)
+              const rule = inst.i < inst.rules.length || rc !== null
+              const item = rc?.sentence ?? line
+              const origin = rc === null ? `phase ${inst.phase} plan` : `phase ${inst.phase} plan (audit${rc.from === '' ? '' : `: ${rc.from}`})`
               if (inst.asked === '') {
                 // 3.32.10: the planner's note on it, in simple English, drawn as a card before its picker (the router
                 // holds a loop picker until the cards before it are drawn).
@@ -2187,7 +2191,7 @@ ${REPLAN_NOTICE}`)
               if (rule) {
                 if (/^add\b/i.test(a)) {
                   const names = (await $.fs.exists(`${root}/rules`)) ? (await $.fs.list(`${root}/rules`)).map(f => f.name) : []
-                  const args = ruleArgs(item, nextRuleId(names), `phase ${inst.phase} plan`)
+                  const args = ruleArgs(item, nextRuleId(names), origin)
                   const rr = await py('tools/rules_add.py', ...args)
                   done = rr.exitCode === 0 ? `rule ${args[2] ?? ''} added` : `rule ${args[2] ?? ''} not added: ${clip((rr.stderr || rr.stdout).trim(), 120)}`
                 } else {
