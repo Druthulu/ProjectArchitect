@@ -3,6 +3,7 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 import type { Engine, On } from 'claude-code'
 
+import { stamp } from './journal'
 import { pingUsd } from './policy'
 import { RELEASE_CHECK_MS } from './loop'
 
@@ -20,16 +21,20 @@ const coreAsks = async (_$: unknown, e: unknown, next: (e: never) => Promise<unk
   return (v?.decision === 'allow' ? v : { decision: 'ask', reason: 'core' }) as never
 }
 
-type World = { files: Map<string, string>; writes: string[]; sid: { now: string } }
+type World = { files: Map<string, string>; writes: string[]; reads: string[]; sid: { now: string } }
+/** 3.32.15: the newest world, whose files `journal_rollup.py entries` reads (net's process.run). */
+let current: World | null = null
 
 /** The test's world beneath the plugin: files, session, a bottom for the events it raises. */
 function world(on: On, files: Record<string, string>, env: Record<string, string>, denyWrite = ''): World {
-  const w: World = { files: new Map(Object.entries(files)), writes: [], sid: { now: 'S1' } }
+  const w: World = { files: new Map(Object.entries(files)), writes: [], reads: [], sid: { now: 'S1' } }
+  current = w
   mock.env(on, env)
   on('session.root', async () => ({ value: ROOT }))
   on('session.id', async () => ({ value: w.sid.now }))
   on('session.version', async () => ({ value: { version: '2.1.293', base: '2.1.293' } }))
   on('fs.read', async ($, e) => {
+    w.reads.push(norm(e.path))
     const t = w.files.get(norm(e.path))
     return t === undefined ? { deny: `ENOENT ${norm(e.path)}` } : { value: t }
   })
@@ -179,14 +184,74 @@ type Net = {
   enter?: (text: string) => Promise<void>
   /** 3.32.10: what happens while a send is in flight (the test's own `$`). */
   onSend?: (text: string) => Promise<void>
+  /** 3.32.15: the journal reads (`journal_rollup.py entries`), answered from the world's files, kept apart from runs. */
+  entryReads: string[][]
+}
+
+/** 3.32.15: `tools/journal_rollup.py entries` over a world's files, as the Python tool answers: both forms (a folder's
+ * copy of a stem in both), name order, ASCII JSON lines; --since, --after, --match, --last, --budget-chars, --max-chars. */
+function journalEntries(files: ReadonlyMap<string, string>, argv: readonly string[]): { exitCode: number; stdout: string; stderr: string } {
+  const opt = (k: string): string => {
+    const eq = argv.find(a => a.startsWith(`${k}=`))
+    const i = argv.indexOf(k)
+    return eq !== undefined ? eq.slice(k.length + 1) : i < 0 ? '' : argv[i + 1] ?? ''
+  }
+  const [since, after, re] = [opt('--since'), opt('--after'), new RegExp(opt('--match'))]
+  const [last, budget, max] = [Number(opt('--last')) || 0, Number(opt('--budget-chars')) || 0, Number(opt('--max-chars')) || 0]
+  const STEM_RE = /^[0-9]{6}-[0-9]{3,}[rwx]-(?:T[0-9]+|[a-z]+)-[a-z]+$/
+  const got = new Map<string, string>()
+  const put = (date: string, stem: string, path: string, text: string): void => {
+    if (date >= since && (after === '' || `${date}/${stem}` >= after) && re.test(stem)) {
+      got.set(`${date}/${stem}`, JSON.stringify({ path, name: `${date}/${stem}.md`, text: max > 0 ? text.slice(0, max) : text }))
+    }
+  }
+  const at = (p: string, form: RegExp): RegExpExecArray | null => (p.startsWith(`${JDIR}/`) ? form.exec(p.slice(JDIR.length + 1)) : null)
+  for (const [p, text] of files) { // packed days first: a folder's copy of a stem replaces its packed one
+    const m = at(p, /^(\d{4}-\d{2}-\d{2})\.md$/)
+    let stem = ''
+    let buf: string[] = []
+    const flush = (): void => {
+      if (m && stem !== '') put(m[1], stem, `.claude-state/journal/${m[1]}.md#${stem}`, buf.join('\n'))
+    }
+    for (const line of m ? text.split('\n') : []) {
+      const h = /^## (\S+)$/.exec(line)
+      if (h && STEM_RE.test(h[1])) {
+        flush()
+        stem = h[1]
+        buf = []
+      } else if (stem !== '') buf.push(line)
+    }
+    flush()
+  }
+  for (const [p, text] of files) {
+    const m = at(p, /^(\d{4}-\d{2}-\d{2})\/([^/]+)\.md$/)
+    if (m && STEM_RE.test(m[2])) put(m[1], m[2], `.claude-state/journal/${m[1]}/${m[2]}.md`, text)
+  }
+  let lines = [...got.keys()].sort().map(k => got.get(k) ?? '')
+  lines = last > 0 ? lines.slice(-last) : lines
+  if (budget > 0) {
+    let total = 0
+    const kept: string[] = []
+    for (const l of [...lines].reverse()) {
+      if (kept.length > 0 && total + l.length + 1 > budget) break
+      kept.unshift(l)
+      total += l.length + 1
+    }
+    lines = kept
+  }
+  return { exitCode: 0, stdout: lines.map(l => `${l}\n`).join(''), stderr: '' }
 }
 
 function net(on: On): Net {
   const n: Net = {
-    spawns: [], sends: [], submits: [], list: [], apiSteps: 0, order: [], runs: [],
+    spawns: [], sends: [], submits: [], list: [], apiSteps: 0, order: [], runs: [], entryReads: [],
     run: () => ({ exitCode: 2, stdout: '', stderr: 'invalid choice' }),
   }
   on('process.run', async ($, e) => {
+    if (e.argv[1] === 'tools/journal_rollup.py' && e.argv[2] === 'entries') {
+      n.entryReads.push([...e.argv])
+      return { value: journalEntries(current?.files ?? new Map<string, string>(), e.argv) }
+    }
     n.runs.push([...e.argv])
     n.order.push(`run:${e.argv[2] ?? ''}`)
     return { value: n.run(e.argv) }
@@ -274,12 +339,11 @@ describe('router route', () => {
     expect(n.spawns[0]?.startsWith('JOURNAL SEED\n')).toBe(true)
     expect(n.spawns[0]?.endsWith('\n\nhello')).toBe(true)
     expect(stateOf(w).partner?.agentId).toBe('P1')
-    // The message filed as dev/msg and the rotation as mod/start; the month's index lists both.
+    // The message filed as dev/msg and the rotation as mod/start; 3.32.15: no month index is written (GitHub #15).
     const [msg] = entries(w, 'dev-msg')
     expect(w.files.get(msg ?? '')?.endsWith('\n\nhello\n')).toBe(true)
     expect(entries(w, 'mod-start').length).toBe(1)
-    expect(indexOf(w)).toContain(`| dev | msg | hello | ${(msg ?? '').slice(ROOT.length + 1)}`)
-    expect(indexOf(w).trim().split('\n').length).toBe(2)
+    expect(indexOf(w)).toBe('')
 
     await $.turn.start({ text: 'hello', turnId: 'T1' })
     const s1 = await drain($.turn.step({ turnId: 'T1', index: 0, model: 'opus', messageCount: 1 }))
@@ -311,7 +375,7 @@ describe('router route', () => {
     expect(entry).toContain('\nmodel: claude-opus-5-5\neffort: high\n') // was model: opus (the usage's); 3.22 T8f: the watcher's step
     expect(entry).toContain('\nusage: {input: 10, cacheRead: 100, cacheWrite: 1000, output: 5}\n')
     expect(entry.endsWith('---\n\nA fun fact.\n')).toBe(true)
-    expect(indexOf(w).trim().split('\n').length).toBe(3)
+    expect(indexOf(w)).toBe('')
 
     await $.turn.start({ text: MARK1, turnId: 'T2' })
     const s2 = await drain($.turn.step({ turnId: 'T2', index: 0, model: 'opus', messageCount: 3 }))
@@ -764,7 +828,7 @@ describe('router journal, rotation, warming, toast', () => {
     const [ap, at] = entryFile('2026-10-14', '090010-002r-partner-answer.md', '2026-10-14T09:00:10.000Z', 'Four.')
     const [ip, it] = request('S1', OCT - 500, 1, 'topic')
     const w = world(on, {
-      [`${ROOT}/.claude/pa.json`]: ON, [qp]: qt, [ap]: at, [ip]: it.replace('"caller":"a1"', '"caller":"OLD"'),
+      [`${ROOT}/.claude/pa.json`]: PY, [qp]: qt, [ap]: at, [ip]: it.replace('"caller":"a1"', '"caller":"OLD"'), // 3.32.15: the seed reads through Python
       [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', lastTurnAt: OCT - 1_000, ctx: 5_000 }),
       [`${ROOT}/GENERATION_PLAN.md`]: '# plan',
     }, {})
@@ -1014,7 +1078,7 @@ describe('router journal, rotation, warming, toast', () => {
       const [qp, qt] = entryFile('2026-10-14', '090000-001r-dev-msg.md', '2026-10-14T09:00:00.000Z', 'Train the masks.')
       const [r1, b1] = stopNotice(OCT - 500, { text: '‹pa› T1 stopped for your review.', toast: 'review' })
       const w = world(on, {
-        [`${ROOT}/.claude/pa.json`]: ON, [qp]: qt, [r1]: b1,
+        [`${ROOT}/.claude/pa.json`]: PY, [qp]: qt, [r1]: b1, // 3.32.15: the seed reads through Python
         [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', lastTurnAt: OCT - 2 * 3_600_000, ctx: 50_000 }),
       }, {})
       const n = net(on)
@@ -1291,56 +1355,38 @@ describe('router journal, rotation, warming, toast', () => {
     await clock.advance(1_000)
   })
 
-  test('the index is rebuilt at session start when it disagrees with the entries', async ($, on) => {
-    const clock = mock.clock(on, { now: OCT })
-    const [qp, qt] = entryFile('2026-10-14', '090000-001r-dev-msg.md', '2026-10-14T09:00:00.000Z', 'Hello | there')
-    const [tp, tt] = entryFile('2026-10-14', '090005-001w-partner-thinking.md', '2026-10-14T09:00:05.000Z', 'Pondering.')
-    const w = world(on, {
-      [`${ROOT}/.claude/pa.json`]: ON, [qp]: qt, [tp]: tt,
-      [`${JDIR}/INDEX-2026-10.md`]: 'x | dev | msg | gone | .claude-state/journal/2026-10-01/000000-001r-dev-msg.md\n',
-    }, {})
-    net(on)
-    await $.session.start(START)
-    await clock.settle()
-    expect(w.files.get(`${JDIR}/INDEX-2026-10.md`)).toBe(
-      '2026-10-14T09:00:00.000Z | dev | msg | Hello \\| there | .claude-state/journal/2026-10-14/090000-001r-dev-msg.md\n' +
-      '2026-10-14T09:00:05.000Z | partner | thinking | Pondering. | .claude-state/journal/2026-10-14/090005-001w-partner-thinking.md\n')
-  })
-
-  test('3.32.11 T1: the index takes any writer and kind: a planner spawn and a retriever entry', async ($, on) => {
-    const clock = mock.clock(on, { now: OCT })
-    const [sp, st] = entryFile('2026-10-14', '032608-330w-planner-spawn.md', '2026-10-14T03:26:08.000Z', 'Planner spawned')
-    const [rp, rt] = entryFile('2026-10-14', '032700-331w-retriever-thinking.md', '2026-10-14T03:27:00.000Z', 'Looking')
-    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [sp]: st, [rp]: rt }, {})
-    net(on)
-    await $.session.start(START)
-    await clock.settle()
-    expect(w.files.get(`${JDIR}/INDEX-2026-10.md`)).toBe(
-      '2026-10-14T03:26:08.000Z | planner | spawn | Planner spawned | .claude-state/journal/2026-10-14/032608-330w-planner-spawn.md\n' +
-      '2026-10-14T03:27:00.000Z | retriever | thinking | Looking | .claude-state/journal/2026-10-14/032700-331w-retriever-thinking.md\n')
-  })
-
   // 3.23 T7: a rolled day file (tools/journal_rollup.py) beside a live day folder.
   const rolledDay = (date: string, files: [string, string][]): string =>
     `# Journal ${date} (${String(files.length)} entries, rolled by tools/journal_rollup.py)\n` +
     files.map(([p, t]) => `## ${(p.split('/').at(-1) ?? '').replace(/\.md$/, '')}\n${t}`).join('')
 
-  test('3.23 T7: the index lists a rolled day from <date>.md#<stem> and a live day from its folder', async ($, on) => {
+  test('3.32.15: no month index; the mod reads no day file itself, the seed reads through journal_rollup.py entries', async ($, on) => {
+    // GitHub #15: the index sync re-read every packed day of the month after each journal write, and `$.fs` refuses a
+    // day file over 4 MiB: the hooks worker stalled and Claude Code unloaded pa
     const clock = mock.clock(on, { now: OCT })
     const r1 = entryFile('2026-10-13', '080000-001r-dev-msg.md', '2026-10-13T08:00:00.000Z', 'Rolled hello')
-    const r2 = entryFile('2026-10-13', '080010-002r-claude-answer.md', '2026-10-13T08:00:10.000Z', 'Rolled answer')
+    const r2 = entryFile('2026-10-13', '080010-1000x-coder-note.md', '2026-10-13T08:00:10.000Z', 'An external coder\'s note')
     const [qp, qt] = entryFile('2026-10-14', '090000-001r-dev-msg.md', '2026-10-14T09:00:00.000Z', 'Live hello')
+    const old = 'x | dev | msg | gone | .claude-state/journal/2026-10-13/080000-001r-dev-msg.md\n'
     const w = world(on, {
-      [`${ROOT}/.claude/pa.json`]: ON, [qp]: qt, [`${JDIR}/2026-10-13.md`]: rolledDay('2026-10-13', [r1, r2]),
-      [`${JDIR}/INDEX-2026-10.md`]: 'x | dev | msg | gone | .claude-state/journal/2026-10-13/080000-001r-dev-msg.md\n',
-    }, {})
-    net(on)
-    await $.session.start(START)
+      [`${ROOT}/.claude/pa.json`]: PY, [qp]: qt, [`${JDIR}/2026-10-13.md`]: rolledDay('2026-10-13', [r1, r2]),
+      [`${JDIR}/INDEX-2026-10.md`]: old,
+      [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', lastTurnAt: OCT - 1_000, ctx: 1_110 }),
+    }, { PA_MOD_ROTATE_AT: '1000' })
+    const n = net(on)
+    n.list = [{ id: 'OLD', status: 'idle' }]
+    await $.session.start(ISTART)
+    await $.prompt.submit({ text: 'go on', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
     await clock.settle()
-    expect(w.files.get(`${JDIR}/INDEX-2026-10.md`)).toBe(
-      '2026-10-13T08:00:00.000Z | dev | msg | Rolled hello | .claude-state/journal/2026-10-13.md#080000-001r-dev-msg\n' +
-      '2026-10-13T08:00:10.000Z | claude | answer | Rolled answer | .claude-state/journal/2026-10-13.md#080010-002r-claude-answer\n' +
-      '2026-10-14T09:00:00.000Z | dev | msg | Live hello | .claude-state/journal/2026-10-14/090000-001r-dev-msg.md\n')
+    expect(w.files.get(`${JDIR}/INDEX-2026-10.md`)).toBe(old) // untouched: the roll-up (Python) deletes it
+    expect(w.writes.filter(p => p.includes('/INDEX-'))).toEqual([])
+    expect(w.reads.filter(p => /\/journal\/(\d{4}-\d{2}-\d{2}\.md|INDEX-)/.test(p))).toEqual([])
+    expect(n.entryReads.map(r => r.slice(2).join(' '))).toEqual([
+      `entries --since ${stamp(OCT - 14 * 86_400_000)[0]} --match=-dev-msg$|-(?:claude|partner)-answer$|-record$ --budget-chars 3000000`])
+    const seed = n.spawns[0] ?? ''
+    expect(seed.indexOf('Live hello')).toBeLessThan(seed.indexOf('Rolled hello'))
+    expect(seed).not.toContain('An external coder')
   })
 
   test('3.23 T7: the roll-up runs after the prune at session start, its output in the debug log', async ($, on) => {

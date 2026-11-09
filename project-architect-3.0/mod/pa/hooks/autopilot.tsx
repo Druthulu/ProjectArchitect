@@ -84,9 +84,9 @@ import { acceptedCard, type BandAgent, bandIds, bandRows, bandStepOf, intakeCard
 import { CHAIN_SCRIPTS, parseAuditorReturn, parseExpertContract, splitCommand } from './contract'
 import { clip, eventFile, isStale } from './debug'
 import { BUILD } from './build'
-import { isProgressEntry, recoveryDigest } from './digest'
+import { PROGRESS_READ_CHARS, PROGRESS_READS, recoveryDigest } from './digest'
 import { isLoopKind, noticeRequest, parseRequest, pendingRequests, type Request, requestFile } from './inbox'
-import { daySections, JOURNAL_DIR, stamp, type Meta } from './journal'
+import { ENTRIES_TOOL, entryLinesOf, stamp, type Meta } from './journal'
 import { processLines, PROCESS_MS, PROCESSES_POSIX, PROCESSES_WIN, snapshotText, stallFile, type Tail, transcriptTail } from './stall'
 import {
   agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
@@ -1768,8 +1768,9 @@ ${REPLAN_NOTICE}`)
           return true
         }
         // TASK_PROGRESS.md for a respawn after a restart (T5d1): the hook's kill digest when present (`claude --continue`),
-        // else the mod's: git status, the commits since the task's start, its agents' journal notes and reasoning (from
-        // the day folders and, 3.32.12, the packed day files).
+        // else the mod's: git status, the commits since the task's start, its agents' journal notes and reasoning (the
+        // day folders and, 3.32.12, the packed day files; 3.32.15: through journal_rollup.py entries, any size, only the
+        // newest the digest keeps: a packed day past $.fs's 4 MiB was lost, GitHub #15).
         const progressDigest = async (t: LoopTask): Promise<string> => {
           if (await $.fs.exists(`${root}/${PROGRESS}`)) {
             return 'present, kept'
@@ -1777,28 +1778,14 @@ ${REPLAN_NOTICE}`)
           const status = await run(['git', 'status', '--short'])
           const gitLog = t.startSha === '' ? null : await run(['git', 'log', '--oneline', `${t.startSha}..HEAD`])
           const [day, time] = stamp(t.spawnedAt)
-          const jdir = `${root}/${JOURNAL_DIR}`
           const entries: [string, string][] = []
-          if (await $.fs.exists(jdir)) {
-            const listed = await $.fs.list(jdir)
-            for (const d of listed.filter(f => f.kind === 'dir' && f.name >= day)) {
-              for (const f of (await $.fs.list(`${jdir}/${d.name}`)).filter(x => x.kind === 'file' && isProgressEntry(x.name))) {
-                const name = `${d.name}/${f.name}`
-                if (name >= `${day}/${time}`) {
-                  entries.push([name, await $.fs.read(`${jdir}/${name}`).catch(() => '')])
-                }
-              }
+          for (const [match, last] of PROGRESS_READS) {
+            const r = await py(ENTRIES_TOOL, 'entries', '--since', day, '--after', `${day}/${time}`, `--match=${match}`,
+              '--last', String(last), '--max-chars', String(PROGRESS_READ_CHARS))
+            if (r.exitCode !== 0) {
+              await log('journal.error', { read: 'digest', exitCode: r.exitCode, stderr: clip(r.stderr, 300) })
             }
-            // 3.32.12: a finished day is packed into `<date>.md` (journal_rollup.py, at a session start and every 8 hours),
-            // so an expert that started on an earlier day has its notes there; they were lost from the digest
-            for (const f of listed.filter(x => x.kind === 'file' && /^\d{4}-\d{2}-\d{2}\.md$/.test(x.name) && x.name.slice(0, 10) >= day)) {
-              for (const [stem, text] of daySections(await $.fs.read(`${jdir}/${f.name}`).catch(() => ''))) {
-                const name = `${f.name.slice(0, 10)}/${stem}.md`
-                if (isProgressEntry(name) && name >= `${day}/${time}` && !entries.some(e => e[0] === name)) {
-                  entries.push([name, text])
-                }
-              }
-            }
+            entries.push(...entryLinesOf(r.exitCode === 0 ? r.stdout : '').map((l): [string, string] => [l.name, l.text]))
           }
           // 3.28.1 T12: what it waits on: its children still at work.
           const waiting = [

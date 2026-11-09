@@ -2,6 +2,22 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.15 — Busy projects keep their mod, and busy days stay in reach
+
+- On a busy project, PA3's mod no longer switches itself off seconds after each start. It kept a monthly index of
+  the journal and re-read the whole month after every message, and on a project writing thousands of journal entries
+  a day Claude Code stopped it as stuck. The index is gone (only the bug report read it); any old index file is
+  deleted at the next roll-up.
+- A busy day's conversation now reaches a fresh Claude, and a restarted task's notes reach its fresh expert. PA3
+  packs each finished day of the journal into one file, and the mod could not read a file over 4 MB, so such a day
+  was left out. A small Python reader now reads the journal for the mod.
+- "Remember what we decided about X?" now reaches talk from before the project's records, or never filed: when the
+  records have nothing, Claude has a helper search the journal and reads the lines it finds.
+- `/pa-bugreport` shows the mod version actually loaded, and `.claude/pa.json`'s `pa_version` now follows each update
+  instead of keeping the version that first set the project up.
+- Agent version numbers were recounted to one step per release that changed the agent, so a few agent files get a
+  one-line update.
+
 ## 3.32.14 — Red shell lines leave the statusline too
 
 - A background shell that failed now also leaves the statusline 2 minutes after it ended. 3.32.11 did this for the

@@ -6,7 +6,7 @@ Run from the project's root folder (the `/pa-bugreport` command does):
 
 Read-only except its one output, `.run/pa-bugreport-<YYYYMMDD-HHMM>.md` (120,000 characters at most). It reads PA3's
 versions and settings, the plugins Claude Code lists, `.run/mod/` (loop.json, the inboxes, the session's facts, the
-newest stall snapshot), the journal index and this project's helper-agent transcripts (the rules of
+newest stall snapshot), the journal's entries and this project's helper-agent transcripts (the rules of
 pa3_stall_evidence.py, 3.32.1). Before writing, the text is scrubbed for a public issue: the home folder becomes `~`,
 the user name `you`, email addresses `<email>`, the value after key, token, secret, password or auth `[redacted]`.
 Commands are cut to 120 characters, last words to 300; no file contents, no tool output. Agent and session ids stay.
@@ -18,13 +18,19 @@ import json
 import os
 import platform
 import re
+import sys
 import time
 from datetime import datetime
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import journal_rollup  # noqa: E402  (3.32.15: the journal's reader, both forms)
 
 CAP = 120000
 PA3_TYPES = ("pa-expert", "pa-coder", "retriever-code", "retriever-digest", "retriever-web", "auditor", "memory-curator",
              "pa-planner", "pa-thinker")
 TASK_RE = re.compile(r"^T\d+(\.\d+)*$")
+ENTRY_RE = re.compile(r"^[0-9]{6}-[0-9]{3,}[rwx]-(T[0-9]+|[a-z]+)-([a-z]+)$")     # an entry's stem: who, kind
+TASK_ENTRY_RE = re.compile(r"-T[0-9]+-(start|interim|end)$")
 NOTICE_RE = re.compile(r"<task-notification>(.*?)</task-notification>", re.S)
 REQUEST_RE = re.compile(r"^(\d+)-(\d+)-([a-z][a-z0-9_]*)\.json$")
 # The mod's own kinds, drained by the loop and marked in loop.json (mod/pa/hooks/inbox.ts LOOP_KINDS); the rest the
@@ -234,15 +240,29 @@ def open_background(a):
     return out
 
 
-def journal_rows(root):
-    """Per task start: when its expert first reported (interim) and when the task ended, from the journal index."""
+def entry_line(date, stem, path, text):
+    """3.32.15: ``(ts, who, kind, first line (80), path)`` of a journal entry (journal_rollup.iter_entries), the line
+    the retired month index had for it."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    ts, body = "", lines
+    if lines[0] == "---" and "---" in lines[1:]:
+        end = lines.index("---", 1)
+        ts = next((l[4:].strip().strip('"') for l in lines[1:end] if l.startswith("ts: ")), "")
+        body = lines[end + 1:]
+    m = ENTRY_RE.match(stem)
+    return (ts, m.group(1) if m else "?", m.group(2) if m else "?",
+            next((l.strip() for l in body if l.strip()), "")[:80], path)
+
+
+def journal_rows(root, since=""):
+    """Per task start: when its expert first reported (interim) and when the task ended, from the journal's task
+    entries from ``since`` (YYYY-MM-DD) on (3.32.15: the entries themselves, both forms; the month index is retired)."""
+    jdir = os.path.join(root, ".claude-state", "journal")
     lines = []
-    for p in sorted(glob.glob(os.path.join(root, ".claude-state", "journal", "INDEX-*.md"))):
-        with open(p, encoding="utf-8", errors="replace") as fh:
-            for line in fh:
-                parts = [x.strip() for x in line.split(" | ")]
-                if len(parts) >= 4 and TASK_RE.match(parts[1]) and parts[2] in ("start", "interim", "end"):
-                    lines.append((parts[0], parts[1], parts[2], parts[3]))
+    for e in journal_rollup.iter_entries(jdir, since, lambda _d, stem: TASK_ENTRY_RE.search(stem) is not None):
+        ts, who, kind, first, _path = entry_line(*e)
+        if TASK_RE.match(who):
+            lines.append((ts, who, kind, first))
     lines.sort()
     runs, cur = [], {}
     for ts, task, kind, first in lines:
@@ -264,6 +284,7 @@ class Ctx:
     def __init__(self, root, config_dir, home, days):
         self.root, self.config_dir, self.home, self.days = root, config_dir, home, days
         self.now = time.time()
+        self.since_day = time.strftime("%Y-%m-%d", time.localtime(self.now - days * 86400))   # the journal's window
         base = os.path.join(config_dir, "projects")
         want = re.sub(r"[^A-Za-z0-9]", "-", root)
         self.proj = next((os.path.join(base, n) for n in (os.listdir(base) if os.path.isdir(base) else [])
@@ -298,6 +319,14 @@ def sec_versions(c):
     else:
         first = (vtext.lstrip("﻿").strip().splitlines() or [""])[0]
         w.append("- PA3 installed: %s" % one(first.split(":", 1)[1] if first.startswith("version:") else first, 40))
+    # 3.32.15: the mod Claude Code loads, in place from the machine install (its plugin.json, bumped every release);
+    # installed_plugins.json's pa3 records (section 2) are Claude Code's note of a first install, never updated
+    mod = os.path.join(c.home, ".claude", "pa3", "mod")
+    loaded = []
+    for name in ("pa", "pa-watch"):
+        doc, _why = load(os.path.join(mod, name, ".claude-plugin", "plugin.json"))
+        loaded.append("%s %s" % (name, doc.get("version", "?") if isinstance(doc, dict) else "(missing)"))
+    w.append("- PA3 mod loaded (in place from `%s`): %s" % (c.rel(mod), ", ".join(loaded)))
     pa = c.pa if isinstance(c.pa, dict) else None
     if pa is None:
         w.append(c.missing(os.path.join(c.root, ".claude", "pa.json"), c.pa_why or "not an object"))
@@ -373,6 +402,9 @@ def sec_plugins(c):
             vers = sorted({str(r.get("version", "?")) for r in recs if isinstance(r, dict)}) or ["?"]
             rows.append("%s %s" % (name, "/".join(vers)))
         w.append("- Installed plugins: %s" % ("; ".join(rows) or "(none)"))
+        if isinstance(plugins, dict) and any(k.endswith("@pa3") for k in plugins):
+            w.append("- (pa@pa3 and pa-watch@pa3 above are Claude Code's record of their first install, never updated: "
+                     "the mod loads in place, its versions in section 1)")
     return w
 
 
@@ -457,15 +489,17 @@ def sec_inbox(c):
 
 
 def sec_journal(c):
-    w = ["\n## 5. The journal (last 80 lines of the newest index)\n"]
-    idx = sorted(glob.glob(os.path.join(c.root, ".claude-state", "journal", "INDEX-*.md")))
-    if not idx:
-        w.append(c.missing(os.path.join(c.root, ".claude-state", "journal", "INDEX-*.md")))
+    """3.32.15: the journal's last 80 entries in the window, one `ts | who | kind | first line | path` line each, read
+    from the entries (both forms); the month index it once quoted is retired."""
+    w = ["\n## 5. The journal (its last 80 entries)\n"]
+    jdir = os.path.join(c.root, ".claude-state", "journal")
+    if not os.path.isdir(jdir):
+        w.append(c.missing(jdir))
         return w
-    lines = [x for x in (text_of(idx[-1]) or "").splitlines() if x.strip()]
-    w.append("From `%s`:\n" % c.rel(idx[-1]))
+    last = collections.deque((entry_line(*e) for e in journal_rollup.iter_entries(jdir, c.since_day)), maxlen=80)
+    w.append("From `%s` (since %s):\n" % (c.rel(jdir), c.since_day))
     w.append("```")
-    w += [one(x, 200) for x in lines[-80:]]
+    w += [one(" | ".join(x), 200) for x in last]
     w.append("```")
     return w
 
@@ -504,7 +538,7 @@ def sec_helpers(c):
         if not a["handbacks"]:
             reasons.append("never handed back")
         a["reasons"] = reasons
-    runs = journal_rows(c.root)
+    runs = journal_rows(c.root, c.since_day)
     task_of = {r["agent"]: r["task"] for r in runs if r["agent"]}
     w.append("Helpers read (last %g days): %d. Flagged: %d.\n" % (c.days, len(agents),
                                                                   sum(1 for a in agents.values() if a["reasons"])))

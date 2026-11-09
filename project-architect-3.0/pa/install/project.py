@@ -855,6 +855,28 @@ def _pa_json_preset(env):
         env.man.updated.append(rel)
 
 
+def _pa_json_version(env):
+    """3.32.15: pa.json ``pa_version`` follows the install that refreshes the project (other keys kept). It was
+    stamped only when pa.json was first written, so it lagged every update (bfm-decomp said 3.11 on 3.32.14, and
+    /pa-bugreport printed it). No pa.json, a pa.json that does not parse, a dry run or an equal value: nothing written."""
+    rel = ".claude/pa.json"
+    if env.dry_run or not PA_VERSION or not os.path.isfile(env.path(rel)):
+        return
+    text = fsutil.read_text(env.path(rel), "")
+    try:
+        existing = json.loads(text)
+    except ValueError:
+        return
+    if not isinstance(existing, dict) or existing.get("pa_version") == PA_VERSION:
+        return
+    new = _put_json_key(text, "pa_version", PA_VERSION)
+    json.loads(new)                                      # refuse to write broken JSON
+    with open(env.path(rel), "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(new)
+    if rel not in env.man.created and rel not in env.man.updated:
+        env.man.updated.append(rel)
+
+
 def pa_json_text(env):
     """``pa.json.template`` with the project name, the interpreter, the version and
     ``installed_at`` (T10.1): stamped once, carried forward unchanged from an existing
@@ -1099,6 +1121,7 @@ def copy_files(env):
     env.ladder_preset = _preset(env)        # the model ladder, resolved once (3.10.6 T2)
     env.ladder_override = _raw_pa_json(env).get("ladder")
     _pa_json_preset(env)                    # 3.24 T12e: pa.json agrees with the rendered agents
+    _pa_json_version(env)                   # 3.32.15: and names the version that refreshed it
 
     pairs = copy_agents(env, up)
     # 3.24 T5: retired agents are pruned with every other file no longer shipped (up.prune below),

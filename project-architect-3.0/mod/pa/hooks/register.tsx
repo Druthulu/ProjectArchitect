@@ -36,7 +36,7 @@ import {
 import { parseCoderReturn } from './contract'
 import { clip, eventFile, isStale, PRUNE_DAYS, pruneArgv } from './debug'
 import { forwardRequest, handle, isLoopKind, noAnswer, parseRequest, pendingRequests, requestFile, RETRIEVE_TYPE, retrievePrompt } from './inbox'
-import { dayFilePath, type Entry, filedThroughOf, indexAgrees, indexPath, JOURNAL_DIR, mergeIndex, parseEntry, parseEntryPath, splitDay, stamp, TOPICS_PATH, unindexed } from './journal'
+import { type Entry, entriesOf, ENTRIES_TOOL, filedThroughOf, parseEntryPath, stamp, TOPICS_PATH } from './journal'
 import { idleNow, runningNow, taskAgents } from './digest'
 import {
   addRecords, beatOf, deathOf, emptyFeed, emptyLife, FEED_BEAT_MS, FEED_DESC, FEED_STALE_MS, FEED_TIMEOUT_MS, feedBlock, feedCommand, feedErrorLine, feedEvents,
@@ -51,7 +51,7 @@ import {
 import { cacheTtlOf, expertStatus, fileDecision, isCold, journalSettings, partnerStatus, pingCount, pingDecision, pingUsd, type Rates, ratesFrom, tierRates } from './policy'
 import {
   addAttach, addReply, applyReply, bangOf, bangText, childOut, classify, clearTurn, dueMarkers, emptyTurns, enqueue, entryUsage, fileEntry,
-  framedOther, handbackChild, hideAssistant, hideSpinner, hideUser, isBusy, isLive, isSeedName, journalOut, localAnswer, markerReply,
+  framedOther, handbackChild, hideAssistant, hideSpinner, hideUser, isBusy, isLive, isSeedName, journalOut, localAnswer, markerReply, SEED_MATCH,
   markerText, newestPartner, newPartner, otherTarget, PARTNER_TYPE, stepFactsOf, nextMarker, outboxHeld, parentOf, partnerReport, partnerRoute, partnerTurnEnded, priceCacheOf,
   registerTurn, replyKey, resumeCheck, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
@@ -95,6 +95,9 @@ const DRAIN_MS = 1_000
 const WORK_MS = 500
 const WARM_MS = 30_000 // was 60_000; 3.28.1 T12: a 5-minute agent's ping window (3.28.8: 4-4.5 min) is 30 s wide
 const SEED_DAYS = 14
+/** 3.32.15: what the seed reads through journal_rollup.py entries at most, newest first: under `$.process.run`'s 4 MiB
+ * stdout, far above the ~40k-token seed. */
+const SEED_READ_CHARS = 3_000_000
 /** Card texts kept in the registry at most (3.23 T13); an older card's row draws as its plain markdown. */
 const MAX_CARDS = 100
 
@@ -450,7 +453,8 @@ export const register: Register = (on, options) => {
         }
       }
 
-      // The journal (journal.ts): entries under `<root>/.claude-state/journal/<date>/`, the month's index beside them.
+      // The journal (journal.ts): entries under `<root>/.claude-state/journal/<date>/`, a finished day packed into
+      // `<date>.md`. 3.32.15: the mod writes entries and reads them only through journal_rollup.py (no month index).
       const python = paSetting(paText, 'python')
       const home = (await $.env.get('USERPROFILE')) ?? (await $.env.get('HOME')) ?? ''
       const ledger = ledgerPath(await $.env.get('PA_MOD_PA3_DIR'), home)
@@ -461,33 +465,6 @@ export const register: Register = (on, options) => {
       const fileQuietMs = Number((await $.env.get('PA_MOD_FILE_QUIET_MS')) ?? '') || undefined
       // Trial knob (3.32.9): the journal roll-up's period in ms instead of RELEASE_CHECK_MS (8 h, the update check's).
       const rollupEveryMs = Number((await $.env.get('PA_MOD_ROLLUP_EVERY_MS')) ?? '') || RELEASE_CHECK_MS
-      const jdir = `${root}/${JOURNAL_DIR}`
-      // Both forms (3.23 T7): a live day folder `<date>/` and a rolled day file `<date>.md` (tools/journal_rollup.py).
-      const days = async (): Promise<string[]> => {
-        if (!(await $.fs.exists(jdir))) {
-          return []
-        }
-        const names = (await $.fs.list(jdir)).map(f => f.name.replace(/\.md$/, '')).filter(n => /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(n))
-        return [...new Set(names)].sort()
-      }
-      const rolled = async (day: string): Promise<Entry[]> => {
-        const text = await $.fs.read(`${root}/${dayFilePath(day)}`).catch(() => null)
-        return text === null ? [] : splitDay(day, text)
-      }
-      const dayFiles = async (day: string): Promise<string[]> => {
-        const live = (await $.fs.exists(`${jdir}/${day}`))
-          ? (await $.fs.list(`${jdir}/${day}`)).filter(f => f.kind === 'file').map(f => `${JOURNAL_DIR}/${day}/${f.name}`)
-          : []
-        return [...live, ...(await rolled(day)).map(e => e.path)].filter(rel => parseEntryPath(rel) !== null).sort()
-      }
-      const readEntry = async (rel: string): Promise<Entry | null> => {
-        const hash = rel.indexOf('.md#')
-        if (hash >= 0) {
-          return (await rolled(parseEntryPath(rel)?.date ?? '')).find(e => e.path === rel) ?? null
-        }
-        const text = await $.fs.read(`${root}/${rel}`).catch(() => null)
-        return text === null ? null : { path: rel, ...(parseEntry(text) ?? { meta: {}, body: text }) }
-      }
       // 3.31 T2: the newest `claude/record` entry's `through`, the session's `filedThrough` when newer: read once per
       // arm. 3.31 T2b: from TOPICS.md's `# filed through:` header (records.py index), never a journal scan; no
       // TOPICS.md, no record.
@@ -500,42 +477,16 @@ export const register: Register = (on, options) => {
           }
         }
       })().catch(quiet)
-      // The month's index, rewritten whole when it disagrees with the month's entries (its lines kept, new entries read).
-      const syncIndex = async (month: string): Promise<void> => {
-        const paths: string[] = []
-        for (const d of (await days()).filter(n => n.startsWith(`${month}-`))) {
-          paths.push(...(await dayFiles(d)))
-        }
-        const ip = `${root}/${indexPath(month)}`
-        const text = (await $.fs.read(ip).catch(() => null)) ?? ''
-        if ((paths.length === 0 && text === '') || indexAgrees(text, paths)) {
-          return
-        }
-        const fresh: Entry[] = []
-        for (const rel of unindexed(text, paths)) {
-          const e = await readEntry(rel)
-          if (e !== null) {
-            fresh.push(e)
-          }
-        }
-        await $.fs.write(ip, mergeIndex(text, paths, fresh))
-        await log('journal.index', { month, entries: paths.length, read: fresh.length })
-      }
-      $.clock.after(0, () => {
-        void (async () => {
-          await syncIndex(stamp(await $.clock.now())[0].slice(0, 7))
-        })().catch(async err => log('journal.error', { err: clip(String(err), 300) }))
-      })
 
       if (why === 'start') {
         const argv = pruneArgv(paSetting(paText, 'python'), base, [sidNow, lastSid ?? ''], PRUNE_DAYS)
         if (argv !== null) {
-          // The journal's daily roll-up (3.23 T7): finished days only, so safe in any session; then the month's index.
+          // The journal's daily roll-up (3.23 T7): finished days only, so safe in any session. 3.32.15: it also deletes
+          // the retired month index files.
           const rollUp = async (reason: string): Promise<void> => {
             try {
               const ran = await $.process.run([python, 'tools/journal_rollup.py'], { cwd: root, timeoutMs: 60_000 })
               await log('rollup', { reason, exitCode: ran.exitCode, stdout: clip(ran.stdout, 600), stderr: clip(ran.stderr, 300) })
-              await syncIndex(stamp(await $.clock.now())[0].slice(0, 7))
             } catch (err) {
               await log('rollup.error', { reason, err: clip(String(err), 300) })
             }
@@ -782,9 +733,9 @@ export const register: Register = (on, options) => {
             }
             return after
           }
-          // Each queued entry written, then dropped from the queue (a rewrite is the same file), then the month's index.
+          // Each queued entry written, then dropped from the queue (a rewrite is the same file). 3.32.15: no month index
+          // to sync after it (GitHub #15: that sync re-read every packed day of the month after each write).
           const flushJournal = async (): Promise<void> => {
-            const months = new Set<string>()
             let cur = await read($, stateAtom)
             while (cur !== null && cur.journal.length > 0) {
               const out = cur.journal[0]
@@ -792,16 +743,12 @@ export const register: Register = (on, options) => {
                 break
               }
               await $.fs.write(`${root}/${out.rel}`, out.text)
-              months.add(parseEntryPath(out.rel)?.date.slice(0, 7) ?? '')
               cur = await step(x => ({ ...x, journal: x.journal.filter(j => j.rel !== out.rel) }))
             }
-            for (const m of months) {
-              if (m !== '') {
-                await syncIndex(m)
-              }
-            }
           }
-          // A fresh partner's seed (seed.ts): the last 14 days' conversation, the running work, the plans.
+          // A fresh partner's seed (seed.ts): the last 14 days' conversation, the running work, the plans. 3.32.15: the
+          // conversation and the records read through journal_rollup.py entries (both forms, any size; the newest within
+          // SEED_READ_CHARS, far more than the seed keeps), never a day file in the hooks worker.
           const seedFor = async (sending: string): Promise<string> => {
             const now = await $.clock.now()
             const since = stamp(now - SEED_DAYS * 86_400_000)[0]
@@ -809,20 +756,16 @@ export const register: Register = (on, options) => {
             // 3.31 T3: the newest record's `through` in the window (and the state's), for the records seed.
             const cur = await read($, stateAtom)
             let through = cur?.filedThrough ?? ''
-            for (const d of (await days()).filter(n => n >= since)) {
-              const day = await rolled(d)
-              entries.push(...day.filter(e => isSeedName(e.path)))
-              for (const e of day.filter(x => parseEntryPath(x.path)?.kind === 'record')) {
+            const jr = python === '' ? null : await $.process.run([python, ENTRIES_TOOL, 'entries', '--since', since, `--match=${SEED_MATCH}`,
+              '--budget-chars', String(SEED_READ_CHARS)], { cwd: root, timeoutMs: 15_000 }).catch(() => null)
+            if (jr === null || jr.exitCode !== 0) {
+              await log('journal.error', { read: 'seed', exitCode: jr?.exitCode ?? null, stderr: clip(jr?.stderr ?? '', 300) })
+            }
+            for (const e of entriesOf(jr !== null && jr.exitCode === 0 ? jr.stdout : '')) {
+              if (parseEntryPath(e.path)?.kind === 'record') {
                 through = (e.meta.through ?? '') > through ? e.meta.through ?? '' : through
-              }
-              for (const rel of (await dayFiles(d)).filter(r => !r.includes('.md#'))) {
-                const kind = parseEntryPath(rel)?.kind
-                const e = isSeedName(rel) || kind === 'record' ? await readEntry(rel) : null
-                if (e !== null && kind === 'record') {
-                  through = (e.meta.through ?? '') > through ? e.meta.through ?? '' : through
-                } else if (e !== null) {
-                  entries.push(e)
-                }
+              } else if (isSeedName(e.path)) {
+                entries.push(e)
               }
             }
             const old = cur?.partner?.agentId ?? ''

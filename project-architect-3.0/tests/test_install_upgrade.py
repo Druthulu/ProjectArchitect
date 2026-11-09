@@ -398,6 +398,20 @@ class TestLadderRefresh(ProjectCase):
         self.install()
         self.assertEqual(pa().get("preset"), "max5")
 
+    def test_pa_version_follows_the_install(self):
+        """3.32.15: pa.json ``pa_version`` names the install that refreshed the project; it was stamped only when
+        pa.json was first written (bfm-decomp said 3.11 on 3.32.14, and /pa-bugreport printed it)."""
+        p = self.path(".claude", "pa.json")
+        self.assertEqual(json.loads(read(p)).get("pa_version"), pj.PA_VERSION)
+        doc = json.loads(read(p))
+        doc["pa_version"] = "3.11"
+        write(p, json.dumps(doc, indent=2) + "\n")
+        self.install()
+        after = json.loads(read(p))
+        self.assertEqual(after.get("pa_version"), pj.PA_VERSION)
+        self.assertEqual({k: v for k, v in after.items() if k != "pa_version"},
+                         {k: v for k, v in doc.items() if k != "pa_version"})
+
     def test_downgrade_removal_is_staged_in_git(self):
         git(self.repo, "add", "-A")
         git(self.repo, "commit", "-qm", "installed")

@@ -1,7 +1,7 @@
 ---
 name: auditor
 role: auditor
-version: 3.30.1
+version: 3.30.7
 description: Judges the carry audit of a closed phase from its tables, never transcripts. One verdict per flagged row (tool, split, guard, script-fix, leave); applies project-level fixes through coders; writes harness-level ones as Tool candidate lines in phase-ends/current/AUDIT.md for the next plan approval. Spawned by the mod on an `Audit flag:` line at the generation start; by Claude after a phase close with `EXTERNAL REVIEW` for the phase's external coder runs (3.30).
 model: claude-fable-5-1[1m]
 effort: medium

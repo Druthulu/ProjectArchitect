@@ -50,7 +50,11 @@ class Fixture(unittest.TestCase):
                                                  "enabledPlugins": {"other@market": True, "old@market": False}})
         put(os.path.join(r, ".claude", "settings.json"), {"enabledPlugins": {"pa-watch@pa3": True}})
         put(os.path.join(cfg, "plugins", "installed_plugins.json"),
-            {"version": 2, "plugins": {"other@market": [{"version": "1.2.0", "installPath": "C:\\Users\\alice\\p"}]}})
+            {"version": 2, "plugins": {"other@market": [{"version": "1.2.0", "installPath": "C:\\Users\\alice\\p"}],
+                                       "pa@pa3": [{"version": "3.24.0"}]}})   # 3.32.15: a first install's record
+        for name in ("pa", "pa-watch"):     # the mod Claude Code loads in place
+            put(os.path.join(self.home, ".claude", "pa3", "mod", name, ".claude-plugin", "plugin.json"),
+                {"name": name, "version": "3.30.9"})
         now_ms = int(time.time() * 1000)
         put(os.path.join(r, ".run", "mod", "loop.json"), {
             "v": 1, "ownerSid": "sess1", "heartbeatAt": now_ms - 90000, "state": "running", "holds": ["talk"],
@@ -66,10 +70,16 @@ class Fixture(unittest.TestCase):
             {"type": "pa-expert", "parentId": "", "updatedAt": now_ms})
         put(os.path.join(r, ".run", "mod", "sess1", "shells.json"),
             {EXPERT: [{"id": "b1", "name": "run.sh", "at": now_ms, "type": "pa-expert"}]})
-        put(os.path.join(r, ".claude-state", "journal", "INDEX-2026-11.md"), "\n".join([
-            "%s | T3 | start | expert %s" % (iso(-3600), EXPERT),
-            "%s | T3 | interim | done: the change is in" % iso(-3000),
-            "%s | T3 | end | done" % iso(-1200)]) + "\n")
+        # 3.32.15: the task's journal entries themselves (the month index is retired): its start and first report
+        # packed into a day file, its end still in a day folder
+        jdir = os.path.join(r, ".claude-state", "journal")
+        day = time.strftime("%Y-%m-%d", time.localtime(time.time() - 3600))
+        put(os.path.join(jdir, day + ".md"), "# Journal %s (3 entries, rolled by tools/journal_rollup.py)\n" % day
+            + "## 100000-001r-T3-start\n---\nts: %s\n---\n\nexpert %s\n" % (iso(-3600), EXPERT)
+            + "## 100100-002r-T3-interim\n---\nts: %s\n---\n\ndone: the change is in\n" % iso(-3000)
+            + "## 100200-003r-dev-msg\n---\nts: %s\n---\n\nhow is it going?\n" % iso(-2900))
+        put(os.path.join(jdir, time.strftime("%Y-%m-%d"), "103000-004r-T3-end.md"),
+            "---\nts: %s\n---\n\ndone\n" % iso(-1200))
         proj = os.path.join(cfg, "projects", re.sub(r"[^A-Za-z0-9]", "-", r))
         put(os.path.join(proj, "sess1.jsonl"), json.dumps({"type": "user", "version": "2.1.300", "timestamp": iso(-3600),
                                                            "message": {"content": "hi"}}) + "\n")
@@ -102,10 +112,16 @@ class Fixture(unittest.TestCase):
         self.assertIn("old@market (off), other@market", t)
         self.assertIn("pa-watch@pa3", t)
         self.assertIn("other@market 1.2.0", t)
+        # 3.32.15: the loaded mod's versions, and the stale first-install record named as such
+        self.assertIn("- PA3 mod loaded (in place from `~/.claude/pa3/mod`): pa 3.30.9, pa-watch 3.30.9", t)
+        self.assertIn("pa@pa3 3.24.0", t)
+        self.assertIn("are Claude Code's record of their first install, never updated", t)
         self.assertIn("state running, holds ['talk'], ownerSid sess1", t)
         self.assertIn("queuedEdits 1", t)
         self.assertIn('Update marker: state "done"', t)
-        self.assertIn("| T3 | interim |", t)
+        self.assertIn("| T3 | interim | done: the change is in | .claude-state/journal/", t)
+        self.assertIn("| dev | msg | how is it going? |", t)
+        self.assertIn("| T3 | end | done | .claude-state/journal/%s/103000-004r-T3-end.md" % time.strftime("%Y-%m-%d"), t)
         self.assertRegex(t, r"T3 %s: started .* waited 30 min" % EXPERT)
         self.assertIn("#### pa-expert %s" % EXPERT, t)
         self.assertIn("agent %s: type pa-expert" % EXPERT, t)

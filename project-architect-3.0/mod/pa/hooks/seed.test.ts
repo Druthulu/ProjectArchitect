@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { LoopState } from '../types'
-import { type Entry, renderEntry, splitDay } from './journal'
+import { entriesOf, type Entry, renderEntry } from './journal'
 import { buildSeed, CARD_CAP_CHARS, cardSection, charTokens, CHARS_PER_TOKEN, localStamp, loopSection, MEMORY_CAP_TOKENS, memorySection, openQuestion, RECENT_EXCHANGES_TOKENS, RECORDS_TOKENS, SEED_BUDGET_TOKENS, tokenChars } from './seed'
 
 const D = '.claude-state/journal/2026-10-07'
@@ -135,9 +135,11 @@ describe('seed 3.23 T7', () => {
     const day = 86_400_000
     const live = [e(5, 'dev', 'Q2', 'S', T0 + day), e(6, 'claude', 'A2', 'S', T0 + day + 60_000)]
     const old = [e(1, 'dev', 'Q1', 'S', T0), e(2, 'claude', 'A1', 'S', T0 + 60_000), e(3, 'thinker', 'hm', 'S', T0 + 90_000)]
-    const text = `# Journal 2026-10-07 (3 entries, rolled by tools/journal_rollup.py)\n` +
-      old.map((x) => `## ${(x.path.split('/').at(-1) ?? '').replace(/\.md$/, '')}\n${renderEntry(x.meta, x.body)}`).join('')
-    const rolled = splitDay('2026-10-07', text)
+    // 3.32.15: a packed day's entries as the mod gets them, from journal_rollup.py entries
+    const stem = (x: Entry): string => (x.path.split('/').at(-1) ?? '').replace(/\.md$/, '')
+    const rolled = entriesOf(old.map((x) => JSON.stringify({
+      path: `.claude-state/journal/2026-10-07.md#${stem(x)}`, name: `2026-10-07/${stem(x)}.md`, text: renderEntry(x.meta, x.body),
+    })).join('\n'))
     expect(rolled.every((x) => x.path.startsWith('.claude-state/journal/2026-10-07.md#'))).toBe(true)
     expect(buildSeed([...rolled, ...live])).toBe(buildSeed([...old, ...live]))
     expect(buildSeed([...rolled, ...live])).toContain('Q1')

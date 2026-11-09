@@ -1,7 +1,7 @@
 ---
 name: pa-planner
 role: planner
-version: 3.32.7
+version: 3.32.8
 description: Drafts one generation or phase plan for Claude (the partner) in a PA 3.2 project, outside plan mode, following the pa-planning skill. Explores only through retrievers, whose research reports go to disk and are indexed and named per task in the plan. Writes the draft, lints it and returns a short report; Claude presents it. Never writes the plan files, never commits a plan, never talks to the developer.
 model: claude-opus-5-5[1m]
 effort: high

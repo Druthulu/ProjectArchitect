@@ -88,6 +88,17 @@ const ENTRIES = 30
 const THINKING = 10 // 3.28.1 T12: reasoning kept apart (TerrainDiffusion: 281 coder-thinking a day crowded out the notes)
 
 /**
+ * 3.32.15: what the mod's digest asks `journal_rollup.py entries` for: per `[match, last]` (Python regexes on the stem,
+ * isProgressEntry's split into notes and reasoning) the newest entries the digest can keep, each text cut at
+ * `PROGRESS_READ_CHARS` (its frontmatter and far more than ENTRY_CHARS of body).
+ */
+export const PROGRESS_READS: readonly (readonly [string, number])[] = [
+  ['^(?!.*-(?:claude|thinker)-note$).*-(?:note|interim)$', ENTRIES],
+  ['^(?!.*-(?:claude|thinker)-thinking$).*-thinking$', THINKING],
+]
+export const PROGRESS_READ_CHARS = 8_000
+
+/**
  * TASK_PROGRESS.md written by the mod at recovery (3.23 T5d1) when the hook's kill digest is absent: `git status
  * --short`, `git log --oneline <startSha>..HEAD`, what it waits on (3.28.1 T12), and the task's note and report entries
  * (`[name, text]`, their frontmatter `ts` at or after `since`), oldest first, the last 30, then its thinking, the last 10,

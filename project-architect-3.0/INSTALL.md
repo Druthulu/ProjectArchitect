@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.32.14: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.32.15: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -341,9 +341,9 @@ every step after detection, and
 `python tools/launch.py --state-json` in the repo prints the state the mod reads.
 `/bench` pulls the public bench series, compares each installed agent (`match`, `update`, `run-offered`,
 `lightly-altered`, `no-series`) and runs only on your word. Agent versions are `<phase>.<N>` (every agent became
-`3.10.N` at 3.10; a body change sets `<phase of the change>.<N+1>`, where N counts the agent's changes for its
-lifetime and never resets: `3.10.5` changed in 4.2 becomes `4.2.6`, never `4.2.1`),
-compared as integer tuples. Mark your own
+`3.10.N` at 3.10; a release that changes an agent sets `<phase of the release>.<N+1>` once, where N counts the
+releases that changed the agent over its lifetime and never resets: `3.10.5` changed in 4.2 becomes `4.2.6`, never
+`4.2.1`), compared as integer tuples. Mark your own
 edits on the `version:` line: `3.10.1+u1` for an edited PA3 agent (never overwritten when light), `user/1` for your own.
 When the interview is skipped (`--yes`, the `!` line, or no terminal), the `## Developer`
 section of `HOW_WE_WORK.md` takes the interview's defaults: your git `user.name`, the folder

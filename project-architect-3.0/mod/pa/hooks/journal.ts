@@ -1,6 +1,7 @@
-// Pure helpers of the journal (design.md "The journal"): entry paths, entry frontmatter and body, and the monthly
-// index. One Markdown file per entry under `.claude-state/journal/<YYYY-MM-DD>/`; the watcher (`mod/pa-watch`) copies
-// the naming and pins it with the same test vectors.
+// Pure helpers of the journal (design.md "The journal"): entry paths, entry frontmatter and body, and the output of
+// its reader (`tools/journal_rollup.py entries`, 3.32.15). One Markdown file per entry under
+// `.claude-state/journal/<YYYY-MM-DD>/`, a finished day packed into `<YYYY-MM-DD>.md`; the watcher (`mod/pa-watch`)
+// copies the naming and pins it with the same test vectors. 3.32.15: no month index (GitHub #15).
 
 export const JOURNAL_DIR = '.claude-state/journal'
 
@@ -46,46 +47,37 @@ export function parseEntryPath(path: string): EntryName | null {
   return { date: m[1], time: m[2], seq: Number(m[3]), writer: m[4] as Writer | 'x', who: m[5], kind: m[6] }
 }
 
-/** A rolled day's file `.claude-state/journal/<date>.md` (tools/journal_rollup.py). */
-export function dayFilePath(date: string): string {
-  return `${JOURNAL_DIR}/${date}.md`
-}
-
-const STEM = /^[0-9]{6}-[0-9]{3,}[rwx]-(?:T[0-9]+|[a-z]+)-[a-z]+$/ // 3.32.9: as journal_rollup.py STEM_RE
-
 /**
- * The entries of a rolled day file (journal_rollup.py split_day): each `## <stem>` heading starts one, its text the
- * entry file unchanged; paths `.claude-state/journal/<date>.md#<stem>`.
+ * 3.32.15: the journal's reader, `tools/journal_rollup.py entries` (its docstring). The mod reads no packed day file
+ * itself: `$.fs` refuses a file over 4 MiB, a busy day's passes that (GitHub #15: 7.4 MB; bfm-decomp: 13.4 MB), and
+ * splitting one in the hooks worker is its time.
  */
-export function splitDay(date: string, text: string): Entry[] {
-  return daySections(text).map(([stem, t]) => ({ path: `${dayFilePath(date)}#${stem}`, ...(parseEntry(t) ?? { meta: {}, body: t }) }))
-}
+export const ENTRIES_TOOL = 'tools/journal_rollup.py'
 
-/** 3.32.12: a rolled day file's `[stem, text]` sections, each text the entry file unchanged (splitDay parses them; the
- * recovery digest reads them raw). */
-export function daySections(text: string): [string, string][] {
-  const out: [string, string][] = []
-  let stem = ''
-  let buf: string[] = []
-  const flush = (): void => {
-    if (stem !== '') out.push([stem, buf.join('\n')])
+/** One line of `journal_rollup.py entries`: the entry's path (live `<J>/<date>/<stem>.md` or packed
+ * `<J>/<date>.md#<stem>`), its name `<date>/<stem>.md` and its text unchanged. */
+export type EntryLine = { path: string; name: string; text: string }
+
+/** 3.32.15: the lines of `journal_rollup.py entries`; a line that is not one is skipped. */
+export function entryLinesOf(stdout: string): EntryLine[] {
+  const out: EntryLine[] = []
+  for (const line of stdout.split(/\r?\n/)) {
+    if (line.trim() === '') continue
+    try {
+      const o = JSON.parse(line) as Partial<Record<keyof EntryLine, unknown>>
+      if (typeof o.path === 'string' && typeof o.name === 'string' && typeof o.text === 'string') {
+        out.push({ path: o.path, name: o.name, text: o.text })
+      }
+    } catch {
+      // not a line of the reader's
+    }
   }
-  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
-    const m = /^## (\S+)$/.exec(line)
-    if (m && STEM.test(m[1])) {
-      flush()
-      stem = m[1]
-      buf = []
-    } else if (stem !== '') buf.push(line)
-  }
-  flush()
   return out
 }
 
-/** `.claude-state/journal/INDEX-<YYYY-MM>.md`. */
-export function indexPath(month: string): string {
-  if (!/^[0-9]{4}-[0-9]{2}$/.test(month)) throw new Error(`journal: bad month ${JSON.stringify(month)}`)
-  return `${JOURNAL_DIR}/INDEX-${month}.md`
+/** 3.32.15: those lines as entries (frontmatter and body). */
+export function entriesOf(stdout: string): Entry[] {
+  return entryLinesOf(stdout).map(l => ({ path: l.path, ...(parseEntry(l.text) ?? { meta: {}, body: l.text }) }))
 }
 
 export type Usage = { input: number; cacheRead: number; cacheWrite: number; output: number }
@@ -178,56 +170,6 @@ export function firstLine(body: string): string {
   )
 }
 
-export type IndexLine = { ts: string; who: string; kind: string; first: string; path: string }
-
-function escapeCell(text: string): string {
-  return text.replace(/\\/g, '\\\\').replace(/\|/g, '\\|')
-}
-
-function unescapeCell(text: string): string {
-  return text.replace(/\\([\\|])/g, '$1')
-}
-
-function byTsThenPath(a: { ts: string; path: string }, b: { ts: string; path: string }): number {
-  if (a.ts !== b.ts) return a.ts < b.ts ? -1 : 1
-  return a.path < b.path ? -1 : a.path > b.path ? 1 : 0
-}
-
-/** `ts | who | kind | first line (≤ 80 chars, pipes escaped) | path`, one line per entry, sorted by ts then path. */
-export function buildIndex(entries: Entry[]): string {
-  const rows = entries.map((e) => {
-    const name = parseEntryPath(e.path)
-    return {
-      ts: e.meta.ts ?? '',
-      who: name?.who ?? '?',
-      kind: name?.kind ?? '?',
-      first: firstLine(e.body).slice(0, 80),
-      path: e.path,
-    }
-  })
-  rows.sort(byTsThenPath)
-  return rows.map((r) => `${r.ts} | ${r.who} | ${r.kind} | ${escapeCell(r.first)} | ${r.path}\n`).join('')
-}
-
-/** The lines of an index; lines that are not index lines are skipped. */
-export function parseIndex(text: string): IndexLine[] {
-  const out: IndexLine[] = []
-  for (const line of text.replace(/\r\n/g, '\n').split('\n')) {
-    const m = /^([^|]*) \| ([^|]*) \| ([^|]*) \| (.*) \| ([^|]+)$/.exec(line)
-    if (!m) continue
-    out.push({ ts: m[1], who: m[2], kind: m[3], first: unescapeCell(m[4]), path: m[5] })
-  }
-  return out
-}
-
-/** True only when the index lists exactly these paths, each once. */
-export function indexAgrees(indexText: string, paths: string[]): boolean {
-  const listed = parseIndex(indexText).map((l) => l.path)
-  const want = new Set(paths)
-  if (listed.length !== want.size || new Set(listed).size !== listed.length) return false
-  return listed.every((p) => want.has(p))
-}
-
 const two = (n: number): string => String(n).padStart(2, '0')
 
 /** `[YYYY-MM-DD, HHMMSS]` of `ms` in local time, as the watcher stamps its entries. */
@@ -237,25 +179,6 @@ export function stamp(ms: number): [string, string] {
     `${String(d.getFullYear())}-${two(d.getMonth() + 1)}-${two(d.getDate())}`,
     `${two(d.getHours())}${two(d.getMinutes())}${two(d.getSeconds())}`,
   ]
-}
-
-/** The paths an index does not list yet: the entries to read before `mergeIndex`. */
-export function unindexed(indexText: string, paths: string[]): string[] {
-  const listed = new Set(parseIndex(indexText).map((l) => l.path))
-  return paths.filter((p) => !listed.has(p))
-}
-
-/** The index of exactly `paths`: an old line is kept for a path it lists, `read` supplies the rest. */
-export function mergeIndex(indexText: string, paths: string[], read: Entry[]): string {
-  const want = new Set(paths)
-  const byPath = new Map<string, Entry>()
-  for (const l of parseIndex(indexText)) {
-    if (want.has(l.path)) byPath.set(l.path, { path: l.path, meta: { ts: l.ts }, body: l.first })
-  }
-  for (const e of read) {
-    if (want.has(e.path)) byPath.set(e.path, e)
-  }
-  return buildIndex([...byPath.values()])
 }
 
 /** 3.31 T2b: `records.py index`'s TOPICS.md, the path of. */

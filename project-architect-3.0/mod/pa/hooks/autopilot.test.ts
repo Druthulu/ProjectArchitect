@@ -46,13 +46,71 @@ type W = {
   mtimes?: Record<string, number>
   /** 3.32.1 T5: the next spawns' refusals, in order (each one taken); empty or absent: spawns succeed. */
   spawnDeny?: string[]
+  /** 3.32.15: the journal reads (`journal_rollup.py entries`), answered from the files, kept apart from runs. */
+  entryReads: string[][]
+  /** 3.32.15: every path the mod read. */
+  reads: string[]
+}
+
+/** 3.32.15: `tools/journal_rollup.py entries` over the files, as the Python tool answers: both forms (a folder's copy of
+ * a stem in both), name order, ASCII JSON lines; --since, --after, --match, --last, --budget-chars, --max-chars. */
+function journalEntries(files: ReadonlyMap<string, string>, argv: readonly string[]): { exitCode: number; stdout: string; stderr: string } {
+  const opt = (k: string): string => {
+    const eq = argv.find(a => a.startsWith(`${k}=`))
+    const i = argv.indexOf(k)
+    return eq !== undefined ? eq.slice(k.length + 1) : i < 0 ? '' : argv[i + 1] ?? ''
+  }
+  const [since, after, re] = [opt('--since'), opt('--after'), new RegExp(opt('--match'))]
+  const [last, budget, max] = [Number(opt('--last')) || 0, Number(opt('--budget-chars')) || 0, Number(opt('--max-chars')) || 0]
+  const STEM_RE = /^[0-9]{6}-[0-9]{3,}[rwx]-(?:T[0-9]+|[a-z]+)-[a-z]+$/
+  const got = new Map<string, string>()
+  const put = (date: string, stem: string, path: string, text: string): void => {
+    if (date >= since && (after === '' || `${date}/${stem}` >= after) && re.test(stem)) {
+      got.set(`${date}/${stem}`, JSON.stringify({ path, name: `${date}/${stem}.md`, text: max > 0 ? text.slice(0, max) : text }))
+    }
+  }
+  const at = (p: string, form: RegExp): RegExpExecArray | null => (p.startsWith(`${JDIR}/`) ? form.exec(p.slice(JDIR.length + 1)) : null)
+  for (const [p, text] of files) { // packed days first: a folder's copy of a stem replaces its packed one
+    const m = at(p, /^(\d{4}-\d{2}-\d{2})\.md$/)
+    let stem = ''
+    let buf: string[] = []
+    const flush = (): void => {
+      if (m && stem !== '') put(m[1], stem, `.claude-state/journal/${m[1]}.md#${stem}`, buf.join('\n'))
+    }
+    for (const line of m ? text.split('\n') : []) {
+      const h = /^## (\S+)$/.exec(line)
+      if (h && STEM_RE.test(h[1])) {
+        flush()
+        stem = h[1]
+        buf = []
+      } else if (stem !== '') buf.push(line)
+    }
+    flush()
+  }
+  for (const [p, text] of files) {
+    const m = at(p, /^(\d{4}-\d{2}-\d{2})\/([^/]+)\.md$/)
+    if (m && STEM_RE.test(m[2])) put(m[1], m[2], `.claude-state/journal/${m[1]}/${m[2]}.md`, text)
+  }
+  let lines = [...got.keys()].sort().map(k => got.get(k) ?? '')
+  lines = last > 0 ? lines.slice(-last) : lines
+  if (budget > 0) {
+    let total = 0
+    const kept: string[] = []
+    for (const l of [...lines].reverse()) {
+      if (kept.length > 0 && total + l.length + 1 > budget) break
+      kept.unshift(l)
+      total += l.length + 1
+    }
+    lines = kept
+  }
+  return { exitCode: 0, stdout: lines.map(l => `${l}\n`).join(''), stderr: '' }
 }
 
 function world(on: On, files: Record<string, string>, env: Record<string, string> = {}): W {
   const w: W = {
     // 3.29.1 T8: the start hook's check has answered (no update) unless a test says otherwise
     files: new Map(Object.entries({ [`${ROOT}/.claude/pa.json`]: PA, [`${ROOT}/${PLAN}`]: '# plan\n', [`${ROOT}/${START_CHECK}`]: START_DONE, ...files })),
-    runs: [], spawns: [], sends: [], list: [],
+    runs: [], spawns: [], sends: [], list: [], entryReads: [], reads: [],
     answer: argv => defaultAnswer(argv),
   }
   // T11-fix2: a seeded running loop.json's agent is listed (idle) unless a test clears the list: absent, it counts as killed.
@@ -66,6 +124,7 @@ function world(on: On, files: Record<string, string>, env: Record<string, string
   on('session.id', async () => ({ value: 'S1' }))
   on('session.version', async () => ({ value: { version: '2.1.293', base: '2.1.293' } }))
   on('fs.read', async ($, e) => {
+    w.reads.push(norm(e.path))
     const t = w.files.get(norm(e.path))
     return t === undefined ? { deny: `ENOENT ${norm(e.path)}` } : { value: t }
   })
@@ -97,6 +156,10 @@ function world(on: On, files: Record<string, string>, env: Record<string, string
   on('session.start', async () => ({ cwd: ROOT }))
   on('classic.SessionStart', async () => ({}))
   on('process.run', async ($, e) => {
+    if (e.argv[1] === 'tools/journal_rollup.py' && e.argv[2] === 'entries') {
+      w.entryReads.push([...e.argv])
+      return { value: journalEntries(w.files, e.argv) }
+    }
     if (e.argv[1] !== '-c' && e.argv[1] !== 'tools/journal_rollup.py') {
       w.runs.push([...e.argv]) // the router's prune (python -c) and journal roll-up (3.23 T7) are not the loop's
     }
@@ -1604,6 +1667,14 @@ describe('recovery and loop ownership (T5d1)', () => {
     expect(digest).toContain('Briefing the coder for add.py, from the packed day.')
     expect(digest).toContain('The import path is wrong; fixing it.')
     expect(recovers(w).some(t => t.includes('written by the mod (2 journal entries)'))).toBe(true)
+    // 3.32.15: through journal_rollup.py entries, the newest notes and reasoning only; the day file never read here (a
+    // busy day's passes $.fs's 4 MiB: GitHub #15)
+    const [d0, t0] = stamp(since)
+    expect(w.entryReads.map(r => r.slice(2).join(' '))).toEqual([
+      `entries --since ${d0} --after ${d0}/${t0} --match=^(?!.*-(?:claude|thinker)-note$).*-(?:note|interim)$ --last 30 --max-chars 8000`,
+      `entries --since ${d0} --after ${d0}/${t0} --match=^(?!.*-(?:claude|thinker)-thinking$).*-thinking$ --last 10 --max-chars 8000`,
+    ])
+    expect(w.reads.filter(p => /\/journal\/\d{4}-\d{2}-\d{2}\.md$/.test(p))).toEqual([])
   })
 
   test('continue: delivered and the expert seen running: no respawn; the run ends only after its next turn', async ($, on) => {

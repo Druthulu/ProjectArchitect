@@ -542,6 +542,8 @@ export function priceCacheOf(stdout: string, model: string): PriceCache | null {
 
 /** The seed reads dev msgs and partner answers only (`claude`, or `partner` before 3.22 T8f); live or rolled paths (3.23 T7). */
 export const isSeedName = (name: string): boolean => /-dev-msg(\.md)?$|-(claude|partner)-answer(\.md)?$/.test(name)
+/** 3.32.15: the stems the seed asks `journal_rollup.py entries` for (a Python regex): isSeedName's and the records. */
+export const SEED_MATCH = '-dev-msg$|-(?:claude|partner)-answer$|-record$'
 
 export const framedOther = (kind: string, text: string): string => `A ${kind} prompt arrived: ${text}`
 
