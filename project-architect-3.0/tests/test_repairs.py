@@ -358,6 +358,38 @@ class ResidualOffMainTest(RepairsCase):
         self.assertEqual(repairs.pop_notice(), [])
 
 
+TA = repairs.STEP_TURN_ACCOUNTS
+
+
+class TurnAccountsTest(RepairsCase):
+    """3.32.13: turns booked with no account (an agent cut off at its session's end) get their session's account at
+    that time, once; an external coder's `ext:` account never counts, and a session with none anywhere is left."""
+
+    def acct(self, msg):
+        return self.conn.execute("SELECT account FROM turns WHERE msg_id=?", (msg,)).fetchone()[0]
+
+    def test_filled_from_the_session_once(self):
+        self.turn("s1", "a1", A, "2026-11-08T01:00:00.000Z")
+        self.turn("s1", "x1", None, "2026-11-08T02:00:00.000Z", run_id="agent-x")    # after a1: A
+        self.turn("s1", "b1", B, "2026-11-08T03:00:00.000Z")                         # the session moved to B
+        self.turn("s1", "x2", None, "2026-11-08T04:00:00.000Z", run_id="agent-x")    # after b1: B
+        self.turn("s2", "y0", None, "2026-11-08T00:30:00.000Z", run_id="agent-y")    # before any: the first after
+        self.turn("s2", "e1", "ext:openrouter-deepseek", "2026-11-08T00:40:00.000Z", run_id="ext-z")
+        self.turn("s2", "y1", A, "2026-11-08T01:00:00.000Z")
+        self.turn("s3", "w0", None, "2026-11-08T05:00:00.000Z", run_id="agent-w")    # no turn with one: the session's
+        db.upsert_session(self.conn, {"session_id": "s3", "account": B})
+        self.turn("s4", "z1", None, "2026-11-08T05:00:00.000Z", run_id="agent-z")    # none anywhere: left
+        self.assertEqual(repairs.detect_turn_accounts(self.conn, self.cfg), {"turns": 5})
+        res = repairs.run(self.cfg, conn=self.conn)
+        self.assertEqual(res[TA], {"turns": 4, "sessions": 3})
+        self.assertEqual([self.acct(m) for m in ("x1", "x2", "y0", "w0", "z1")], [A, B, A, B, None])
+        self.assertEqual(self.acct("e1"), "ext:openrouter-deepseek")
+        self.assertTrue(any(TA in n for n in repairs.pop_notice()))
+        self.assertIn('"turns": 4', db.get_meta(self.conn, "repair." + TA))
+        # stamped: a second run does nothing
+        self.assertNotIn(TA, repairs.run(self.cfg, conn=self.conn))
+
+
 class RunnerTest(RepairsCase):
     def test_request_spawns_once_while_locked(self):
         spawned = []

@@ -2,6 +2,15 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.13 — Interrupted agents count on your account
+
+- The Session line no longer shows ?/? for a window after you interrupt Claude or an expert. An agent still running
+  when its session ended was booked with no account, so the session seemed to cost more in that window than its whole
+  account, which the line shows as ?/?. Its cost now goes to the account the session is on.
+- A one-time repair runs after the update: turns already booked without an account go to the account their session
+  was on at the time, and the usage summary is rebuilt, so each account's weekly figures include them. On one machine
+  that was 261 turns; the Session line's 7d figure was right again at once.
+
 ## 3.32.12 — Updates that say they loaded, and notes kept across midnight
 
 - After an update installs on its own at a session start, the restart now always opens with "Project Architect

@@ -170,6 +170,15 @@ def _interrupt_running(conn, sid, inp=None):
             (sid, sid)).fetchall()
     except Exception:
         return
+    # 3.32.13: booked to the session's account, as SubagentStop, the pending locks and the refresh book theirs; it was
+    # left out, so an agent cut off at a session end (a Claude the developer interrupted) cost its session but no
+    # account, and the Session line's window check printed ?/? (bfm, 2026-11-08: 108 turns, $4.63)
+    try:
+        from .. import accounts
+
+        account, _src = accounts.account_for(sid)
+    except Exception:
+        account = None
     for row in rows:
         rid = row["run_id"]
         path = row["transcript_path"]
@@ -186,7 +195,7 @@ def _interrupt_running(conn, sid, inp=None):
                 from .. import runs
 
                 totals = runs.lock_run_from_transcript(
-                    conn, rid, path, session_id=sid,
+                    conn, rid, path, session_id=sid, account=account,
                     status="interrupted", lock_source="session_end")
                 if totals is not None:
                     continue           # lock_run_from_transcript wrote the row

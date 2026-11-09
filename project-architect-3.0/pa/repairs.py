@@ -18,7 +18,9 @@ switch details and the savings);
 ``3.30.8/handback-answer`` (helpers voided since CC 2.1.285 for an answer the ledger could not read get
 their hand-back reports counted; rows filed as their own parent move under their session);
 ``3.32.8/records-read-credit`` (the credit rows of ``tools/records.py`` journal reads go, and their runs'
-savings are rewritten: each read had counted the whole journal as typed output and as carried context).
+savings are rewritten: each read had counted the whole journal as typed output and as carried context);
+``3.32.13/turn-accounts`` (turns booked with no account, an agent cut off at its session's end, get their
+session's account at that time, and the summary is rebuilt).
 
 A step is stamped in meta ``repair.<id>`` (``fresh`` on a new ledger, else ``{ts, result|counts}``)
 and never runs again; a failing step logs ``repair_step_failed`` and stays unstamped, but
@@ -40,6 +42,7 @@ STEP_SAVINGS_ACCOUNT = "3.15.2/savings-account"
 STEP_RESIDUAL_OFF_MAIN = "3.24/residual-off-main"
 STEP_HANDBACK_ANSWER = "3.30.8/handback-answer"
 STEP_RECORDS_READ = "3.32.8/records-read-credit"
+STEP_TURN_ACCOUNTS = "3.32.13/turn-accounts"
 _LOCK_STALE_S = 1800           # any lock older than 30 min is stale
 _START_GRACE_S = 30            # a requester's lock outlives the requester while the child starts
 
@@ -507,6 +510,59 @@ def apply_records_read(conn, cfg, plan):
     return {"rows": rows, "runs": len(runs), "sessions": len(sids)}
 
 
+# --------------------------------------------------------------------------- step: 3.32.13/turn-accounts
+#
+# Until 3.32.13 the SessionEnd hook booked an agent still running at its session's end (a Claude the developer
+# interrupted, an expert cut off) with no account: the other three lock paths pass the session's, this one left it
+# out. Those turns cost their session but no account, so a session could cost more in a window than its whole account,
+# and the Session line printed ?/? (bfm-decomp, 2026-11-08: two interrupted Claude runs, 108 turns, $4.63). Each such
+# turn gets its session's account at that time: the nearest earlier turn of the session with an account, else the
+# nearest later one, else the session's own; an external coder's `ext:` account never counts. A turn whose session has
+# no account anywhere stays as it is. Each update stands alone (the ledger autocommits, as in the 3.30.8 step).
+
+_NO_ACCOUNT_SQL = " FROM turns WHERE account IS NULL AND session_id IS NOT NULL"
+
+
+def detect_turn_accounts(conn, cfg):
+    n = conn.execute("SELECT COUNT(*)" + _NO_ACCOUNT_SQL).fetchone()[0]
+    return {"turns": n} if n else None
+
+
+def _account_at(known, ts):
+    """The account of the last ``(ts, account)`` row of ``known`` (sorted) at or before ``ts``, else the first one."""
+    import bisect
+
+    if not known:
+        return None
+    i = bisect.bisect_right([k[0] or "" for k in known], ts or "")
+    return known[i - 1][1] if i > 0 else known[0][1]
+
+
+def apply_turn_accounts(conn, cfg, plan):
+    """Give each account-less turn its session's account (above), then rebuild the summary."""
+    from . import summary
+
+    sids = [r[0] for r in conn.execute("SELECT DISTINCT session_id" + _NO_ACCOUNT_SQL).fetchall()]
+    filled = touched = 0
+    for sid in sids:
+        known = conn.execute("SELECT ts, account FROM turns WHERE session_id=? AND account IS NOT NULL"
+                             " AND account NOT LIKE 'ext:%' ORDER BY ts", (sid,)).fetchall()
+        row = conn.execute("SELECT account FROM sessions WHERE session_id=?", (sid,)).fetchone()
+        own = row[0] if row and row[0] and not str(row[0]).startswith("ext:") else None
+        n = 0
+        for rowid, ts in conn.execute("SELECT rowid, ts FROM turns WHERE session_id=? AND account IS NULL",
+                                      (sid,)).fetchall():
+            acct = _account_at(known, ts) or own
+            if acct:
+                n += conn.execute("UPDATE turns SET account=? WHERE rowid=? AND account IS NULL",
+                                  (acct, rowid)).rowcount
+        filled += n
+        touched += 1 if n else 0
+    if filled:
+        summary.rebuild(conn, cfg)
+    return {"turns": filled, "sessions": touched}
+
+
 STEPS = [
     (STEP_ACCOUNT_FALLBACK, detect_account_fallback, apply_account_fallback),
     (STEP_BATCH_GAP, detect_batch_gap, apply_batch_gap),
@@ -514,6 +570,7 @@ STEPS = [
     (STEP_RESIDUAL_OFF_MAIN, detect_residual_off_main, apply_residual_off_main),
     (STEP_HANDBACK_ANSWER, detect_handback_answer, apply_handback_answer),
     (STEP_RECORDS_READ, detect_records_read, apply_records_read),
+    (STEP_TURN_ACCOUNTS, detect_turn_accounts, apply_turn_accounts),
 ]
 
 
@@ -522,7 +579,8 @@ _NOTICE_TEXT = {STEP_ACCOUNT_FALLBACK: "re-filed or cleared",
                 STEP_SAVINGS_ACCOUNT: "re-filed to the switch's account, savings rewritten",
                 STEP_RESIDUAL_OFF_MAIN: "(residual rows moved off the main run to unattributed)",
                 STEP_HANDBACK_ANSWER: "(helpers' hand-back reports counted, savings rewritten)",
-                STEP_RECORDS_READ: "(journal reads no longer counted as savings, savings rewritten)"}
+                STEP_RECORDS_READ: "(journal reads no longer counted as savings, savings rewritten)",
+                STEP_TURN_ACCOUNTS: "(turns with no account booked to their session's account)"}
 
 
 def step_ids():

@@ -2127,6 +2127,36 @@ class RefreshGrownRunsTest(LedgerCase):
         self.assertEqual(row[0][1], 2)                       # turns booked
         self.assertEqual(row[0][2], 1)                       # locked from the transcript
 
+    def test_interrupted_run_booked_to_the_sessions_account(self):
+        """3.32.13: an agent cut off at a session end is booked to the session's account, as SubagentStop books its
+        own; it was left out (bfm: the session cost more than its account in the window, and the Session line
+        printed ?/?)."""
+        from pa import fsutil
+        from pa.hooks import session_end
+
+        stamp = os.path.join(self.ledger, "state", "accounts", "%s.json" % self.SID)
+        os.makedirs(os.path.dirname(stamp), exist_ok=True)
+        fsutil.atomic_write_json(stamp, {"session_id": self.SID, "account": "me@example.com",
+                                         "source": "auth", "ts": "2026-09-12T20:00:00Z"}, indent=1)
+        conn = hooks.open_db()
+        agent_path = os.path.join(self.projects, "slug", self.SID, "subagents",
+                                  "agent-%s.jsonl" % self.AGENT)
+        try:
+            db.upsert_agent_run(conn, {"run_id": self.AGENT, "session_id": self.SID,
+                                       "status": "running", "kind": "partner",
+                                       "transcript_path": agent_path})
+        finally:
+            db.close(conn)
+        self.write_transcript(agent_path, [
+            usage_line("msg_i1", inp=1000, write=1000, read=0, out=500, ts="2026-09-12T20:00:00.000Z"),
+            usage_line("msg_i2", inp=1000, write=0, read=2000, out=500, ts="2026-09-12T20:01:00.000Z")])
+        main_path = os.path.join(self.projects, "slug", self.SID + ".jsonl")
+        self.write_transcript(main_path, [usage_line("msg_m1", inp=2000, write=1000, read=0, out=200)])
+        session_end.run({"session_id": self.SID, "cwd": self.root, "reason": "other",
+                         "transcript_path": main_path}, self.cfg)
+        accts = self.rows("SELECT DISTINCT account FROM turns WHERE run_id=?", (self.AGENT,))
+        self.assertEqual([a[0] for a in accts], ["me@example.com"])
+
     def test_interrupted_run_relocked_completed_by_subagent_stop(self):
         """T7.1: a resumed run's real SubagentStop relocks 'interrupted' as 'completed'."""
         from pa.hooks import subagent_stop
