@@ -2135,6 +2135,22 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertRegex(shells[0], r"shell bake_rest\.sh · running 9m 0[4-6]s · coder waiting$")
         self.assertEqual(shells[1], "  ✗ shell make · ended exit 2 · coder waiting")
 
+    def test_a_red_shell_leaves_two_minutes_after_it_ended(self):
+        """3.32.14: as the mod's band (3.32.11): a shell that ended badly stays red for 2 minutes after its end, then
+        goes; one with no end time stays until its agent reports, as before (bfm: a red row 20 minutes on)."""
+        self.make_project(plan=self.PLAN_SIX, status={
+            "task": "T3", "phase": "36", "started": "2026-09-12T20:58:00Z"})
+        now_ms = time.time() * 1000
+        write_json(os.path.join(self.project, ".run", "mod", self.sid, "shells.json"), {
+            "E1": [{"id": "b1", "name": "recent.sh", "at": now_ms - 300000, "type": "pa-expert", "exit": 2,
+                    "ended": now_ms - 60000},
+                   {"id": "b2", "name": "old.sh", "at": now_ms - 1500000, "type": "pa-expert", "exit": 2,
+                    "ended": now_ms - 1200000},
+                   {"id": "b3", "name": "noend.sh", "at": now_ms - 1500000, "type": "pa-expert", "exit": 1}]})
+        shells = [ln for ln in self.lines() if " shell " in ln]
+        self.assertEqual(shells, ["  ✗ shell recent.sh · ended exit 2 · expert waiting",
+                                  "  ✗ shell noend.sh · ended exit 1 · expert waiting"])
+
     def test_an_external_coder_shell_shows_as_the_coder(self):
         """3.30: a `pa_ext.py run` shell (`external <label>`) is drawn as pa-coder with its model (facts file);
         3.30.3: its context in place of the waiting expert, an ended one's last."""

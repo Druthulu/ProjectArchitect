@@ -2014,13 +2014,15 @@ def _task_block(payload, ctx, cfg, sl, now):
 
 
 SHELL_SPINNER = ("◐", "◓", "◑", "◒")
+RED_ROW_S = 120     # 3.32.14: as the mod's band (card.ts RED_ROW_MS): a red shell goes 2 minutes after it ended
 
 
 def _shell_lines(ctx, now, max_w, colors):
     """3.28.1 T15: one line per background shell of an expert or a coder (the mod's
     ``.run/mod/<sid>/shells.json``, pa-watch's record from the Bash call to its completion
     notice): ``◐ shell <name> · running 9m 05s · coder waiting``; one that ended badly
-    ``✗ shell <name> · ended exit <n> · coder waiting`` until its agent reports. A
+    ``✗ shell <name> · ended exit <n> · coder waiting`` until its agent reports, or (3.32.14, as the mod's band
+    since 3.32.11) 2 minutes after it ended, by pa-watch's ``ended``; a record without one stays as before. A
     ``pa_ext.py run`` shell (``external <label>``) is the coder it runs (3.30):
     ``◐ pa-coder <label> · <model> · running … · <ctx> tokens``, the model and (3.30.3) the
     context, as Claude Code shows a subagent's, from its facts file. The spinner's frame
@@ -2053,6 +2055,9 @@ def _shell_lines(ctx, now, max_w, colors):
             else:
                 who = "shell " + name
             if isinstance(s.get("exit"), (int, float)):
+                ended = _num(s.get("ended"), None)
+                if ended is not None and now - ended / 1000.0 >= RED_ROW_S:
+                    continue        # 3.32.14: gone 2 minutes after its shell ended (bfm: red 20 minutes on)
                 text = "  ✗ %s · ended exit %d%s" % (who, int(s["exit"]), tail)
                 color = RED
             else:

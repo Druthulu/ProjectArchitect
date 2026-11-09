@@ -2,6 +2,12 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.14 — Red shell lines leave the statusline too
+
+- A background shell that failed now also leaves the statusline 2 minutes after it ended. 3.32.11 did this for the
+  band only, so the statusline's own line for the shell stayed red until its agent reported, sometimes for the
+  rest of a long task.
+
 ## 3.32.13 — Interrupted agents count on your account
 
 - The Session line no longer shows ?/? for a window after you interrupt Claude or an expert. An agent still running
