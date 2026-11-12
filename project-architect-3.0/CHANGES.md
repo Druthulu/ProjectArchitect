@@ -2,6 +2,20 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.16 — Account switches add up, and Fable 5.2
+
+- The Session line no longer shows ?/? after you sign in to another account in the middle of a session. The
+  session's usage in a window still counted its turns on the account it had left, so it seemed to cost more than its
+  new account's whole window. It now counts only its turns on the account it is on.
+- An agent that was running when you switched accounts now books each of its turns to the account it ran on. Its
+  whole cost used to go to the account the session was on when the agent finished.
+- Plans put an inbox item's id at the end of a task's title, `real returns for the s32 functions (I4)`, so a task
+  list that shows only the start of a title shows the work, not just `I4`.
+- Fable 5.2 replaces Fable 5.1 for the hard expert and the auditor on Ultra (at medium effort, as before) and for the
+  deep-thinker you ask for by name, which now runs at xhigh instead of max. Fable 5.2 costs 20% less per token.
+- PA3 now knows Fable 5.2's prices. Since Claude Code 2.1.321 made `/model fable` mean Fable 5.2, PA3 priced those
+  turns as Fable 5, with cache reads five times too high; turns from now on are priced right.
+
 ## 3.32.15 — Busy projects keep their mod, and busy days stay in reach
 
 - On a busy project, PA3's mod no longer switches itself off seconds after each start. It kept a monthly index of

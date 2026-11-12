@@ -1283,10 +1283,12 @@ def sessions_block(conn, cfg=None, hours=SESSION_WINDOW_H, accounts=None):
                 started_iso = _iso(started_at)
                 if not started_iso:
                     continue
+                # 3.32.16: only the session's turns on this account: a session that switched accounts mid-window
+                # counted the old account's turns too, beat its account's sum and printed ?/? (bfm-decomp, 2026-11-12)
                 crow = conn.execute(
                     "SELECT COALESCE(SUM(cost_usd), 0) FROM turns "
-                    "WHERE kind='api' AND session_id=? AND ts>=?",
-                    (sid, started_iso)).fetchone()
+                    "WHERE kind='api' AND session_id=? AND account=? AND ts>=?",
+                    (sid, acct, started_iso)).fetchone()
                 cu = float(crow[0] or 0.0) if crow else 0.0
                 # 3.32.8: the account's cost in the window summed now, beside the session's: the windows group's
                 # ledger_cost_in_window is rebuilt only when the usage reading changes, so a later turn made the

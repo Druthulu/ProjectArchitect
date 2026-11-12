@@ -16,7 +16,7 @@ Public:
 
 Matching rule (kept identical to the delivered analyzers): the normalized model
 id is searched for each ``model_key`` in priority order, so the most specific
-key wins -- ``fable-5-1`` before ``fable-5``, ``sonnet-5-5`` before ``sonnet-5``
+key wins -- ``fable-5-2`` and ``fable-5-1`` before ``fable-5``, ``sonnet-5-5`` before ``sonnet-5``
 before ``sonnet``, ``opus-4-6`` before ``opus``.  Within a key the latest row
 with ``effective_from <= at`` applies (``at=None`` means "current prices").
 
@@ -37,11 +37,14 @@ its ``PROMPT_TIERS`` rates once that request's own prompt (input + cache write
 
 import re
 
-PRICES_VERSION = "2026-10"     # was "2026-09"; 3.22: haiku-5-5 + its prompt tier, sonnet-5-5 read 0.10
+PRICES_VERSION = "2026-11"     # was "2026-10"; 3.32.16: fable-5-2 (was "2026-09"; 3.22: haiku-5-5, sonnet-5-5 read 0.10)
 
 # (model_key, priority, effective_from, input, write_5m, write_1h, read, output, tokenizer, window)
 # window "1m" marks the 1M-context models (savings reads it as the context size).
 PRICES = [
+    # 3.32.16: Fable 5.2 (released 2026-11-09; Claude Code 2.1.321's `fable`): without its row it matched "fable-5"
+    # ($10/$50, reads $1.00). Pricing: $8/$40, 5m writes $10, 1h writes $16, reads $0.20.
+    ("fable-5-2",  11, "2026-11-09",  8.0, 10.00, 16.0, 0.20, 40.0, "new", "1m"),
     ("fable-5-1",  10, "2026-09-01", 10.0, 12.50, 20.0, 0.25, 50.0, "new", "1m"),
     ("fable-5",    20, "2026-09-01", 10.0, 12.50, 20.0, 1.00, 50.0, "new", None),
     ("opus-4-6",   30, "2026-09-01",  5.0,  6.25, 10.0, 0.50, 25.0, "old", "1m"),

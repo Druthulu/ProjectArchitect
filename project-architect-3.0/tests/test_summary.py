@@ -398,6 +398,29 @@ class SessionsAccountCostTest(unittest.TestCase):
         self.assertEqual((w["cost_used"], w["account_cost_used"]), (6.0, 7.5))
         self.assertEqual(out["s-a2"]["windows"]["seven_day"]["account_cost_used"], 7.5)
 
+    def test_switched_session_counts_only_its_current_accounts_turns(self):
+        """3.32.16: a session now on B with earlier turns on A counts only its B turns in B's windows, so its
+        cost never beats B's sum (bfm-decomp: $322 of the session's turns against its new account's $16, ?/?)."""
+        from unittest import mock
+        from pa import savings
+        conn = _make_db()
+        _seed_two_accounts(conn)
+        conn.execute("INSERT INTO sessions(session_id, account, project, cwd, started) VALUES(?, ?, ?, ?, ?)",
+                     ("s-sw", ACCT_B, PROJECT, PROJECT, WINDOW_START))
+        for i, (acct, cost) in enumerate(((ACCT_A, 4.0), (ACCT_B, 0.5))):
+            conn.execute("INSERT INTO turns(msg_id, session_id, account, ts, model, cost_usd, kind)"
+                         " VALUES(?, ?, ?, ?, ?, ?, 'api')", ("msg-sw%d" % i, "s-sw", acct, _iso(NOW - 120 + i),
+                                                              "claude-opus-4-6", cost))
+        conn.commit()
+        with mock.patch.object(savings, "window_saved_measured",
+                               return_value={"gross": 0.0, "seeds": 0.0, "net": 0.0}):
+            out = summary.sessions_block(conn, accounts=_accounts_block())
+        conn.close()
+        for win in ("five_hour", "seven_day"):
+            w = out["s-sw"]["windows"][win]
+            self.assertEqual((w["cost_used"], w["account_cost_used"]), (0.5, 1.5))
+            self.assertLessEqual(w["cost_used"], w["account_cost_used"])
+
 
 class SessionsLastActiveTest(unittest.TestCase):
     """3.15.3: sessions_block keeps a session by its last activity, not its start."""

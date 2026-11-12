@@ -172,6 +172,7 @@ class NormalizeModelTest(unittest.TestCase):
         self.assertEqual(prices.normalize_model(None), "")
 
     def test_most_specific_key_wins(self):
+        self.assertEqual(prices.model_key("claude-fable-5-2[1m]"), "fable-5-2")   # 3.32.16: was "fable-5"
         self.assertEqual(prices.model_key("claude-fable-5-1"), "fable-5-1")
         self.assertEqual(prices.model_key("claude-fable-5"), "fable-5")
         self.assertEqual(prices.model_key("claude-sonnet-5-5"), "sonnet-5-5")
@@ -194,6 +195,7 @@ class NormalizeModelTest(unittest.TestCase):
             "claude-sonnet-5": (2, 2.50, 4, 0.20, 10, "new"),
             "claude-sonnet-4-6": (3, 3.75, 6, 0.30, 15, "old"),
             "claude-haiku-4-5": (1, 1.25, 2, 0.10, 5, "old"),
+            "claude-fable-5-2": (8, 10.00, 16, 0.20, 40, "new"),
             "claude-fable-5-1": (10, 12.50, 20, 0.25, 50, "new"),
             "claude-fable-5": (10, 12.50, 20, 1.00, 50, "new"),
         }

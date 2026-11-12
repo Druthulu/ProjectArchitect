@@ -46,13 +46,13 @@ class TestRender(unittest.TestCase):
         for preset in ("max20", "max5"):
             self.assertEqual(ladder.row("memory-curator", preset),
                              {"model": "claude-opus-5-5[1m]", "effort": "medium"}, preset)
-        self.assertEqual(ladder.row("auditor", "max20"), {"model": "claude-fable-5-1[1m]", "effort": "medium"})
+        self.assertEqual(ladder.row("auditor", "max20"), {"model": "claude-fable-5-2[1m]", "effort": "medium"})
         self.assertIsNone(ladder.row("coder-opus55", "max20"))
         self.assertIsNone(ladder.row("retriever-code@high", "max20"))  # an unmanaged type's variant
 
     def test_role_rows(self):
         """3.25 T6a: one agent per role; the rows carry the old agents' values."""
-        opus, fable = "claude-opus-5-5[1m]", "claude-fable-5-1[1m]"
+        opus, fable = "claude-opus-5-5[1m]", "claude-fable-5-2[1m]"   # 3.32.16: Fable 5.2
         for preset in ("max20", "max5"):
             self.assertEqual(ladder.row("pa-expert", preset), {"model": opus, "effort": "medium"}, preset)
             self.assertEqual(ladder.row("pa-coder", preset), {"model": opus, "effort": "medium"}, preset)
@@ -64,10 +64,10 @@ class TestRender(unittest.TestCase):
         self.assertEqual(ladder.row("pa-expert@high", "max20"), {"model": fable, "effort": "medium"})
         self.assertEqual(ladder.row("pa-expert@high", "max5"), {"model": opus, "effort": "high"})
         self.assertEqual(ladder.row("pa-expert@high", "pro"), {"model": opus, "effort": "high"})
-        self.assertEqual(ladder.row("pa-thinker@deep", "max5"), {"model": fable, "effort": "max"})
+        self.assertEqual(ladder.row("pa-thinker@deep", "max5"), {"model": fable, "effort": "xhigh"})   # 3.32.16
         self.assertIsNone(ladder.row("pa-thinker@deep", "pro"))
         ov = {"pa-thinker@deep": {"model": opus}}                       # an override may name a variant
-        self.assertEqual(ladder.row("pa-thinker@deep", "pro", ov), {"model": opus, "effort": "max"})
+        self.assertEqual(ladder.row("pa-thinker@deep", "pro", ov), {"model": opus, "effort": "xhigh"})
 
     def test_render_touches_only_model_and_effort(self):
         for preset in ("max5", "pro"):
@@ -137,7 +137,7 @@ class TestMismatches(unittest.TestCase):
 class TestThinkerRows(unittest.TestCase):
 
     def test_rows(self):
-        fable = {"model": "claude-fable-5-1[1m]", "effort": "max"}
+        fable = {"model": "claude-fable-5-2[1m]", "effort": "xhigh"}    # 3.32.16: was Fable 5.1 at max
         self.assertEqual(ladder.row("pa-thinker@deep", "max20"), fable)    # 3.22 T8f's deep-thinker
         self.assertEqual(ladder.row("pa-thinker@deep", "max5"), fable)
         self.assertIsNone(ladder.row("pa-thinker@deep", "pro"))           # absent at pro
@@ -219,7 +219,7 @@ class TestLadderRow(unittest.TestCase):
 
     def test_effort_hint(self):
         """3.25 T6a: ``--effort``: the tier's variant row, else the base row lowered (never raised)."""
-        fable, opus = "claude-fable-5-1[1m]", "claude-opus-5-5[1m]"
+        fable, opus = "claude-fable-5-2[1m]", "claude-opus-5-5[1m]"
         self.creds("default_claude_max_20x")
         got = self.resolve("pa-expert", "high")
         self.assertEqual((got["agent"], got["managed"], got["model"], got["effort"], got["source"]),
@@ -253,7 +253,7 @@ class TestLadderRow(unittest.TestCase):
                              stdout=subprocess.PIPE, timeout=60).stdout.decode("utf-8")
         doc = json.loads(out)                                   # 3.25 T6a: the hint's variant row
         self.assertEqual((doc["agent"], doc["model"], doc["effort"]),
-                         ("pa-thinker@deep", "claude-fable-5-1[1m]", "max"))
+                         ("pa-thinker@deep", "claude-fable-5-2[1m]", "xhigh"))
 
     def gen(self, *lines):
         with open(os.path.join(self.proj, "GENERATION_PLAN.md"), "w", encoding="utf-8", newline="\n") as fh:

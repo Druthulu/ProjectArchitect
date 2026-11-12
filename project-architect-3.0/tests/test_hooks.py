@@ -1519,6 +1519,41 @@ class StopAccountRefreshTest(LedgerCase):
         self.assertEqual(turns[0][0], email)
 
 
+class RunLockAccountByTimeTest(LedgerCase):
+    """3.32.16: an agent that ran across an account switch books each turn to the account in force at its time,
+    not the session's account at its hand-back (bfm-decomp: $8.34 of the old account's use on the new one)."""
+
+    def _lock(self, sid, events, account):
+        from pa import runs
+
+        path = self.write_transcript(os.path.join(self.projects, "slug", sid, "subagents", "agent-r1.jsonl"), [
+            usage_line("msg_r1", ts="2026-11-12T10:00:00.000Z"),
+            usage_line("msg_r2", ts="2026-11-12T12:00:00.000Z")])
+        conn = hooks.open_db()
+        try:
+            for ts, frm, to in events:
+                db.insert_event(conn, "account_change", {"from": frm, "to": to, "source": "switch"},
+                                session_id=sid, account=to, ts=ts)
+            runs.lock_run_from_transcript(conn, "r1", path, session_id=sid, account=account)
+        finally:
+            db.close(conn)
+        return self.rows("SELECT msg_id, account FROM turns WHERE run_id='r1' ORDER BY msg_id")
+
+    def test_turns_before_the_switch_go_to_the_old_account(self):
+        got = self._lock("acct-t1", [("2026-11-12T11:00:00Z", "old@example.com", "new@example.com")],
+                         "new@example.com")
+        self.assertEqual(got, [("msg_r1", "old@example.com"), ("msg_r2", "new@example.com")])
+
+    def test_no_switch_keeps_the_given_account(self):
+        got = self._lock("acct-t2", [], "same@example.com")
+        self.assertEqual(got, [("msg_r1", "same@example.com"), ("msg_r2", "same@example.com")])
+
+    def test_an_external_coders_account_is_kept(self):
+        got = self._lock("acct-t3", [("2026-11-12T11:00:00Z", "old@example.com", "new@example.com")],
+                         "ext:openrouter")
+        self.assertEqual(got, [("msg_r1", "ext:openrouter"), ("msg_r2", "ext:openrouter")])
+
+
 class StopBatchGapTest(LedgerCase):
     """T7: a Stop batch after a 2 h pause books its first turn's gap and prefix rewrite."""
 

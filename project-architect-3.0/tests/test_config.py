@@ -365,7 +365,7 @@ class LadderPinTest(unittest.TestCase):
         for agent in ("pa-expert", "pa-coder", "pa-thinker"):   # 3.25 T6a: the role agents' base rows
             self.assertEqual(config.pinned_model_for(agent, self.cfg, tagged=True), "claude-opus-5-5[1m]")
         for agent in ("auditor",):   # 3.24 T3.1: was critic, review, plain; T17e: the curator left
-            self.assertEqual(config.pinned_model_for(agent, self.cfg, tagged=True), "claude-fable-5-1[1m]")
+            self.assertEqual(config.pinned_model_for(agent, self.cfg, tagged=True), "claude-fable-5-2[1m]")  # 3.32.16
         self.assertEqual(config.pinned_model_for("memory-curator", self.cfg, tagged=True), "claude-opus-5-5[1m]")
 
     def test_pro_and_max5(self):

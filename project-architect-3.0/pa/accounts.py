@@ -551,3 +551,23 @@ def account_timeline(conn, session_id):
 def account_at(conn, session_id, ts):
     """The account in force at ``ts`` for the session (one SQL per call)."""
     return account_timeline(conn, session_id)(ts)
+
+
+def account_by_time(conn, session_id, fallback):
+    """``(ts) -> account`` when the session has ``account_change`` events, else ``fallback`` itself.
+
+    3.32.16: an agent's turns are booked by the account in force at each turn, not the session's account at
+    its hand-back (bfm-decomp, 2026-11-12: two agents that ran before a switch and reported after it put $8.34
+    of the old account's use on the new one). An ``ext:`` account (an external coder) is kept as it is.
+    Never raises; any failure returns ``fallback``.
+    """
+    if conn is None or not session_id or str(fallback or "").startswith("ext:"):
+        return fallback
+    try:
+        if conn.execute("SELECT 1 FROM events WHERE session_id=? AND kind='account_change' LIMIT 1",
+                        (session_id,)).fetchone() is None:
+            return fallback
+        resolve = account_timeline(conn, session_id)
+    except Exception:
+        return fallback
+    return lambda ts: resolve(ts) or fallback

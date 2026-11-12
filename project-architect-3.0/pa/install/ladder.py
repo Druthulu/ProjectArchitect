@@ -34,7 +34,9 @@ MANAGED = ("pa-expert", "pa-coder", "pa-thinker", "auditor", "memory-curator", "
 _JUDGES = ("auditor",)  # was ("auditor", "memory-curator"); before 3.24, + "critic", "review"
 # 3.24 T17e: the memory curator runs Opus 5.5 at medium on every tier (developer 2026-10-12: "curator is
 # opus55medium for all tiers"); it left the judges' Fable row
-_FABLE = "claude-fable-5-1[1m]"
+# 3.32.16 (developer 2026-11-12): Fable 5.2 (was claude-fable-5-1[1m]); the deep-thinker at xhigh (was max:
+# Anthropic keeps max for measuring the ceiling, xhigh for the hardest work)
+_FABLE = "claude-fable-5-2[1m]"
 _OPUS = "claude-opus-5-5[1m]"
 _SONNET = "claude-sonnet-5-5[1m]"  # 3.27 T11: Pro's coder
 
@@ -54,12 +56,12 @@ def _roles(expert_high, thinker_deep):
 
 
 PRESETS = {
-    "max20": dict(_roles(_r(_FABLE, "medium"), _r(_FABLE, "max"))
+    "max20": dict(_roles(_r(_FABLE, "medium"), _r(_FABLE, "xhigh"))
                   + [(a, _r(_FABLE, "medium")) for a in _JUDGES]
                   + [("memory-curator", _r(_OPUS, "medium"))]
                   + [("pa-planner", _r(_OPUS, "max"))]),
     # 3.32 (developer 2026-10-30): no Fable on Max 5x: the auditor runs Opus 5.5 medium; the deep-thinker stays, asked for by name only
-    "max5": dict(_roles(_r(_OPUS, "high"), _r(_FABLE, "max"))
+    "max5": dict(_roles(_r(_OPUS, "high"), _r(_FABLE, "xhigh"))
                  + [(a, _r(_OPUS, "medium")) for a in _JUDGES]
                  + [("memory-curator", _r(_OPUS, "medium"))]
                  + [("pa-planner", _r(_OPUS, "max"))]),

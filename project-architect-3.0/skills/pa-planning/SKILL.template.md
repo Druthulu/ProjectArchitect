@@ -45,7 +45,8 @@ less than the tier's planner effort; its planner then runs at that level.
 
 ## 3. A phase plan
 Every expert reads it in a fresh context. Follow the task-line grammar: a task line is `- T<n> | title: … | done-when: …`;
-the rest is added when it helps the expert: files and methods, a `verify:` command, the `coder:` tier, `effort:`
+the title says the work first: a task from an inbox item puts its id last, `title: real returns for the s32 functions
+(I4)`, never `I4: …`. The rest is added when it helps the expert: files and methods, a `verify:` command, the `coder:` tier, `effort:`
 (medium by default), the task summaries to read, dependencies, an `est-ctx`, and `review: yes` when the developer must
 sift results.
 When `.claude/pa.json` has `external.coder` (external coders are set up), give each task that a coder will do a

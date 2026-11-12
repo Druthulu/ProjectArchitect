@@ -42,7 +42,7 @@ class SchemaTest(unittest.TestCase):
         self.assertTrue(db.get_meta(self.conn, "machine"))
         self.assertTrue(db.get_meta(self.conn, "created"))
         n = self.conn.execute("SELECT COUNT(*) FROM prices").fetchone()[0]
-        self.assertEqual(n, 19)     # 3.3 added deepseek-v4.1-flash, glm-5.3-flash and qwen3.8-flash (was 14 before 3.22)
+        self.assertEqual(n, 20)     # 3.32.16 added fable-5-2; 3.3 deepseek-v4.1-flash, glm-5.3-flash, qwen3.8-flash (was 14 before 3.22)
         self.assertEqual(db.seed_prices(self.conn), 0)        # does not duplicate
 
     def test_pragmas_applied(self):

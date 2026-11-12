@@ -55,7 +55,10 @@ def link_parent(conn, run_id, parent_run_id, parent_source="agent_tool", **field
 
 def aggregate(path, ttl_default="5m", account=None, session_id=None, run_id=None,
               effort=None):
-    """Stream a transcript into ``(turn_rows, totals)`` without touching sqlite."""
+    """Stream a transcript into ``(turn_rows, totals)`` without touching sqlite.
+
+    ``account`` is an account or a ``(ts) -> account`` callable (3.32.16, :func:`pa.accounts.account_by_time`).
+    """
     from . import db, transcript
 
     rows = []
@@ -64,8 +67,9 @@ def aggregate(path, ttl_default="5m", account=None, session_id=None, run_id=None
               "thinking": 0, "cost_usd": 0.0, "model_seen": None, "effort": None,
               "started": None, "ended": None, "last_msg_id": None}
     for req in transcript.iter_requests(path):
+        acct = account(req.get("ts_iso")) if callable(account) else account
         row = db.turn_row_from_request(req, run_id=run_id, session_id=session_id,
-                                       account=account, ttl_default=ttl_default,
+                                       account=acct, ttl_default=ttl_default,
                                        effort=effort or req.get("effort"))
         totals["effort"] = row.get("effort") or totals["effort"]
         rows.append(row)
@@ -95,12 +99,14 @@ def lock_run_from_transcript(conn, run_id, path, session_id=None, account=None,
     """Parse ``path``, write its ``turns`` and lock the ``agent_runs`` row.
 
     Returns the totals dict (``None`` when the file is missing/empty).
+    3.32.16: each turn is booked to the account in force at its time when the session switched accounts.
     """
-    from . import db
+    from . import accounts, db
 
     if not path or not os.path.exists(path):
         return None
-    rows, totals = aggregate(path, ttl_default=ttl_default, account=account,
+    rows, totals = aggregate(path, ttl_default=ttl_default,
+                             account=accounts.account_by_time(conn, session_id, account),
                              session_id=session_id, run_id=run_id, effort=effort)
     if rows:
         db.upsert_turns(conn, rows)

@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.32.15: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.32.16: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -183,11 +183,11 @@ The task's effort picks the expert's row; the deep row is the thinker spawned wi
 | row | max20 (Ultra) | max5 (Max) | pro |
 |---|---|---|---|
 | pa-expert | Opus 5.5 medium | Opus 5.5 medium | Opus 5.5 low |
-| pa-expert, `effort: high` | Fable 5.1 medium | Opus 5.5 high | Opus 5.5 high |
+| pa-expert, `effort: high` | Fable 5.2 medium | Opus 5.5 high | Opus 5.5 high |
 | pa-coder | Opus 5.5 medium | Opus 5.5 medium | Sonnet 5.5 medium |
 | pa-thinker | Opus 5.5 max | Opus 5.5 max | Opus 5.5 medium |
-| pa-thinker, deep | Fable 5.1 max | Fable 5.1 max | the thinker's row |
-| auditor | Fable 5.1 medium | Opus 5.5 medium | Opus 5.5 medium |
+| pa-thinker, deep | Fable 5.2 xhigh | Fable 5.2 xhigh | the thinker's row |
+| auditor | Fable 5.2 medium | Opus 5.5 medium | Opus 5.5 medium |
 | memory-curator | Opus 5.5 medium | Opus 5.5 medium | Opus 5.5 medium |
 | pa-planner | Opus 5.5 max | Opus 5.5 max | Opus 5.5 medium |
 

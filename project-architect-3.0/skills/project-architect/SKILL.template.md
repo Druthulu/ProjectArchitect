@@ -15,7 +15,7 @@ Constitution: `PROJECT_CONTEXT.md`, never edited; its older wording yields to th
 Retired files live in `docs/retired/` and are never in the load order.
 
 ## 1. Roles and protocol
-One task per fresh context. The **expert** (Opus 5.5 at medium effort, Fable 5.1 at medium effort for tasks the plan marks
+One task per fresh context. The **expert** (Opus 5.5 at medium effort, Fable 5.2 at medium effort for tasks the plan marks
 `effort: high`) reads the plan's Context, Interfaces, Cookbook and Research sections,
 its task entry and the named summaries; decides; briefs. **Coders** (Opus 5.5, one tier)
 run the edit-build-test loops. **Retrievers** look things up and write reports. The mod runs the loop (one expert per

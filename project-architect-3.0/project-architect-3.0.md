@@ -117,19 +117,19 @@ junction so a fresh machine restores it with `pa_install --project`.
 |---|---|---|---|---|---|
 | Claude (the partner) | pa-claude | the session's (`/model`) | the session's (`/effort`) | coders, retrievers, thinkers | — |
 | Thinker | pa-thinker | Opus 5.5 | max | retrievers | Read |
-| Deep thinker | pa-thinker, `[effort deep]` | Fable 5.1 | max | retrievers | Read |
+| Deep thinker | pa-thinker, `[effort deep]` | Fable 5.2 | xhigh | retrievers | Read |
 | Expert (default) | pa-expert | Opus 5.5 | medium | coders, retrievers | — |
-| Expert (hard, `effort: high`) | pa-expert | Fable 5.1 (Ultra) | medium | coders, retrievers | — |
+| Expert (hard, `effort: high`) | pa-expert | Fable 5.2 (Ultra) | medium | coders, retrievers | — |
 | Coder | pa-coder | Opus 5.5 | medium | retriever-code | — |
 | Retriever (code) | retriever-code | Haiku 5.5 | medium | — | Read, Grep, Glob, Write |
 | Retriever (digest) | retriever-digest | Haiku 5.5 | medium | — | Read, Grep, Glob, Write |
 | Retriever (web) | retriever-web | Haiku 5.5 | medium | — | WebSearch, WebFetch, Write |
-| Auditor | auditor | Fable 5.1 | medium | pa-coder, retriever-code | — |
+| Auditor | auditor | Fable 5.2 | medium | pa-coder, retriever-code | — |
 | Memory curator | memory-curator | Opus 5.5 | medium | — | — |
 
 Models and efforts are pinned per agent file; Claude follows the developer's `/model` and
 `/effort`. The cost structure follows from the pinning: Opus 5.5 is the default builder and
-expert (coders and the medium-effort expert), Fable 5.1 the thinker for hard tasks (the
+expert (coders and the medium-effort expert), Fable 5.2 the thinker for hard tasks (the
 hard-tier expert, the deep thinker), and Haiku 5.5 the reader (all three retrievers, on every plan). A
 plan marks `effort: high` only
 when a task's done-when rests on a judgment no test can arbitrate (a design decision, a harness
