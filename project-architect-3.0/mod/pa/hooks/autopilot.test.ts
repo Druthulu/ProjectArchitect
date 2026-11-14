@@ -4639,6 +4639,24 @@ describe('the band (3.23 T13)', () => {
       plugin: 'pa', surface, component: 'AbovePrompt',
       props: { hasSurvey, isWorking: false, maxRows: 10, bodyColumns: 60, scroll: { offset: 0, bodyRows: 9 }, view: {} },
     })).drawn())
+    // 3.32.17: since Claude Code 2.1.323 every mod's AbovePrompt is drawn, stacked, each its own `part`; the band is
+    // PA3's part, which draws without the engine's (`next`), as before
+    const paPart = (node: unknown): unknown => {
+      if (typeof node !== 'object' || node === null) {
+        return undefined
+      }
+      const n = node as { part?: { plugin?: unknown }; children?: unknown }
+      if (n.part?.plugin === 'pa') {
+        return n
+      }
+      for (const k of Array.isArray(n.children) ? n.children : [n.children]) {
+        const found = paPart(k)
+        if (found !== undefined) {
+          return found
+        }
+      }
+      return undefined
+    }
     await $.session.start(START)
     expect(await mount('terminal')).toContain('engine')
     await clock.advance(2_000)
@@ -4653,7 +4671,9 @@ describe('the band (3.23 T13)', () => {
       expect(drawn).toContain('#0087ff')
       expect(drawn).toContain(' T1 · c1')
       expect(drawn).toContain('  Edit calc/add.py · ')
-      expect(drawn).not.toContain('engine')
+      const mine = JSON.stringify(paPart(JSON.parse(drawn)) ?? null)
+      expect(mine).toContain('Phase 3.23 · T1 (1 of 2)')
+      expect(mine).not.toContain('engine')
       expect(await mount(surface, true)).toContain('engine')
     }
   })

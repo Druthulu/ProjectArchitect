@@ -74,7 +74,8 @@ const quiet = (): undefined => undefined
 /** 3.28.1 T15: background shells (Bash `run_in_background`) per agent, `.run/mod/<sid>/shells.json` (pa loop.ts
  * SHELLS_FILE, shellsOf): `{ <agentId>: [{ id, name, at, type, exit?, moved? }] }`, from the call to its completion notice;
  * 3.32.1 T3: `moved` when Claude Code pushed a foreground call into the background at its time limit; 3.32.11 T2:
- * `ended` (ms) beside a failed shell's `exit`: the band drops its red row 2 minutes after it. */
+ * `ended` (ms) beside a failed shell's `exit`: the band drops its red row 2 minutes after it; 3.32.17: a stopped agent's
+ * records go at the next turn's start (shellsPrune). */
 type ShellRec = { id: string; name: string; at: number; type: string; exit?: number; ended?: number; moved?: boolean }
 let shellsChain: Promise<unknown> = Promise.resolve() // one read-modify-write at a time
 /** A shell's name: the last script-like token's basename (`bake_rest.sh`), else the last command's first word; 3.3 T7:
@@ -122,6 +123,17 @@ const shellsEdit = async ($: Pick<EngineInterface, 'fs' | 'session'>, f: (s: Rec
   })
   shellsChain = run.catch(quiet)
   await run.catch(quiet)
+}
+/** 3.32.17: the records of agents Claude Code lists as stopped (`killed`, `failed`) are dropped: a stop kills the agent's
+ * shells and no completion notice comes for them (bfm, 2026-11-13: a stopped coder's `type_census.py` stayed on the
+ * status line 13 hours, under every later task). */
+const STOPPED: ReadonlySet<string> = new Set(['killed', 'failed'])
+const shellsPrune = async ($: Pick<EngineInterface, 'fs' | 'session' | 'agent'>): Promise<void> => {
+  const stopped = new Set((await $.agent.list().catch(() => [])).filter(a => STOPPED.has(a.status)).map(a => a.id))
+  if (stopped.size > 0) {
+    await shellsEdit($, s => (Object.keys(s).some(a => stopped.has(a))
+      ? Object.fromEntries(Object.entries(s).filter(([a]) => !stopped.has(a))) : null))
+  }
 }
 
 /** 3.32.1 T5: each helper's parent, `.run/mod/<sid>/parents.json` (pa loop.ts PARENTS_FILE, parentsOf): `{ <child>: <parent> }`,
@@ -563,6 +575,15 @@ export const register: Register = on => {
       }
     } catch {
       // best effort: the row is kept whatever the record does
+    }
+    return r
+  })
+
+  // 3.32.17: each turn's start drops the shell records of stopped agents (shellsPrune); by then the list shows the stop.
+  on('turn.start', async ($, e, next) => {
+    const r = await next(e)
+    if (await read($, activeAtom).catch(() => false)) {
+      await shellsPrune($).catch(quiet)
     }
     return r
   })

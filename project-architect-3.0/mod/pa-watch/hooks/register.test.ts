@@ -873,6 +873,29 @@ describe('background shells (3.28.1 T15)', () => {
     await append($, notice('x3', 'failed', 'Background command "make gate" failed with exit code 4'))
     expect(shells(m)['C1']?.map(s => [s.name, s.exit])).toEqual([['external T4.c2', 3], ['make', 4]])
   })
+
+  test('3.32.17: a stopped agent\'s shells (killed, failed) go at the next turn\'s start; a running agent\'s stay', async ($, on) => {
+    mock.clock(on)
+    const list = [
+      { id: 'C1', description: 'T6.c3', type: 'pa-coder', status: 'running', parentId: 'E1' },
+      { id: 'C2', description: 'T6.c4', type: 'pa-coder', status: 'running', parentId: 'E1' },
+      { id: 'C3', description: 'T6.c5', type: 'pa-coder', status: 'running', parentId: 'E1' },
+    ] as { id: string; description: string; type: string; status: string; parentId: string }[]
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, list as Row[])
+    let n = 0
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, backgroundTaskId: `z${String(n += 1)}` } }) as never)
+    on('turn.start', async ($, e) => ({ turnId: e.turnId }))
+    await $.session.start(START)
+    for (const agentId of ['C1', 'C2', 'C3']) {
+      await $.tool.call({ tool: 'Bash', command: 'python3 tools/type_census.py', run_in_background: true, agentId } as never)
+    }
+    await $.turn.start({ text: '', turnId: 'U1' })
+    expect(Object.keys(shells(m))).toEqual(['C1', 'C2', 'C3'])
+    list[0]!.status = 'killed'
+    list[1]!.status = 'failed'
+    await $.turn.start({ text: '', turnId: 'U2' })
+    expect(Object.keys(shells(m))).toEqual(['C3'])
+  })
 })
 
 // 3.29.9: the router's display trim: the watcher answers the router's `pa-trim` compaction of the main conversation with

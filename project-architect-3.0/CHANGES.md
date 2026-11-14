@@ -2,6 +2,12 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.17 — A stopped agent's shells leave the statusline
+
+- A background shell of an expert or coder you stopped (Esc or Ctrl+C) no longer stays on the statusline. The stop
+  ended the shell too, but nothing told PA3, so its row kept counting up as "running" for hours and moved under each
+  new task. PA3 now removes it when the next agent turn starts, usually seconds after the stop.
+
 ## 3.32.16 — Account switches add up, and Fable 5.2
 
 - The Session line no longer shows ?/? after you sign in to another account in the middle of a session. The
