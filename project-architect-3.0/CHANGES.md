@@ -2,6 +2,17 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.18 — Claude's replies show in long sessions
+
+- In a session open for weeks, Claude's replies could stop showing in the main session. It happened after Claude
+  started a planner or another job of its own: Claude Code then takes only its first reply as a hand-back, so PA3
+  sends the later ones through the activity feed. Claude Code shortens a long feed line, and PA3 reads the full
+  reply back from the feed's log, which had grown past the 4 MB a mod may read. PA3 now starts a new log every 1 MB
+  and keeps one older one, so replies show however long the session runs. The summary of the feed that goes to
+  Claude with your messages works again too.
+- The statusline's task rows skip superseded tasks, as they skip finished ones. After a replan, the tasks it moved
+  to a later phase stayed near the top of the plan and filled two of the three rows; the rows now show the work left.
+
 ## 3.32.17 — A stopped agent's shells leave the statusline
 
 - A background shell of an expert or coder you stopped (Esc or Ctrl+C) no longer stays on the statusline. The stop

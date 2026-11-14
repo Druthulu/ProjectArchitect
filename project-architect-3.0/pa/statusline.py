@@ -1954,7 +1954,7 @@ def _task_block(payload, ctx, cfg, sl, now):
     for t in tasks:
         if active is not None and t["id"] == active["id"]:
             continue
-        if t["status"] == "done":
+        if t["status"] in ("done", "superseded"):   # 3.32.18: superseded is not work left (bfm: a replan's T3, T9)
             continue
         block_tasks.append(t)
         if len(block_tasks) >= window_size:

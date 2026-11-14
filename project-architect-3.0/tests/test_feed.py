@@ -95,6 +95,36 @@ class FeedCase(unittest.TestCase):
         self.run_until(feed2, 2000)
         self.assertEqual([r['n'] for r in self.lines()], [4])
 
+    def test_log_rolls_at_its_size_and_numbering_continues(self) -> None:
+        """3.32.18: an append to a log of ROLL_BYTES or more rolls it into log.1.jsonl (the previous one replaced); a
+        restart right after a roll, before any append, numbers on from log.1.jsonl."""
+        log = os.path.join(self.dir, 'log.jsonl')
+        log1 = os.path.join(self.dir, 'log.1.jsonl')
+        old = pa_feed.ROLL_BYTES
+        pa_feed.ROLL_BYTES = 300
+        self.addCleanup(setattr, pa_feed, 'ROLL_BYTES', old)
+        feed = self.feed()
+        for i in range(5):  # ~120 bytes each: the fourth append rolls
+            self.drop(_rec(i))
+        self.run_until(feed, 3000)
+        def read(p: str) -> list[int]:
+            with open(p, encoding='utf-8') as f:
+                return [json.loads(l)['n'] for l in f]
+        self.assertEqual(read(log1), [1, 2, 3])
+        self.assertEqual(read(log), [4, 5])
+        self.assertEqual([r['n'] for r in self.lines()], [1, 2, 3, 4, 5])
+        for i in range(5, 8):  # the next roll replaces log.1.jsonl
+            self.drop(_rec(i))
+        self.run_until(feed, 8000)
+        self.assertEqual(read(log1), [4, 5, 6])
+        self.assertEqual(read(log), [7, 8])
+        os.replace(log, log1)  # a stop between the rename and the append
+        self.writes.clear()
+        feed2 = self.feed()
+        self.drop(_rec(9))
+        self.run_until(feed2, 10_000)
+        self.assertEqual([r['n'] for r in self.lines()], [9])
+
     def test_incomplete_waits_and_stale_is_dropped(self) -> None:
         feed = self.feed()
         name = self.drop(None, raw='{"agent":"A1","text":"half')

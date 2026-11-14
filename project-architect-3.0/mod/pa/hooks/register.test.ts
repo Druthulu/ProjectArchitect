@@ -2478,6 +2478,23 @@ describe('the live feed (3.23 T13d)', () => {
     expect(drawn).toContain('Unasked news.')
   })
 
+  test('3.32.18: a long reply with no hand-back (refused: a planner of Claude\'s still runs), its feed event cut, is read back from the rolled log and drawn as a Claude card', async ($, on) => {
+    // bfm, 2026-11-14: Claude's second reply in one run (its planner and jobs still working) cannot hand back; the
+    // mod's fallback writes it as a feed reply record; Claude Code cuts the long event; the record comes from the log.
+    const { w, clock, answer } = await feed($, on)
+    w.files.set(`${FEED}/alive`, JSON.stringify({ pid: 7, started: 100, beat: 1_000, n: 0 }))
+    const long = `Yes. The planner has all of it.\n\n${'- one decision of the replan, word for word\n'.repeat(60)}`.trimEnd()
+    await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: long, durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    await clock.advance(6_000)
+    expect(markerModes(w)).toEqual(['feed'])
+    const [path] = [...w.files.keys()].filter(p => p.startsWith(`${FEED}/in/`) && /-7\d{5}\.json$/.test(p))
+    const body = JSON.parse(w.files.get(path ?? '') ?? '{}') as Record<string, unknown>
+    w.files.set(`${FEED}/log.1.jsonl`, `${JSON.stringify({ ...body, n: 1 })}\n`) // as pa_feed.py logs it, then rolled
+    w.files.set(`${FEED}/log.jsonl`, `${rec(2, 'C1', 'later')}\n`)
+    const event = JSON.stringify({ pa: 'feed', n: 1, ...body }) // as pa_feed.py prints it
+    expect(await answer(note(`${event.slice(0, 400)}...(truncated)`))).toBe(CLAUDE(long, 'opus'))
+  })
+
   test('3.24 T13B: no live feed (no heartbeat): the marker prompt, its turn a Claude card', async ($, on) => {
     const { w, clock } = await feed($, on)
     await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: 'Unasked news.', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
@@ -2545,6 +2562,14 @@ describe('the live feed (3.23 T13d)', () => {
     expect(await answer(note(rec(1, 'C1', 'line 1'), cut))).toBe('**🟩 Coder · T3**\n> line 1\n>\n> line 2')
     const fed = JSON.parse(w.files.get(`${BASE}/drawn.json`) ?? '{}') as { feedRuns: { text: string }[] }
     expect(fed.feedRuns.map(x => x.text)).toEqual(['**🟩 Coder · T3**\n> line 1\n>\n> line 2'])
+  })
+
+  test('3.32.18: a cut record in the rolled log.1.jsonl is read too (Claude Code 2.1.325 cuts with "...")', async ($, on) => {
+    const { w, answer } = await feed($, on)
+    w.files.set(`${FEED}/log.1.jsonl`, `${[1, 2].map(i => rec(i, 'C1', `line ${String(i)}`)).join('\n')}\n`)
+    w.files.set(`${FEED}/log.jsonl`, `${rec(3, 'C1', 'line 3')}\n`)
+    const cut = `${rec(2, 'C1', 'line 2').slice(0, 30)}...(truncated)`
+    expect(await answer(note(rec(1, 'C1', 'line 1'), cut))).toBe('**🟩 Coder · T3**\n> line 1\n>\n> line 2')
   })
 
   test('a delivery into a running turn writes a nudge file; a nudge alone does not', async ($, on) => {

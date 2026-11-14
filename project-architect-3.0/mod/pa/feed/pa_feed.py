@@ -14,6 +14,11 @@ writes `<dir>/owner.json` (`{"pid","claudePid","started"}`), reads it back every
 process owns the folder (the newest wins: the live session's, or the router's restart). It numbers from the log's last
 `n` after taking ownership.
 
+3.32.18: the log rolls. Before an append that would go into a `log.jsonl` of ROLL_BYTES or more, the file becomes
+`log.1.jsonl` (the previous one replaced) and the append starts a new `log.jsonl`; numbering carries on (`last_n` reads
+`log.1.jsonl` when `log.jsonl` has no record). The mod reads both, each far under Claude Code's 4 MiB `$.fs.read` limit
+(bfm, 2026-11-14: a 23-day session's 4.5 MB log hid every cut record, Claude's replies with them).
+
     pa_feed.py --project <root> [--dir <feed folder>]
 
 `--dir` defaults to `<root>/.run/mod/$CLAUDE_CODE_SESSION_ID/feed`; with neither, the script idles silently forever (an
@@ -36,6 +41,7 @@ STALE_MS = 5000  # an incomplete file older than this is dropped
 ALIVE_MS = 5000  # heartbeat period
 LIVE_MS = 5000  # how often the Claude Code process is checked
 TICK_S = 0.1
+ROLL_BYTES = 1 << 20  # 3.32.18: log.jsonl rolls into log.1.jsonl at this size (the mod's reads stop at 4 MiB)
 
 
 def _dumps(obj: object) -> str:
@@ -105,6 +111,7 @@ class Feed:
         self.folder = folder
         self.inbox = os.path.join(folder, 'in')
         self.log = os.path.join(folder, 'log.jsonl')
+        self.log1 = os.path.join(folder, 'log.1.jsonl')  # 3.32.18: the rolled log
         self.alive = os.path.join(folder, 'alive')
         self.owner = os.path.join(folder, 'owner.json')
         self.out = out
@@ -116,7 +123,8 @@ class Feed:
         os.makedirs(self.inbox, exist_ok=True)
         self.started = now_ms
         self._own()
-        self.n = last_n(self.log)  # after taking ownership: the previous owner stops numbering
+        # after taking ownership: the previous owner stops numbering; 3.32.18: a log just rolled numbers on from log.1
+        self.n = last_n(self.log) or last_n(self.log1)
         self.tokens = CAP
         self.filled = now_ms
         self.last_write: int | None = None
@@ -188,6 +196,7 @@ class Feed:
             else:
                 self.n += 1
                 body = {k: v for k, v in rec.items() if k not in ('pa', 'n')}
+                self._roll()
                 try:
                     with open(self.log, 'a', encoding='utf-8', newline='\n') as f:
                         f.write(_dumps({**body, 'n': self.n}) + '\n')
@@ -199,6 +208,15 @@ class Feed:
             self.taken.add(name)
             self._remove(path, name)
             self.queue.append((now_ms, line))
+
+    def _roll(self) -> None:
+        """3.32.18: a log of ROLL_BYTES or more becomes log.1.jsonl (replacing the previous); the next append starts a new
+        log.jsonl. A failed rename (a reader holding the file on Windows) is retried at the next append."""
+        try:
+            if os.path.getsize(self.log) >= ROLL_BYTES:
+                os.replace(self.log, self.log1)
+        except OSError:
+            pass
 
     @staticmethod
     def _read(path: str) -> object | None:

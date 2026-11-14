@@ -2083,6 +2083,14 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertIn(statusline.GLYPH_RUNNING, t3_line[0])
         self.assertIn("recipe rung", t3_line[0])
 
+    def test_task_block_skips_superseded_tasks(self):
+        """3.32.18: superseded tasks are not work left: the rows after the active task skip them as done ones (bfm: a
+        replan's superseded T3 and T9 sat above the new work and filled two of the three rows)."""
+        plan = self.PLAN_SIX.replace("- T4 | queued ", "- T4 | superseded").replace("- T5 | queued ", "- T5 | superseded")
+        self.make_project(plan=plan, status={"task": "T3", "started": "2026-09-12T20:58:00Z"})
+        task_lines = [l for l in self.lines() if l.strip() and l.strip()[0] == "T"]
+        self.assertEqual([l.split()[0] for l in task_lines], ["T3", "T6"])
+
     def test_task_block_glyphs(self):
         self.make_project(plan=self.PLAN_SIX,
                           status={"task": "T3", "started": "2026-09-12T20:58:00Z"})
@@ -2352,18 +2360,17 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertNotEqual(statusline.GLYPH_SUPERSEDED, statusline.GLYPH_DONE)
 
     def test_task_block_superseded_glyph(self):
-        """3.10 T25: superseded tasks (incl. a reopened-chain id) show ↷, not ✗."""
+        """3.10 T25: superseded tasks (incl. a reopened-chain id) never show ✗; 3.32.18: they leave the rows as done
+        ones do, the open tasks after them filling the block."""
         plan = self.PLAN_SIX.replace("- T2 | done  ", "- T2 | superseded").replace(
             "- T4 | queued  | expert-fable | coder: none   | effort: high | title: overnight bake",
             "- T21.1.1.1.1 | superseded | expert-fable | coder: none | effort: high "
             "| title: overnight bake")
         self.make_project(plan=plan,
                           status={"task": "T3", "started": "2026-09-12T20:58:00Z"})
-        lines = self.lines()
-        for tid in ("T2 ", "T21.1.1.1.1 "):
-            line = [l for l in lines if l.startswith(tid)][0]
-            self.assertIn(statusline.GLYPH_SUPERSEDED, line)
-            self.assertNotIn(statusline.GLYPH_BLOCKED, line)
+        task_lines = [l for l in self.lines() if l.strip() and l.strip()[0] == "T"]
+        self.assertEqual([l.split()[0] for l in task_lines], ["T3", "T5", "T6"])
+        self.assertFalse(any(statusline.GLYPH_BLOCKED in l for l in task_lines))
 
     def test_task_block_done_tasks_dropped_unless_active(self):
         """T10.c1: T2 is done and not the active task -- it is dropped from the block."""

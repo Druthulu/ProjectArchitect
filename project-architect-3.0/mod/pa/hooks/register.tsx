@@ -169,6 +169,15 @@ function ev(kind: string, data: Record<string, unknown>): [string, string] {
 
 const quiet = (): undefined => undefined
 
+/** 3.32.18: the feed log's text, the rolled `log.1.jsonl` (pa_feed.py rolls `log.jsonl` at 1 MiB) before `log.jsonl`,
+ * each read far under `$.fs.read`'s 4 MiB limit (bfm, 2026-11-14: one 4.5 MB log hid every cut record, Claude's
+ * replies with them, and the feed block Claude gets with the developer's messages). */
+async function feedLogText($: Pick<EngineInterface, 'fs'>, dir: string): Promise<string> {
+  const older = (await $.fs.read(`${dir}/log.1.jsonl`).catch(() => null)) ?? ''
+  const current = (await $.fs.read(`${dir}/log.jsonl`).catch(() => null)) ?? ''
+  return older === '' ? current : `${older}\n${current}`
+}
+
 // 3.31 T2: the filing turn's text can come as its turn's answer or its hand-back's report, either first. A hand-back
 // while the turn runs is kept (`filingHandback`); a turn that ended with no text leaves its facts (`filingLate`) for a
 // later hand-back to file. Both are dropped when the next filing is sent. `filingWhy`: the decision's why, for the event.
@@ -1884,7 +1893,7 @@ export const register: Register = (on, options) => {
         const fdir = st0?.feed.dir ?? feedDirOf(await $.session.id())
         const fp = await read($, feedAtom)
         const pid = st0?.partner?.agentId ?? ''
-        const unseen = fp.drawn === null ? [] : unseenFeed((await $.fs.read(`${root}/${fdir}/log.jsonl`).catch(() => null)) ?? '', fp.drawn, loop.lastAnswerAt, pid)
+        const unseen = fp.drawn === null ? [] : unseenFeed(await feedLogText($, `${root}/${fdir}`), fp.drawn, loop.lastAnswerAt, pid)
         let fed = ''
         if (unseen.length > 0) {
           const listed = await $.agent.list().catch(() => [])
@@ -1946,7 +1955,7 @@ export const register: Register = (on, options) => {
         const miss = [...new Set([...missingNs(f), ...cuts])].sort((a, b) => a - b)
         let filled: number[] = []
         if (miss.length > 0) {
-          const got = fromLog((await $.fs.read(`${dir}/log.jsonl`).catch(() => null)) ?? '', miss)
+          const got = fromLog(await feedLogText($, dir), miss)
           filled = got.map(r => r.n)
           f = await update($, feedAtom, x => addRecords(x, got))
         }
