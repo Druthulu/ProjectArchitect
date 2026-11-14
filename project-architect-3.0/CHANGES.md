@@ -2,6 +2,16 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.19 — A pause holds until you say go
+
+- When you ask Claude to pause and the running task's expert finishes the task instead of stopping partway, the next
+  task no longer starts. The work stays paused until you tell Claude to go on.
+- Signing out of Claude Code, for example to switch accounts, no longer makes PA3 think its mod failed. Before, the
+  next session started a reinstall for no reason.
+- That reinstall, PA3's self-repair, never ran for anyone who installed from the download: it stopped at once
+  without a word, and its "update running" mark held every task for 20 minutes. It now reinstalls as meant, and if
+  it ever cannot, Claude tells you the reinstall failed and the work goes on.
+
 ## 3.32.18 — Claude's replies show in long sessions
 
 - In a session open for weeks, Claude's replies could stop showing in the main session. It happened after Claude

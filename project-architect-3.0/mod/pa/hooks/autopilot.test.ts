@@ -4095,6 +4095,31 @@ describe('a stopped loop agent (T11-fix2)', () => {
     expect([loop2(w).task?.kind, loop2(w).task?.attempt]).toEqual(['relaunch', 2])
   })
 
+  test('3.32.19: a paused task its expert finishes holds the queue (session); the next task waits for the release (bfm T4, T14)', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const doc = JSON.parse(running()) as { task: Record<string, unknown> }
+    doc.task['paused'] = { at: NOW - 60_000 }
+    const w = world(on, { [LOOP]: JSON.stringify(doc) })
+    setStatus(w, 'E1', 'running')
+    await $.session.start(START)
+    stoppedReq(w, NOW + 1_000, { hold: 'session' })        // the session start's hold, released: only the pause holds
+    await clock.advance(2_000)
+    expect(loop2(w).holds.includes('session')).toBe(false)
+    await $.turn.complete(complete('E1', 'The health check passed, so the safe point is the end of T1.\n\nSTATUS: done\nCOMMIT: abc'))
+    await clock.advance(60_000)
+    await clock.advance(2_000)
+    await clock.advance(2_000)
+    expect([loop2(w).task, loop2(w).holds.includes('session'), w.spawns.length]).toEqual([null, true, 0])
+    expect(entries(w, 'T1-end').length).toBe(1)
+    expect(notices(w).filter(n => n.input.text.includes('T1 finished while paused on the developer\'s request'))).toHaveLength(1)
+    stoppedReq(w, NOW + 66_000, { hold: 'session' })       // the developer's go
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    // the loop goes on: the hold lifts and the plan's next task spawns (this world's stub plan offers T1 again)
+    expect([loop2(w).holds.includes('session'), w.spawns.length]).toEqual([false, 1])
+  })
+
   test('killed with a pending contract: routed', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: running() })

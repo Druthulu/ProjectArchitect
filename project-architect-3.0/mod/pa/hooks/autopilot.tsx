@@ -96,7 +96,7 @@ import {
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
   archiveLines, bandLine, batchDoneNotice, batchOf, CHAIN_STEPS, closeNotice, driveOf, extHealthNotice, extHealthOf, extReviewLine, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withDrive, withPhaseSid,
   BANK_MARKER, BANK_OPTIONS, bankNotice, bankQuestion, generalizableCount, SET_BACK, setAsideOf,
-  installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, RUN_REVIEW_OPTIONS, RUN_REVIEW_QUESTION, runReviewNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckOffline, startCheckState, offlineNotice, manualUpdate, updateFailedNotice, pausedHandbackNotice, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
+  installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, RUN_REVIEW_OPTIONS, RUN_REVIEW_QUESTION, runReviewNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckOffline, startCheckState, offlineNotice, manualUpdate, updateFailedNotice, pausedDoneNotice, pausedHandbackNotice, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
   UPGRADE_MD, upgradeLeftNotice, upgradeOf, UPGRADE_ROUNDS, FORWARD_TTL_MS, SHELLS_FILE, shellNotice, shellsOf, shellsOut, waitingShell,
   GATE_CHECK, GATE_FAILED, GATE_RUN, GATE_STALE, gateWaitReply,
   noVerdict, SPAWN_RETRIES, SPAWN_RETRY_MS, spawnRetryOf,
@@ -3173,7 +3173,15 @@ ${REPLAN_NOTICE}`)
           await journal(t.id, 'end', meta, sha === '' ? body : `${body}\n\n(commit ${sha.slice(0, 12)})`)
           delete facts[t.agentId]
           const dm = doneMarkOf(s, t.id) // 3.29.9: the display is trimmed to the task's start when this session marked it
-          await save({ ...s, state: 'boundary', task: null, lastDone: { id: t.id, at: await $.clock.now() }, ...dm } as LoopState, 'done') // 3.24 T17p
+          const after = { ...s, state: 'boundary', task: null, lastDone: { id: t.id, at: await $.clock.now() }, ...dm } as LoopState
+          // 3.32.19 (bfm 3.32.18): a task paused on the developer's request that its expert finished: the pause holds the
+          // queue (the session hold), so the next task waits for the developer's word (T14 started 7 s after T4 was done).
+          const paused = (t.paused ?? null) !== null
+          await save(paused ? pushHold(after, 'session') : after, paused ? 'done.paused' : 'done') // 3.24 T17p
+          if (paused) {
+            await journal('mod', 'hold', { task: t.id }, `session: ${t.id} finished while paused on the developer's request; the loop waits for the developer (release session).`)
+            await notice(pausedDoneNotice(t.id))
+          }
           if (dm.doneMark !== null) {
             trimSoon('done')
           }

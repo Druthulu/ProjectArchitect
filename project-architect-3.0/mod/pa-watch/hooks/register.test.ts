@@ -13,7 +13,7 @@ const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, 
 type Row = { id: string; description: string; type: string; status: 'running'; parentId?: string }
 const PARTNER: Row[] = [{ id: 'A1', description: 'p', type: 'pa-claude', status: 'running' }]
 
-function world(on: On, files: Record<string, string>, env: Record<string, string>, list: Row[] = PARTNER, denyRegister = false): Map<string, string> {
+function world(on: On, files: Record<string, string>, env: Record<string, string>, list: Row[] = PARTNER, denyRegister: boolean | string = false): Map<string, string> {
   const m = new Map(Object.entries(files))
   mock.env(on, env)
   on('session.root', async () => ({ value: ROOT }))
@@ -28,7 +28,9 @@ function world(on: On, files: Record<string, string>, env: Record<string, string
     return { value: undefined }
   })
   on('session.start', async () => ({ cwd: ROOT }))
-  on('tool.register', async ($, e) => (denyRegister ? { deny: 'EACCES tool.register' } : { value: { tool: `mcp__pa-watch__${e.name}` } }))
+  on('tool.register', async ($, e) => (denyRegister !== false
+    ? { deny: typeof denyRegister === 'string' ? denyRegister : 'EACCES tool.register' }
+    : { value: { tool: `mcp__pa-watch__${e.name}` } }))
   on('agent.list', async () => ({ value: list }))
   return m
 }
@@ -597,6 +599,15 @@ describe('health records (3.24 T6)', () => {
     const er = rec(m, 'error.json') ?? {}
     expect([er['sid'], er['plugin'], er['hook'], er['at']]).toEqual(['S1', 'pa-watch', 'session.start', 4])
     expect(String(er['error'])).toContain('EACCES')
+  })
+  test('3.32.19: a process with no session leaves its heartbeat and no error.json (bfm: a sign-out started a repair)', async ($, on) => {
+    mock.clock(on, { now: 4_000 })
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, PARTNER,
+      '$.tool.register is not available in this mode: no session is bound in this process (the REPL has not mounted ' +
+      'and no headless session is built); catch it and carry on')
+    await $.session.start(START)
+    expect(rec(m, 'error.json')).toBe(null)
+    expect(rec(m, 'heartbeat.json')?.['sid']).toBe('S1')
   })
 })
 

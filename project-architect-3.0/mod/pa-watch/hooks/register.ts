@@ -180,6 +180,10 @@ async function errorRecord($: Pick<EngineInterface, 'fs' | 'session' | 'env' | '
   }
 }
 
+/** Claude Code's refusal of `$.tool.register` in a process with no session ("... is not available in this mode: no
+ * session is bound in this process ...; catch it and carry on"). */
+const NO_SESSION = /is not available in this mode/
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const root = await $.session.root()
@@ -195,7 +199,16 @@ export const register: Register = on => {
       const release = releaseOf(await $.fs.read(`${$.plugin.root}/../../VERSION`).catch(() => null))
       await $.fs.write(`${root}/${HEARTBEAT_FILE}`, heartbeatText(sid, release, version, await $.clock.now(), 'pa-watch')).catch(quiet)
       for (const spec of TOOL_SPECS) {
-        await $.tool.register(spec)
+        try {
+          await $.tool.register(spec)
+        } catch (err) {
+          // 3.32.19 (bfm 3.32.18): a process with no session (a sign-out that ended at once) registers no tools; Claude
+          // Code's own error says to catch it and carry on. Recorded as a failure, it started a repair at the next start.
+          if (NO_SESSION.test(err instanceof Error ? err.message : String(err))) {
+            break
+          }
+          throw err
+        }
       }
     }
     if (debugDir !== '') {

@@ -132,9 +132,15 @@ def _version_fields(path):
 
 def repair_step(root, pa3_dir):
     """3.24 T6: ``(argv, None)`` reinstalling the installed release from VERSION ``source:``, else
-    ``(None, why)``: no source, or the source's package VERSION is not the installed one."""
+    ``(None, why)``: no source, or the source's package VERSION is not the installed one.
+    3.32.19: ``source:`` names the clone (``<source>/project-architect-3.0``) or the package itself, as
+    pa.install.project.resolve_package reads it; every install from the clone names the clone."""
     inst = _version_fields(os.path.join(pa3_dir, "VERSION"))
     src = inst.get("source", "")
+    if src and not os.path.isfile(os.path.join(src, "pa_install.py")):
+        pkg = os.path.join(src, "project-architect-3.0")
+        if os.path.isfile(os.path.join(pkg, "pa_install.py")):
+            src = _fwd(pkg)
     have = _version_key(inst.get("version", ""))
     if not src or have is None or not os.path.isfile(os.path.join(src, "pa_install.py")):
         return None, ("pa3_update: --repair: no installed release to reinstall (VERSION source: %s); "
@@ -195,6 +201,31 @@ def _write_text(path, text):
         os.replace(tmp, path)
     except OSError:
         pass
+
+
+def _refused(root, mode, why, rc):
+    """3.32.19: a run refused before it began, launched behind a ``running`` marker (the session-start hook's heal
+    writes one, then starts this run detached with no output): the reason to update.log and the marker done with
+    ``rc``, so the mod reports the failure instead of holding every task for 20 minutes (bfm 3.32.18: a repair
+    refused in silence). No running marker (nobody waits), or another run holding the lock: left alone."""
+    run_dir = os.path.join(root, ".run", "mod")
+    marker = os.path.join(run_dir, "update.json")
+    try:
+        with open(marker, encoding="utf-8") as fh:
+            doc = json.load(fh)
+    except (OSError, ValueError):
+        return
+    if not isinstance(doc, dict) or doc.get("state") != "running":
+        return
+    try:
+        if time.time() - os.path.getmtime(os.path.join(run_dir, "update.lock")) < LOCK_STALE_S:
+            return
+    except OSError:
+        pass
+    _write_text(os.path.join(run_dir, "update.log"), why + "\n")
+    rec = _record(root)
+    _write_marker(marker, {"state": "done", "mode": mode, "rc": rc, "at": time.time(), "from": doc.get("from") or rec,
+                           "to": rec, "log": ".run/mod/update.log"})
 
 
 _SPAWNER = None     # tests: a callable(argv, cwd) in place of --detach's detached spawn
@@ -259,17 +290,19 @@ def main(argv=None, root=None, config_dir=None, pa3_dir=None):
     if not os.path.isfile(os.path.join(root, ".claude", "pa.json")):
         print("pa3_update: %s is not a PA3 project (no .claude/pa.json)" % _fwd(root))
         return 2
+    mode = "repair" if args.repair else "update"
     if args.repair:
         cmd, why = repair_step(root, pa3_dir)
-        if why:
-            print(why)
-            return 2
         cmds = [cmd]
     else:
-        if not os.path.isdir(clone):
-            print("pa3_update: no package clone at %s; run install.cmd / install.sh once" % _fwd(clone))
-            return 2
+        why = None if os.path.isdir(clone) else (
+            "pa3_update: no package clone at %s; run install.cmd / install.sh once" % _fwd(clone))
         cmds = steps(root, config_dir)
+    if why:
+        print(why)
+        if not args.dry_run and not args.detach:
+            _refused(root, mode, why, 2)
+        return 2
     n = len(cmds)
     if args.dry_run:
         print("pa3_update: dry-run (root %s, clone %s)" % (_fwd(root), _fwd(clone)))
@@ -284,7 +317,6 @@ def main(argv=None, root=None, config_dir=None, pa3_dir=None):
         print("pa3_update: another update is running (%s); nothing ran" % _fwd(lock))
         return 3
     marker = os.path.join(run_dir, "update.json")
-    mode = "repair" if args.repair else "update"
     before = _record(root)
     _write_marker(marker, {"state": "running", "mode": mode, "pid": os.getpid(), "at": time.time(), "from": before})
     try:

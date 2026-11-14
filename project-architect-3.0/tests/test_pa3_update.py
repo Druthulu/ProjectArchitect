@@ -132,6 +132,60 @@ class Pa3UpdateTest(unittest.TestCase):
         finally:
             upd._SPAWNER = None
 
+    def test_repair_step_reads_a_clone_source(self):
+        """3.32.19: VERSION ``source:`` names the clone (every install from it) or the package; both reinstall."""
+        pa3 = os.path.join(self.dir, "pa3")
+        clone = fwd(os.path.join(self.cfg, "pa3-src"))
+        self._write("cfg/pa3-src/project-architect-3.0/pa_install.py", "")
+        self._write("cfg/pa3-src/project-architect-3.0/VERSION", "3.32.19\n")
+        for source in (clone, clone + "/project-architect-3.0"):
+            self._write("pa3/VERSION", "version: 3.32.19\ngit: abc\nsource: %s\n" % source)
+            cmd, why = upd.repair_step(self.root, pa3)
+            self.assertIsNone(why, source)
+            self.assertEqual(cmd, ["/x/py", clone + "/project-architect-3.0/pa_install.py", "--root", "--no-clone",
+                                   "--yes"])
+        self._write("pa3/VERSION", "version: 3.32.19\nsource: %s\n" % fwd(os.path.join(self.dir, "nowhere")))
+        self.assertIn("no installed release to reinstall", upd.repair_step(self.root, pa3)[1])
+
+    def test_refused_run_ends_a_running_marker_only(self):
+        """3.32.19: a refused run behind a running marker writes it done (exit 2) and the reason to update.log; with
+        no running marker, a held lock, --dry-run or --detach, the marker is left as it is."""
+        pa3 = os.path.join(self.dir, "pa3")
+        self._write("pa3/VERSION", "version: 3.32.19\nsource: %s\n" % fwd(os.path.join(self.dir, "nowhere")))
+        marker = os.path.join(self.root, ".run", "mod", "update.json")
+        running = json.dumps({"state": "running", "mode": "repair", "at": 1.0, "by": "hook"})
+
+        def run(*argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                return upd.main(list(argv), root=self.root, config_dir=self.cfg, pa3_dir=pa3)
+
+        def state():
+            with open(marker, encoding="utf-8") as fh:
+                return json.load(fh)
+
+        for argv in (["--repair", "--dry-run"], ["--repair", "--detach"]):
+            self._write("proj/.run/mod/update.json", running)
+            self.assertEqual(run(*argv), 2)
+            self.assertEqual(state()["state"], "running", argv)
+        self._write("proj/.run/mod/update.lock", "1\n")         # another run holds it: its marker
+        self.assertEqual(run("--repair"), 2)
+        self.assertEqual(state()["state"], "running")
+        os.remove(os.path.join(self.root, ".run", "mod", "update.lock"))
+        self.assertEqual(run("--repair"), 2)
+        m = state()
+        self.assertEqual((m["state"], m["mode"], m["rc"], m["log"]), ("done", "repair", 2, ".run/mod/update.log"))
+        with open(os.path.join(self.root, ".run", "mod", "update.log"), encoding="utf-8") as fh:
+            self.assertIn("pa3_update: --repair: no installed release to reinstall", fh.read())
+        done = json.dumps({"state": "done", "mode": "update", "rc": 0, "at": 2.0})
+        self._write("proj/.run/mod/update.json", done)         # nobody waits: a refused run by hand leaves it
+        self.assertEqual(run("--repair"), 2)
+        self.assertEqual(state(), json.loads(done))
+        shutil.rmtree(os.path.join(self.cfg, "pa3-src"))       # the update's own refusal (no clone) too
+        self._write("proj/.run/mod/update.json", running)
+        self.assertEqual(run(), 2)
+        self.assertEqual((state()["state"], state()["mode"], state()["rc"]), ("done", "update", 2))
+
     def test_clone_matches_package_clone_dir(self):
         old = os.environ.get("CLAUDE_CONFIG_DIR")
         os.environ["CLAUDE_CONFIG_DIR"] = self.cfg

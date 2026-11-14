@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.32.18: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.32.19: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -315,7 +315,8 @@ version against the floor, and that the mod loaded in the last session (the firs
 this session too). A break starts the repair at once, once per session, and logged:
 `tools/pa3_update.py --repair` reinstalls the release you have (never a downgrade), or, under
 `upgrade: auto`, a newer release that fixes it is installed instead. The hook's line says what
-broke and what was done; if the mod did not load, plain Claude Code relays it. A repaired mod
+broke and what was done; if the mod did not load, plain Claude Code relays it. A repair that
+cannot run writes why to `.run/mod/update.log`, and Claude says so; it holds no work. A repaired mod
 loads at the next start or at `/reload-plugins`. `python ~/.claude/pa3/pa_ledger.py doctor` runs
 the same checks.
 

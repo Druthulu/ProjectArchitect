@@ -950,6 +950,10 @@ export const pausedNotice = (id: string): string =>
 export const pausedHandbackNotice = (id: string): string =>
   `‹pa› ${id}'s expert handed back while ${id} is paused on the developer's request: it is held, not restarted. Tell ` +
   'the developer in one line; when they want it to go on, in any words, call release({hold: "stopped"}).'
+/** 3.32.19: a paused task's expert finished it (`done`): the next task waits under the session hold. */
+export const pausedDoneNotice = (id: string): string =>
+  `‹pa› ${id} finished while paused on the developer's request: nothing new starts. Tell the developer in one line ` +
+  `that ${id} is done and the work stays paused; when they want it to go on, in any words, call release({hold: "session"}).`
 /** 3.3 T7: Claude's line, with the session's first developer message, in a project that has not set up external
  * coders: '' when pa.json's `external` sets a `coder`, `remind: false` or `use: false` (or pa.json is unreadable).
  * 3.32.1 T5: once per project: the router sets `remind: false` when it goes. */

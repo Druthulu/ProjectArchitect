@@ -230,6 +230,48 @@ class HealthFixtureTest(unittest.TestCase):
         self.assertIn("the mod failed with an error in the last session", line)
         self.assert_ran("repair")
 
+    def set_source(self, source):
+        """The root's VERSION with ``source:`` set to ``source``; returns the text it had."""
+        path = os.path.join(self.pa3, "VERSION")
+        with open(path, encoding="utf-8") as fh:
+            was = fh.read()
+        self._write(path, "".join(("source: %s\n" % source.replace("\\", "/")) if ln.startswith("source:") else ln
+                                  for ln in was.splitlines(True)))
+        return was
+
+    def test_04b_repair_from_a_root_that_names_the_clone(self):
+        """3.32.19 (bfm 3.32.18): every install from the clone writes ``source:`` as the clone itself, not its
+        package dir; the heal's repair reinstalls from ``<clone>/project-architect-3.0`` and its marker ends done."""
+        was = self.set_source(self.clone)
+        try:
+            self.damage()
+            line = health.session_start(self.proj, "c1", "startup")
+            self.assertIn("reinstall of the installed release", line)
+            self.assert_ran("repair")
+            self.assertEqual(health.root_files(self.pa3)["state"], "ok")
+            self.assertFalse(health.run_running(self.proj))
+        finally:
+            self._write(os.path.join(self.pa3, "VERSION"), was)
+
+    def test_04c_a_refused_repair_ends_its_marker(self):
+        """3.32.19 (bfm 3.32.18): a repair refused before it began ends the hook's running marker (exit 2, the reason in
+        update.log), so the mod reports the failure instead of holding every task for 20 minutes."""
+        was = self.set_source(os.path.join(self.S, "nowhere"))
+        try:
+            self.damage()
+            health.session_start(self.proj, "c2", "startup")
+            self.assertEqual(len(self.calls), 1, self.calls)
+            self.assertEqual(self.calls[0][1], 2, self.calls)
+            mk = self.read_json(self.mod_run(health.MARKER))
+            self.assertEqual((mk["state"], mk["mode"], mk["rc"]), ("done", "repair", 2))
+            self.assertFalse(health.run_running(self.proj))
+            with open(self.mod_run("update.log"), encoding="utf-8") as fh:
+                self.assertIn("pa3_update: --repair: no installed release to reinstall", fh.read())
+        finally:
+            self._write(os.path.join(self.pa3, "VERSION"), was)
+            rc, out = self.run_update("--repair")
+            self.assertEqual(rc, 0, out[-1500:])
+
     def test_05_hook_entries_carry_the_line(self):
         # session start, through the hook's run: a mod that left no heartbeat
         self.beat("k0")
@@ -365,6 +407,7 @@ class HealthFixtureTest(unittest.TestCase):
             self.assertGreater(key("3.32.16"), key("3.32.15"), key)
             self.assertGreater(key("3.32.17"), key("3.32.16"), key)
             self.assertGreater(key("3.32.18"), key("3.32.17"), key)
+            self.assertGreater(key("3.32.19"), key("3.32.18"), key)
         self.bump("3.30.1")
         self.assertEqual(health.newer_release(self.pa3, self.clone), "3.30.1")
 
