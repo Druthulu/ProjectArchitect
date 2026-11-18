@@ -425,6 +425,53 @@ describe('the live feed records (3.23 T13d)', () => {
     expect(records(m)).toEqual([])
   })
 
+  // 3.32.20: a turn's last line while the agent still has work out (its own shell on record, or a helper of its own at
+  // work) is a waiting line and feeds (bfm c22b: "The final clean build passed 218 of 218 … I'm rebuilding that evidence"
+  // never reached the main session); with nothing out it is the final answer and feeds nothing (the test above).
+  const ending = (on: On, text: string): void => steps(on, [{ kind: 'text', index: 0, text }], text, [])
+  const SHELLS = `${ROOT}/.run/mod/S1/shells.json`
+  const shell = (exit?: number): string => JSON.stringify({ E1: [{ id: 'b1', name: 'gate.sh', at: 1, type: 'pa-expert', ...(exit === undefined ? {} : { exit, ended: 2 }) }] })
+
+  test('3.32.20: a turn\'s last line while its own shell runs feeds; a failed shell left on record does not count', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [SHELLS]: shell() }, {}, LIST)
+    ending(on, 'The gate suite is running now.')
+    await $.session.start(START)
+    await run($, 'E1')
+    m.set(SHELLS, shell(1))
+    await run($, 'E1')
+    expect(records(m).map(r => [r['agent'], r['kind'], r['text']])).toEqual([['E1', 'text', 'The gate suite is running now.']])
+  })
+
+  for (const how of ['list', 'parents.json'] as const) {
+    test(`3.32.20: an expert's last line while its coder works (known from the ${how}) feeds`, async ($, on) => {
+      mock.clock(on)
+      const coder: Row = { id: 'C1', description: 'T1.c1 apply', type: 'pa-coder', status: 'running', ...(how === 'list' ? { parentId: 'E1' } : {}) }
+      const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON, ...(how === 'parents.json' ? { [`${ROOT}/.run/mod/S1/parents.json`]: '{"C1":"E1"}' } : {}) }, {}, [...LIST, coder])
+      ending(on, 'c22b is still running; waiting for its report.')
+      await $.session.start(START)
+      await run($, 'E1')
+      expect(records(m).map(r => [r['agent'], r['text']])).toEqual([['E1', 'c22b is still running; waiting for its report.']])
+    })
+  }
+
+  test('3.32.20: a ping\'s "." with a shell out, and Claude\'s last line with a helper out, feed nothing', async ($, on) => {
+    mock.clock(on)
+    const list: Row[] = [...LIST, { id: 'P1', description: 'Claude', type: 'pa-claude', status: 'running' },
+      { id: 'C2', description: 'a fix', type: 'pa-coder', status: 'running', parentId: 'P1' }]
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [SHELLS]: shell() }, {}, list)
+    let text = '.'
+    on('turn.step', async function* ($, e) {
+      yield { kind: 'text', index: 0, text } as const
+      return { turnId: e.turnId, index: e.index, answer: text, toolUses: [], stopReason: 'end_turn', usage: null }
+    })
+    await $.session.start(START)
+    await run($, 'E1', 0)
+    text = 'The coder is on it.'
+    await run($, 'P1')
+    expect(records(m)).toEqual([])
+  })
+
   // 3.24 T13n: a narration block (told by its signature in the api messages at the step's end) feeds like text, in block
   // order; an ordinary thinking block, or a message that does not line up with the stream, feeds none.
   const NARR = 'Eg0KC0IJbmFycmF0aW9u' // field 2 > 1 > 8 = "narration"
@@ -572,6 +619,19 @@ describe('the live feed records (3.23 T13d)', () => {
     await $.tool.call({ tool: 'Write', file_path: `${ROOT}/r.md`, content: 'x\n', agentId: 'R1' } as never)
     await $.tool.call({ tool: 'Bash', command: 'sed -i s/1/2/ a.py', agentId: 'E1' } as never)
     expect(records(m)).toEqual([])
+  })
+
+  // 3.32.20: a command's file changes (Claude Code's `bashEditDiff`) are one edit record, for the same agents as an Edit.
+  test('3.32.20: a coder\'s Bash that changed a file writes one edit record; a retriever\'s writes none', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, [...LIST, { id: 'C1', description: 'T1.c1 ratchet', type: 'pa-coder', status: 'running' }])
+    const diff = { files: [{ filePath: `${ROOT}/config/ratchet.tsv`, hunks: [{ oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' metric', '-casts_P\t96721', '+casts_P\t95753'] }] }], moreFiles: 0 }
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, bashEditDiff: diff }, text: '' }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: 'python3 tools/struct_twins.py --write-ratchet', agentId: 'C1' } as never)
+    await $.tool.call({ tool: 'Bash', command: 'python3 tools/x.py', agentId: 'R1' } as never)
+    expect(records(m).map(r => [r['agent'], r['kind'], r['text']])).toEqual([['C1', 'edit', 'Updated config/ratchet.tsv (+1 -1)']])
+    expect((JSON.parse(m.get(`${ROOT}/.run/mod/S1/agents/C1.json`) ?? '{}') as Record<string, unknown>)['line']).toBe('Updated config/ratchet.tsv (+1 -1)')
   })
 })
 

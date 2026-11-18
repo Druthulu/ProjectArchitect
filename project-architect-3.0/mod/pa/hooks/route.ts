@@ -290,8 +290,26 @@ export function childOut(partnerId: string, children: Record<string, Child>,
   return Object.values(children).some(c => c.parent === partnerId && !ENDED.includes(c.status))
 }
 
+/** 3.32.20: the type of the partner's helper still out (childOut's order: the list, then the router's record), '' none. */
+export function heldBy(partnerId: string, children: Record<string, Child>,
+  list: readonly { id: string; status: string; parentId?: string; type?: string }[]): string {
+  const row = list.find(a => partnerId !== '' && a.parentId === partnerId && isBusy(a.status))
+  if (row !== undefined) {
+    return row.type ?? ''
+  }
+  return Object.values(children).find(c => partnerId !== '' && c.parent === partnerId && !ENDED.includes(c.status))?.type ?? ''
+}
+
+/** 3.32.20: a `/model` switch not yet taken: only a fresh partner takes it (decideRoute), so it outlives resumed turns. */
+export const switchPending = (p: Partner): boolean => p.modelSwitchAt > p.lastTurnAt
+
+/** 3.32.20: the switch time a turn's end keeps: a pending switch stays pending past it (a resume, held by a helper out
+ * or a turn in flight, never takes a new model: Claude Code 2.1.327 keeps a resumed subagent on its own, and a switch
+ * there would re-read the whole conversation uncached), until a fresh partner starts on the new model. */
+export const keptSwitch = (p: Partner, now: number): number => (switchPending(p) ? Math.max(p.modelSwitchAt, now + 1) : p.modelSwitchAt)
+
 export function newPartner(agentId: string, model: string, now: number): Partner {
-  return { agentId, spawnedAt: now, lastTurnAt: 0, model, ctx: 0, topic: false, modelSwitchAt: 0, pingInFlight: false, firstCtx: 0, filingInFlight: false, summary: '' }
+  return { agentId, spawnedAt: now, lastTurnAt: 0, model, ctx: 0, topic: false, modelSwitchAt: 0, switchTo: '', switchTold: false, pingInFlight: false, firstCtx: 0, filingInFlight: false, summary: '' }
 }
 
 /** The partner's agent type (3.22 T8g; `claude` at T8f, `partner` before): never the built-in `claude` catch-all. */
@@ -663,6 +681,7 @@ export function applyReply(s: RouterState, n: number, path: string, key: string,
     partner: p === null ? null : {
       ...p,
       lastTurnAt: now,
+      modelSwitchAt: keptSwitch(p, now),
       ctx: ctx ?? p.ctx,
       pingInFlight: false,
       model: model !== '' ? model : p.model,
@@ -703,7 +722,7 @@ export function dueMarkers(s: RouterState, now: number): RouterState {
 /** Any other partner turn ended (a `.` ping, an empty answer): the hold lifts, the send is confirmed. */
 export function partnerTurnEnded(s: RouterState, now: number, ctx: number | null): RouterState {
   const p = s.partner
-  return { ...s, partner: p === null ? null : { ...p, lastTurnAt: now, ctx: ctx ?? p.ctx, pingInFlight: false }, awaiting: null }
+  return { ...s, partner: p === null ? null : { ...p, lastTurnAt: now, modelSwitchAt: keptSwitch(p, now), ctx: ctx ?? p.ctx, pingInFlight: false }, awaiting: null }
 }
 
 /** The parent a forward goes to: the router's record, else `$.agent.list()`'s `parentId`; null when unknown. */
@@ -753,11 +772,9 @@ export function dropFiling(s: RouterState): RouterState {
 /** A filing turn's end: partnerTurnEnded (never applyReply: no reply, no marker, no toast, the warm counts go on), the
  * filing hold lifted; a `/model` switch pending before it stays pending (its rotation still due after this turn end). */
 export function filingTurnEnded(s: RouterState, now: number, ctx: number | null): RouterState {
-  const p = s.partner
-  const switched = p !== null && p.modelSwitchAt > p.lastTurnAt
-  const e = partnerTurnEnded(s, now, ctx)
+  const e = partnerTurnEnded(s, now, ctx) // 3.32.20: it keeps a pending switch (keptSwitch), as every turn's end now does
   const q = e.partner
-  return q === null ? e : { ...e, partner: { ...q, filingInFlight: false, modelSwitchAt: switched ? Math.max(q.modelSwitchAt, now + 1) : q.modelSwitchAt } }
+  return q === null ? e : { ...e, partner: { ...q, filingInFlight: false } }
 }
 
 /**

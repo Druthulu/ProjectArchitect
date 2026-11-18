@@ -5,7 +5,7 @@ import { describe, expect, test } from 'claude-code/testing'
 import { ROLE_HEX } from './card'
 import {
   editHead, editOfRecord, editText, emptyLife, FEED_BLOCK_CAP, FEED_BLOCK_MAX, feedBlock, feedErrorLine, feedEvents, feedLook, type FeedRecord, type FeedRun, feedText,
-  announces, modelName, parseFeedLine, quote, replyRecord, shownOf, type Speaker, speakerOf, staleOf, unseenFeed,
+  announces, modelName, parseFeedLine, quote, replyRecord, shownOf, type Speaker, speakerOf, staleOf, switchHeldLines, unseenFeed,
 } from './feed'
 
 const rec = (n: number, agent: string, text: string, type = 'coder-opus55', at = n): FeedRecord => ({ n, agent, type, desc: 'd', planning: false, text, at })
@@ -222,5 +222,32 @@ describe('3.24 T17g: Claude\'s reply cards name their model and effort', () => {
     expect(out.text).toBe('**🟧 Claude · Opus 5.5 · medium**\n\nDone.')
     expect(out.runs[0]?.label).toBe('Claude · Opus 5.5 · medium')
     expect('shown' in (JSON.parse(replyRecord({ agent: 'P1', n: 1, text: 'x', at: 1, shown: '' })) as object)).toBe(false)
+  })
+})
+
+// 3.32.20: the card that says a /model switch waits, by what holds Claude: its own answer, or a helper of its own; only a
+// planner or a thinker (long runs) gets the way to stop it, its own stop in /tasks (Ctrl+C would stop the task's agents).
+describe('the held /model switch card (3.32.20)', () => {
+  test('mid-answer: two lines, no stop', () => {
+    expect(switchHeldLines('claude-opus-5-5', 'claude-fable-5-2', '')).toEqual([
+      'Model change waiting: Claude finishes this answer on Opus 5.5 first, so it doesn\'t re-read the whole conversation without the cache.',
+      'Your next message starts Claude fresh on Fable 5.2.',
+    ])
+  })
+
+  test('a thinker gets the stop line; a lookup, a coder and an unknown helper do not; Ctrl+C is never named', () => {
+    const thinker = switchHeldLines('claude-opus-5-5', 'claude-sonnet-5-5[1m]', 'pa-thinker')
+    expect(thinker[0]).toBe('Model change waiting: Claude stays on Opus 5.5 while its thinker works on the question, so it doesn\'t re-read the whole conversation without the cache.')
+    expect(thinker.slice(1)).toEqual(['When the answer is in, your next message starts Claude fresh on Sonnet 5.5.',
+      'To switch sooner: open /tasks, select the thinker, press x, then send your message again. The thinker\'s answer is lost.'])
+    expect(switchHeldLines('claude-opus-5-5', 'claude-fable-5-2', 'retriever-code').length).toBe(2)
+    expect(switchHeldLines('claude-opus-5-5', 'claude-fable-5-2', 'pa-coder')[1]).toBe('When the coder reports, your next message starts Claude fresh on Fable 5.2.')
+    expect(switchHeldLines('', '', 'auditor')).toEqual([
+      'Model change waiting: Claude stays on its current model while its auditor works, so it doesn\'t re-read the whole conversation without the cache.',
+      'When it is done, your next message starts Claude fresh on the new model.',
+    ])
+    for (const h of ['', 'pa-planner', 'pa-thinker', 'deep-thinker', 'retriever-web', 'pa-coder']) {
+      expect(switchHeldLines('claude-opus-5-5', 'claude-fable-5-2', h).join(' ').includes('Ctrl')).toBe(false)
+    }
   })
 })

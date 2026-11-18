@@ -80,6 +80,8 @@ function parsePartner(x: unknown): Partner | null {
     ctx: num(x['ctx'], 0),
     topic: x['topic'] === true,
     modelSwitchAt: num(x['modelSwitchAt'], 0),
+    switchTo: str(x['switchTo'], ''),
+    switchTold: x['switchTold'] === true,
     pingInFlight: x['pingInFlight'] === true,
     firstCtx: num(x['firstCtx'], 0),
     filingInFlight: x['filingInFlight'] === true,

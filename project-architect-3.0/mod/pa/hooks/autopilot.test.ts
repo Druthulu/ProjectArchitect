@@ -4359,6 +4359,41 @@ describe('no stall on a false stop (3.28.8)', () => {
     expect(ran(w, 'tools/plan_edit.py set-status').map(r => r.slice(2, 5))).toEqual([['set-status', 'T1', 'done']])
   })
 
+  // 3.32.20: bfm T17 (and T15): the coder handed back at 22:04:39.9 and the router queued its forward to the expert,
+  // dropped from the list while the coder worked; the tick at 22:04:40.0 read no forward yet and took the expert for
+  // killed (Claude told the developer so), and the expert was at work on the report at 22:04:46.
+  // Again 2026-11-18 07:17: coder c26c handed back at 07:17:01.6, the stop came at 07:17:02.05 (the 'running' case).
+  for (const [status, how] of [['running', 'list'], ['completed', 'list'], ['gone', 'parents.json']] as const) {
+    test(`3.32.20: an absent expert whose coder just handed back (${status}, known from the ${how}) waits for the report, not stopped`, async ($, on) => {
+      const clock = mock.clock(on, { now: NOW })
+      on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+      const w = world(on, { [LOOP]: running(), ...(how === 'parents.json' ? { [`${BASE}/S1/parents.json`]: '{"C1":"E1"}' } : {}) })
+      await $.session.start(START)
+      await clock.advance(2_000)
+      w.list = [{ id: 'C1', status: 'running', parentId: 'E1', type: 'pa-coder' }]
+      await clock.advance(2_000)
+      await $.tool.check({ tool: 'SubagentHandback', agentId: 'C1', input: { message: 'done. W1 committed (11fdc91).' } })
+      w.list = status === 'gone' ? [] : [{ id: 'C1', status, parentId: 'E1', type: 'pa-coder' }]
+      for (let i = 0; i < 5; i++) await clock.advance(2_000)
+      expect(loopJ(w).holds).toEqual([])
+      expect(notices(w).filter(x => x.input.text.includes('stopped (Ctrl+C'))).toEqual([])
+    })
+  }
+
+  test('3.32.20: a coder\'s hand-back holds an absent expert only for the forward\'s time; after it, absent is stopped', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: running() })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    w.list = [{ id: 'C1', status: 'running', parentId: 'E1', type: 'pa-coder' }]
+    await clock.advance(2_000)
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'C1', input: { message: 'done.' } })
+    w.list = []
+    for (let i = 0; i < 155; i++) await clock.advance(2_000)
+    expect(loopJ(w).holds).toEqual(['stopped'])
+  })
+
   for (const known of [true, false]) {
     test(`3.32.1 T5: a coder the list gives no parent, ${known ? 'known from parents.json, keeps its expert waiting' : 'and none in parents.json: stopped'}`, async ($, on) => {
       const clock = mock.clock(on, { now: NOW })

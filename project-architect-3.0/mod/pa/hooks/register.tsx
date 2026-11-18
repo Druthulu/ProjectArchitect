@@ -41,6 +41,7 @@ import { idleNow, runningNow, taskAgents } from './digest'
 import {
   addRecords, beatOf, deathOf, emptyFeed, emptyLife, FEED_BEAT_MS, FEED_DESC, FEED_STALE_MS, FEED_TIMEOUT_MS, feedBlock, feedCommand, feedErrorLine, feedEvents,
   announces, editHead, feedLook, type FeedRecord, feedText, fromLog, missingNs, NUDGE, nudgeName, replyRecord, restartGate, seenBeat, senderOf, shownOf, speakerOf, staleOf, unseenFeed,
+  modelName, switchHeldLines,
 } from './feed'
 import { driveOf, EXT_SEEN, EXT_STATUS, extAt, externalReminder, INTAKE_WAITS, intakeDue, LOOP_FILE, loopAgentIds, nextIdOf, ownsLoop, parseLoop, planPhase, projectName, queuedTo, RESTART_LINE, sessionTitle, setupNotice, SHELLS_FILE, shellsOf, shellsOut, statusWord, talkLine } from './loop'
 import { PARENTS_FILE, parentsOf, RELEASE_CHECK_MS, withParents } from './loop'
@@ -57,6 +58,7 @@ import {
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
   isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending, newHandback,
   withImageSources, withSourceLines, dropFiling, endFiling, filingRequest, filingTurnEnded, recordBody, startFiling, todoBlock,
+  heldBy, switchPending,
 } from './route'
 import { buildSeed, charTokens, type Child as SeedChild, GENERATION_TOKENS, localStamp, RECORDS_TOKENS, SEED_BUDGET_TOKENS, STATE_TOKENS, tokenChars } from './seed'
 import {
@@ -928,6 +930,17 @@ export const register: Register = (on, options) => {
                 cold = route === 'fresh' && partnerCold(cur, list, now)
                 if (route === 'fresh') {
                   await log('route.rotate', { agentId: p.agentId, ctx: p.ctx, topic: p.topic, lastTurnAt: p.lastTurnAt, rotateAt, busy, cold })
+                }
+                // 3.32.20: a /model switch held: the partner, mid-answer or with a helper of its own out, is resumed on its
+                // own model (Claude Code 2.1.327 keeps it there; its cache stays warm) and the switch waits for a fresh
+                // partner (route.keptSwitch). The developer is told once per switch, in the transcript.
+                if (route === 'resume' && switchPending(p) && !p.switchTold) {
+                  const holder = busy ? '' : heldBy(p.agentId, cur.children, list)
+                  for (const line of switchHeldLines(p.model, p.switchTo, holder)) {
+                    $.ui.log(line, { to: 'transcript' })
+                  }
+                  await log('route.switch-held', { agentId: p.agentId, from: p.model, to: p.switchTo, holder, busy })
+                  st = await step(x => (x.partner === null || x.partner.agentId !== p.agentId ? x : { ...x, partner: { ...x.partner, switchTold: true } }))
                 }
               }
               if (p !== null && route === 'resume') {
@@ -2406,11 +2419,20 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
+  // A /model switch: the partner rotates to a fresh one on the new model at its next quiet point (policy.decideRoute).
+  // 3.32.20: the switch keeps its target (the card names it) and is held until then, never taken by a resumed partner;
+  // a switch back to the partner's own model cancels it (nothing to rotate for).
   on('classic.PostModelSwitch', async ($, e, next) => {
     if (await read($, activeAtom)) {
       const now = await $.clock.now()
+      const to = typeof e.to_model === 'string' ? e.to_model : ''
       const saved = await update($, stateAtom, x =>
-        x === null || x.partner === null ? x : { ...x, partner: { ...x.partner, modelSwitchAt: now } })
+        x === null || x.partner === null ? x : {
+          ...x,
+          partner: to !== '' && x.partner.model !== '' && modelName(to) === modelName(x.partner.model)
+            ? { ...x.partner, modelSwitchAt: 0, switchTo: '', switchTold: false }
+            : { ...x.partner, modelSwitchAt: now, switchTo: to, switchTold: false },
+        })
       if (saved !== null) {
         await $.fs.write(statePath(`${await $.session.root()}/.run/mod`, saved.sid), serializeState(saved))
       }

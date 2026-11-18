@@ -218,6 +218,51 @@ type Obj = Record<string, unknown>
 const str = (x: unknown): string => (typeof x === 'string' ? x : '')
 const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !Array.isArray(x)
 
+/** 3.32.20: the most files a command's card names; the rest are counted (`and N more`). */
+export const BASH_NAMES = 3
+
+/**
+ * 3.32.20: the card of the files one Bash command changed, from Claude Code's `bashEditDiff` on its result (auto mode;
+ * none for a call run in the background, whose changes come after it), or null: no diff, skipped, or nothing changed.
+ * One file: its diff, as an Edit's card (`Deleted <path>` when the command removed it). Several: one line, `Changed N
+ * files: a, b, c and K more`, with the counts of those diffed and no hunks (a script can rewrite hundreds of files).
+ */
+export function bashEditOf(r: unknown, root: string): FeedEdit | null {
+  if (!isObj(r) || r['deny'] !== undefined || !isObj(r['result'])) {
+    return null
+  }
+  const d = r['result']['bashEditDiff']
+  if (!isObj(d) || d['skipped'] === true) {
+    return null
+  }
+  const files = (Array.isArray(d['files']) ? d['files'] : []).filter(isObj).filter(f => str(f['filePath']) !== '')
+  const named = files.length > 0 ? files.map(f => str(f['filePath']))
+    : (Array.isArray(d['changedFiles']) ? d['changedFiles'] : []).map(str).filter(p => p !== '')
+  const more = typeof d['moreFiles'] === 'number' && d['moreFiles'] > 0 ? Math.floor(d['moreFiles']) : 0
+  const total = named.length + more
+  if (total === 0) {
+    return null
+  }
+  const views = files.map((f): FeedEdit => {
+    const path = shownPath(str(f['filePath']), root)
+    const patch = (Array.isArray(f['hunks']) ? f['hunks'] : []).filter(isObj) as unknown as Patch[]
+    if (f['created'] === true) { // a created file's card: its first lines, as Write's
+      return editView(path, null, patch.flatMap(p => (Array.isArray(p.lines) ? p.lines : []).filter(l => l.startsWith('+')).map(l => l.slice(1))).join('\n'))
+    }
+    const v = patchView(path, patch)
+    return f['deleted'] === true ? { ...v, hunks: [], more: 0, label: `Deleted ${path}` } : v
+  })
+  const names = named.slice(0, BASH_NAMES).map(p => shownPath(p, root))
+  if (total === 1) { // one file: its diff, or only its name when Claude Code gave none (a binary, too large)
+    return views[0] ?? { path: names[0] ?? '', created: false, add: 0, del: 0, hunks: [], more: 0 }
+  }
+  const rest = total - names.length
+  return {
+    path: names[0] ?? '', created: false, add: views.reduce((s, v) => s + v.add, 0), del: views.reduce((s, v) => s + v.del, 0),
+    hunks: [], more: 0, label: `Changed ${total} files: ${names.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
+  }
+}
+
 /**
  * The edit card of one tool call, or null: not an edit tool, the call denied or failed (`deny`, `isError`, no `result`),
  * held for review (`staged`), or nothing to show. `input` is the call's arguments, `r` what `next(e)` resolved to.

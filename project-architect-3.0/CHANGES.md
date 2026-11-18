@@ -2,6 +2,22 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.20 — No false stops, and you see what coders do
+
+- When a coder finished just as its expert had dropped off Claude Code's agent list, PA3 could take the expert for
+  stopped with Ctrl+C: Claude told you the task was paused, sometimes that a coder had stopped partway, and the task
+  waited for your answer. That no longer happens. A real Ctrl+C still holds the task as before.
+- The main session now shows the line an expert or coder writes before it waits for a long command or a helper ("The
+  gate suite is running now"). Before, those lines showed only in the agent's own view.
+- Files changed by a command, such as a script that rewrites a table, now show as an edit card too, as edits made with
+  the edit tools always did: one file with its changes, or one line naming the files when a command changes several.
+  A command run in the background shows none.
+- If you switch models with `/model` while Claude is answering, or while its planner or another helper is still at
+  work, the switch now waits until Claude is free, so Claude never re-reads its whole conversation without the cache.
+  A short note in the transcript says so, and how to switch sooner. Your first message after that starts a fresh
+  Claude on the new model; switching back cancels it. Since Claude Code 2.1.327 such a switch was otherwise lost.
+  `/effort` changes apply at Claude's next step and keep the cache.
+
 ## 3.32.19 — A pause holds until you say go
 
 - When you ask Claude to pause and the running task's expert finishes the task instead of stopping partway, the next

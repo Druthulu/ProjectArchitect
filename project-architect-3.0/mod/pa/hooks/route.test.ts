@@ -6,7 +6,7 @@ import {
   replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds, handbackKey, newHandback,
   bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS, bangOf, bangText,
   nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, todoBlock, enqueue, withImageSources,
-  withSourceLines, imagesPending, IMAGE_WAIT_MS, resumeCheck, RESUME_CHECK_MS,
+  withSourceLines, imagesPending, IMAGE_WAIT_MS, resumeCheck, RESUME_CHECK_MS, heldBy, keptSwitch, partnerTurnEnded, switchPending,
 } from './route'
 import type { Entry } from './journal'
 import { defaultState } from './state'
@@ -363,6 +363,26 @@ describe('3.31 T2: the filing turn', () => {
     expect(e.filingThrough).toBe(iso(10, 40))
     const n = filingTurnEnded(startFiling({ ...defaultState('S', 1), partner: { ...p, modelSwitchAt: 0 } }, 'P', 'x'), 100, null)
     expect([n.partner?.modelSwitchAt, n.partner?.ctx]).toEqual([0, 0])
+  })
+
+  // 3.32.20: a resumed partner never takes a /model switch (Claude Code 2.1.327; a cold re-read), so every turn's end keeps
+  // it pending until a fresh partner: a reply, a ping's turn; none when nothing was pending; a fresh partner has none.
+  test('3.32.20: a pending /model switch outlives a reply and a ping\'s turn; only a fresh partner clears it', () => {
+    const p = { ...newPartner('P', 'claude-opus-5-5', 1), lastTurnAt: 50, modelSwitchAt: 80, switchTo: 'claude-fable-5-2' }
+    const r = applyReply({ ...defaultState('S', 1), partner: p }, 1, 'm.md', 'P:k', 100, 5000)
+    expect([r.partner?.lastTurnAt, r.partner?.modelSwitchAt, switchPending(r.partner!)]).toEqual([100, 101, true])
+    const t = partnerTurnEnded(r, 200, null)
+    expect([t.partner?.modelSwitchAt, switchPending(t.partner!)]).toEqual([201, true])
+    expect(keptSwitch({ ...p, modelSwitchAt: 0 }, 300)).toBe(0)
+    expect(switchPending(newPartner('Q', 'claude-fable-5-2', 400))).toBe(false)
+  })
+
+  test('3.32.20: heldBy names the partner\'s busy helper from the list, else the router\'s record; \'\' when none', () => {
+    const list = [{ id: 'P', status: 'idle' }, { id: 'R', status: 'completed', parentId: 'P', type: 'retriever-code' }, { id: 'L', status: 'running', parentId: 'P', type: 'pa-planner' }]
+    expect(heldBy('P', {}, list)).toBe('pa-planner')
+    expect(heldBy('P', { T: { parent: 'P', type: 'pa-thinker', startedAt: 1, status: 'running' } }, list.slice(0, 2))).toBe('pa-thinker')
+    expect(heldBy('P', { T: { parent: 'P', type: 'pa-thinker', startedAt: 1, status: 'completed' } }, list.slice(0, 2))).toBe('')
+    expect(heldBy('', {}, list)).toBe('')
   })
 
   test('endFiling: filed through the span, the summary dropped, the to-do kept, the hand-back key marked', () => {

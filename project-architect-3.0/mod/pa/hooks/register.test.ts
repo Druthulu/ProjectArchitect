@@ -170,7 +170,7 @@ type Net = {
   spawns: string[]
   sends: { to: string; text: string }[]
   submits: string[]
-  list: { id: string; status: 'running' | 'pending' | 'idle' | 'completed'; parentId?: string }[]
+  list: { id: string; status: 'running' | 'pending' | 'idle' | 'completed'; parentId?: string; type?: string }[]
   apiSteps: number
   /** Process runs (`run:<subcommand>`) and sends (`send:<text>`), in order. */
   order: string[]
@@ -262,7 +262,7 @@ function net(on: On): Net {
     n.list = [...n.list, { id: `P${String(n.spawns.length)}`, status: 'pending' }]
     return { agentId: `P${String(n.spawns.length)}`, model: 'opus' }
   })
-  on('agent.list', async () => ({ value: n.list.map(a => ({ ...a, description: '', type: 'pa-claude' })) }))
+  on('agent.list', async () => ({ value: n.list.map(a => ({ ...a, description: '', type: a.type ?? 'pa-claude' })) }))
   on('session.send', async ($, e) => {
     n.sends.push({ to: e.to, text: e.text })
     n.order.push(`send:${e.text}`)
@@ -941,6 +941,61 @@ describe('router journal, rotation, warming, toast', () => {
     await clock.advance(1_000)
     expect(n.spawns).toEqual([])
     expect(n.sends.map(s => [s.to, s.text])).toEqual([['OLD', 'status?']])
+  })
+
+  // 3.32.20: a /model switch while Claude's planner is out: Claude is resumed on its own model (no cold re-read), the
+  // developer is told once, and the next message after the planner is done starts a fresh Claude; a switch back cancels.
+  const switchWorld = ($: Engine, on: On, planner: 'running' | 'completed'): { n: Net; logs: string[]; w: World; sw: (to: string) => Promise<unknown> } => {
+    const w = world(on, { [`${ROOT}/.claude/pa.json`]: ON, [`${BASE}/S1/state.json`]: prior({ agentId: 'OLD', model: 'claude-opus-5-5', lastTurnAt: OCT - 1_000 }) }, {})
+    const n = net(on)
+    const logs: string[] = []
+    on('ui.log', async ($, e) => {
+      logs.push(e.text)
+      return { value: undefined }
+    })
+    on('classic.PostModelSwitch', async () => ({}))
+    n.list = [{ id: 'OLD', status: 'idle' }, { id: 'PL', status: planner, parentId: 'OLD', type: 'pa-planner' }]
+    const sw = (to: string): Promise<unknown> => $.classic.PostModelSwitch({ hook_event_name: 'PostModelSwitch', session_id: 'S1',
+      transcript_path: 'x', cwd: ROOT, from_model: 'claude-opus-5-5', to_model: to, requested_model: null, source: 'command' } as never)
+    return { n, logs, w, sw }
+  }
+
+  test('3.32.20: a /model switch while Claude\'s planner drafts: Claude resumed on its model, the developer told once', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const { n, logs, w, sw } = switchWorld($, on, 'running')
+    await $.session.start(ISTART)
+    await sw('claude-fable-5-2')
+    await $.prompt.submit({ text: 'status?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect([n.spawns.length, n.sends.map(s => [s.to, s.text])]).toEqual([0, [['OLD', 'status?']]])
+    expect(logs).toEqual([
+      'Model change waiting: Claude stays on Opus 5.5 while its planner drafts the plan, so it doesn\'t re-read the whole conversation without the cache.',
+      'After it presents the draft, your next message starts Claude fresh on Fable 5.2.',
+      'To switch sooner: open /tasks, select the planner, press x, then send your message again. The plan draft starts over.',
+    ])
+    const saved = JSON.parse(w.files.get(`${BASE}/S1/state.json`) ?? '{}') as { partner?: Record<string, unknown> }
+    expect([saved.partner?.['switchTo'], saved.partner?.['switchTold'], (saved.partner?.['modelSwitchAt'] as number) > OCT - 1_000]).toEqual(['claude-fable-5-2', true, true])
+  })
+
+  test('3.32.20: with the planner done the switch starts a fresh Claude; a switch back to Claude\'s own model cancels it', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const { n, logs, sw } = switchWorld($, on, 'completed')
+    await $.session.start(ISTART)
+    await sw('claude-fable-5-2')
+    await sw('claude-opus-5-5[1m]') // back to the model Claude runs on: nothing to rotate for
+    await $.prompt.submit({ text: 'still opus?', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect([n.spawns.length, n.sends.map(s => s.to), logs]).toEqual([0, ['OLD'], []])
+  })
+
+  test('3.32.20: a switch with nothing holding Claude starts a fresh Claude at the next message, no card', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const { n, logs, sw } = switchWorld($, on, 'completed')
+    await $.session.start(ISTART)
+    await sw('claude-fable-5-2')
+    await $.prompt.submit({ text: 'fable now', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect([n.spawns.length, n.sends.length, logs]).toEqual([1, 0, []])
   })
 
   test('warming: the event is spooled before the ping; the . turn lifts the hold and is filed nowhere', async ($, on) => {

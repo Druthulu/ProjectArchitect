@@ -282,6 +282,37 @@ export function modelName(id: string): string {
   return `${fam.charAt(0).toUpperCase()}${fam.slice(1)} ${m[2] ?? ''}${m[3] === undefined ? '' : `.${m[3]}`}`
 }
 
+/**
+ * 3.32.20: the lines that tell the developer a `/model` switch waits: Claude is mid-answer (`holder` '') or has a helper
+ * of its own out (its type), so it goes on, warm, on `from` until it is free; the next message then starts it fresh on
+ * `to`. A planner or a thinker can run long: how to stop it (its own stop in /tasks, never Ctrl+C, which stops every
+ * background agent, the task's expert and coders too) and what that loses.
+ */
+export function switchHeldLines(from: string, to: string, holder: string): string[] {
+  const now = from === '' ? 'its current model' : modelName(from)
+  const next = to === '' ? 'the new model' : modelName(to)
+  const why = 'so it doesn\'t re-read the whole conversation without the cache.'
+  if (holder === '') {
+    return [`Model change waiting: Claude finishes this answer on ${now} first, ${why}`, `Your next message starts Claude fresh on ${next}.`]
+  }
+  const role = holder.replace(/^pa-/, '')
+  const [during, after, stop] = role === 'planner'
+    ? ['while its planner drafts the plan', 'After it presents the draft, your next message', 'The plan draft starts over.']
+    : role === 'thinker' || role === 'deep-thinker'
+      ? ['while its thinker works on the question', 'When the answer is in, your next message', 'The thinker\'s answer is lost.']
+      : role.startsWith('retriever-')
+        ? ['while its lookup finishes', 'After that, your next message', '']
+        : role === 'coder'
+          ? ['while its coder works', 'When the coder reports, your next message', '']
+          : [`while its ${role === '' ? 'helper' : role} works`, 'When it is done, your next message', '']
+  const name = role === 'deep-thinker' ? 'thinker' : role
+  return [
+    `Model change waiting: Claude stays on ${now} ${during}, ${why}`,
+    `${after} starts Claude fresh on ${next}.`,
+    ...(stop === '' ? [] : [`To switch sooner: open /tasks, select the ${name}, press x, then send your message again. ${stop}`]),
+  ]
+}
+
 /** 3.24 T17b: an agent's model and effort as its first titled run shows them (`Opus 5.5 · max`); '' with no model. */
 export function shownOf(model: string, effort: string): string {
   return model === '' ? '' : effort === '' ? modelName(model) : `${modelName(model)} · ${effort}`

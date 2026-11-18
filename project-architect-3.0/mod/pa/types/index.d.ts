@@ -11,6 +11,10 @@ export type Partner = {
   /** The partner raised the topic flag (a topic change: rotate at the next quiet point). */
   topic: boolean
   modelSwitchAt: number
+  /** 3.32.20: the model a pending `/model` switch goes to (PostModelSwitch's `to_model`), '' none. */
+  switchTo: string
+  /** 3.32.20: the developer was told the pending switch waits (once per switch). */
+  switchTold: boolean
   /** A warming `.` ping turn is running (T8a sets it): messages wait in `outbox` until its turn.complete. */
   pingInFlight: boolean
   /** The context of its first answered turn (seed + fixed prompt): what a fresh start costs to write; 0 unknown. */

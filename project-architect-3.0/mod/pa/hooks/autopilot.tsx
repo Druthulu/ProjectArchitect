@@ -2996,7 +2996,8 @@ ${REPLAN_NOTICE}`)
           // resume gets ABSENT_MS before a stale `killed` counts again. 3.28.1 T9c: killed or absent and never seen at work
           // by this process: a session end cut it off; recovered (continue:, else a respawn), no hold.
           // 3.32.1 T5: pa-watch's parents.json places a child the list gives no parent.
-          const list = withParents(await $.agent.list(), parentsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${PARENTS_FILE}`).catch(() => null)))
+          const parents = parentsOf(await $.fs.read(`${root}/.run/mod/${sidNow}/${PARENTS_FILE}`).catch(() => null))
+          const list = withParents(await $.agent.list(), parents)
           const me = list.find(a => a.id === t.agentId)
           // 3.28.1 T15: a background shell its run waits on (its own or a child's, pa-watch's shells.json) keeps it busy;
           // dropped from the list meanwhile, it waits (the shell's completion notice wakes it), never stopped; so it does
@@ -3013,7 +3014,12 @@ ${REPLAN_NOTICE}`)
           const shellsUp = shellsAll.filter(x => !x.left).map(x => x.sh)
           const shellsLeft = shellsAll.filter(x => x.left).map(x => x.sh)
           const shellsLive = shellsUp.length
-          const sentTo = (t.forwardAt ?? 0) > t.lastCompleteAt && now - (t.forwardAt ?? 0) < FORWARD_TTL_MS
+          // 3.32.20: a helper's hand-back since the expert's last turn counts as sent to it from the hand-back itself: the
+          // router forwards each one, but its request is read a tick later (bfm T17 and T15: the coder handed back, the
+          // tick in between took the absent expert for killed, and the expert was at work on the report seconds later).
+          const kidIds = new Set([...kids.map(a => a.id), ...Object.keys(parents).filter(id => parents[id] === t.agentId)])
+          const kidHandedAt = Math.max(0, ...[...kidIds].map(id => handedAt.get(id) ?? 0))
+          const sentTo = [t.forwardAt ?? 0, kidHandedAt].some(at => at > t.lastCompleteAt && now - at < FORWARD_TTL_MS)
           // 3.28.8: so does a child still at work (TerrainDiffusion T12: its expert, dropped from the list while its
           // coder ran the census, was taken for killed and the loop held).
           const kidsUp = kids.filter(a => BUSY.has(a.status) && left.get(a.id) !== true)

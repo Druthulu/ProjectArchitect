@@ -27,8 +27,9 @@ import type { EngineInterface, Register } from 'claude-code'
 
 import { decide, ERROR_FILE, errorText, HEARTBEAT_FILE, heartbeatText, ledgerPath, paSetting, releaseOf, versionOf } from './activation'
 import { eventFile } from './debug'
-import { EDIT_TOOLS, editHeader, editOf, editsShown } from './edit'
-import { feedDirOf, feedName, feedPieces, feedRecord, feeds, lastLine, narrationIndexes, startsLine, startText } from './feed'
+import { bashEditOf, EDIT_TOOLS, editHeader, editOf, editsShown } from './edit'
+import type { FeedEdit } from './edit'
+import { feedDirOf, feedName, feedPieces, feedRecord, feeds, lastLine, narrationIndexes, startsLine, startText, workOut } from './feed'
 import type { StepBlock } from './feed'
 import { displayWho, entryPath, entryText, filingOf, noteLines, noteWho, partnerIdOf, stamp, stepFactsText, whoOf } from './journal'
 import { hintOf, keepRow, ladderArgv, PLANNER, rowKey, rowOf, spawnFields, spawnModel, stepEffort, UNSET } from './ladder'
@@ -439,7 +440,16 @@ export const register: Register = on => {
     const ping = e.index === 0 && isPingStep(result.answer, result.toolUses)
     // 3.24 T13n: the narration blocks by their signatures (the probe: the api messages end on this step's message here).
     const narration = feedOn && sawTool ? narrationIndexes(await $.session.messages({ agentId, as: 'api' }).catch(() => null), blocks) : new Set<number>()
-    for (const piece of sawTool ? feedPieces(blocks, narration, !ping) : []) {
+    // 3.32.20: a step with no tool call ends the turn: its text is the final answer (the report comes by the hand-back),
+    // or a waiting line when the agent still has work out, its own shell or helper (feed.workOut): that one feeds too
+    // (bfm: 782 such lines in six days never reached the main session). Claude's words go through its hand-back.
+    let waiting = false
+    if (feedOn && !sawTool && !ping && me.who !== 'Claude' && blocks.some(b => b.kind === 'text' && b.text.trim() !== '')) {
+      const base = `${await $.session.root()}/.run/mod/${await $.session.id()}`
+      waiting = workOut(agentId, await $.fs.read(`${base}/shells.json`).catch(() => null),
+        await $.fs.read(`${base}/parents.json`).catch(() => null), await $.agent.list().catch(() => []))
+    }
+    for (const piece of sawTool || waiting ? feedPieces(blocks, narration, sawTool ? !ping : true) : []) {
       await feedOut(piece)
     }
     me.ctx = usage === null ? me.ctx : ctxOf(usage)
@@ -511,6 +521,8 @@ export const register: Register = on => {
           const rec: ShellRec = { id, name: shellName(String(args['command'] ?? '')), at: Date.now(), type, ...(bg ? {} : { moved: true }) }
           await shellsEdit($, s => ({ ...s, [agent]: [...(s[agent] ?? []).filter(x => x.id !== id), rec] }))
         }
+        // 3.32.20: the files the command changed (Claude Code's `bashEditDiff`), one card (edit.bashEditOf).
+        await editCard(root => bashEditOf(r, root))
         return r
       }
       if (e.tool === 'Agent' || e.tool === 'Task') {
@@ -541,27 +553,39 @@ export const register: Register = on => {
       if (EDIT_TOOLS.includes(e.tool)) {
         // 3.24 T8b: a successful file edit by Claude, an expert or a coder is one `edit` feed record; the band's line names it.
         const r = await next(e)
-        const root = await $.session.root()
-        const sid = await $.session.id()
-        const stateText = await $.fs.read(`${root}/.run/mod/${sid}/state.json`).catch(() => null)
-        const row = f.type !== '' ? null : (await $.agent.list().catch(() => [])).find(a => a.id === e.agentId)
-        const type = row === null ? f.type : (row?.type ?? '')
-        const desc = row === null ? f.description : hintOf(row?.description ?? '').desc
-        const edit = editsShown(type, partnerIdOf(stateText) === e.agentId) ? editOf(e.tool, args, r, root) : null
-        if (edit !== null) {
-          const at = Date.now()
-          const text = editHeader(edit)
-          feedSeq += 1
-          const body = feedRecord({ agent: e.agentId, type, desc, planning: me?.planning === true, text, at, kind: 'edit', edit })
-          await $.fs.write(`${feedDirOf(stateText, root, sid)}/in/${feedName(at, feedSeq)}`, body).catch(quiet)
-          const f2 = { ...factsOf(e.agentId), line: text }
-          facts.set(e.agentId, f2)
-          await $.fs.write(`${root}/.run/mod/${sid}/agents/${e.agentId}.json`, factsText(f2, me?.ctx ?? 0, at)).catch(quiet)
-        }
+        await editCard(root => editOf(e.tool, args, r, root))
         return r
       }
     }
     return next(e)
+
+    /** 3.24 T8b: one `edit` feed record for a change by Claude, an expert or a coder (editsShown), the band's line naming
+     * it; 3.32.20: the card from `build` (an edit tool's call, or the files a Bash command changed). */
+    async function editCard(build: (root: string) => FeedEdit | null): Promise<void> {
+      if (e.agentId === undefined) {
+        return
+      }
+      const f = factsOf(e.agentId)
+      const me = agents.get(e.agentId)
+      const root = await $.session.root()
+      const sid = await $.session.id()
+      const stateText = await $.fs.read(`${root}/.run/mod/${sid}/state.json`).catch(() => null)
+      const row = f.type !== '' ? null : (await $.agent.list().catch(() => [])).find(a => a.id === e.agentId)
+      const type = row === null ? f.type : (row?.type ?? '')
+      const desc = row === null ? f.description : hintOf(row?.description ?? '').desc
+      const edit = editsShown(type, partnerIdOf(stateText) === e.agentId) ? build(root) : null
+      if (edit === null) {
+        return
+      }
+      const at = Date.now()
+      const text = editHeader(edit)
+      feedSeq += 1
+      const body = feedRecord({ agent: e.agentId, type, desc, planning: me?.planning === true, text, at, kind: 'edit', edit })
+      await $.fs.write(`${feedDirOf(stateText, root, sid)}/in/${feedName(at, feedSeq)}`, body).catch(quiet)
+      const f2 = { ...factsOf(e.agentId), line: text }
+      facts.set(e.agentId, f2)
+      await $.fs.write(`${root}/.run/mod/${sid}/agents/${e.agentId}.json`, factsText(f2, me?.ctx ?? 0, at)).catch(quiet)
+    }
   })
 
   // 3.28.1 T15: a background shell's completion notice (a row in its agent's conversation): a clean end removes its

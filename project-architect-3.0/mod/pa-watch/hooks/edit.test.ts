@@ -2,7 +2,7 @@
 // cap, a new file, MultiEdit, CRLF content, and which calls count (success only).
 import { describe, expect, test } from 'claude-code/testing'
 
-import { diffRows, editHeader, editOf, editsShown, editView, hunksOf, linesOf, patchView, shownPath } from './edit'
+import { bashEditOf, diffRows, editHeader, editOf, editsShown, editView, hunksOf, linesOf, patchView, shownPath } from './edit'
 
 const nums = (from: number, to: number): string[] => Array.from({ length: to - from + 1 }, (_, i) => `line ${from + i}`)
 const text = (ls: readonly string[]): string => `${ls.join('\n')}\n`
@@ -134,5 +134,48 @@ describe('which calls draw', () => {
     expect(editOf('NotebookEdit', { notebook_path: '/r/n.ipynb' }, ok({ notebook_path: '/r/n.ipynb', error: 'bad cell', new_source: '' }), '/r')).toBe(null)
     expect(editOf('Bash', { command: 'sed -i s/1/2/ a.py' }, ok({ stdout: '' }), '/r')).toBe(null)
     expect(editOf('Read', { file_path: '/r/a.py' }, ok({ file: {} }), '/r')).toBe(null)
+  })
+})
+
+// 3.32.20: the files a Bash command changed, from Claude Code's `bashEditDiff` on its result (bfm, six days: 1,174 such
+// commands changed 2,373 files and none showed in the main session; c22b's `struct_twins.py --write-ratchet` among them).
+describe('the files a Bash command changed (3.32.20)', () => {
+  const ok = (bashEditDiff: unknown): Record<string, unknown> => ({ result: { stdout: '', stderr: '', interrupted: false, bashEditDiff }, text: 'ok' })
+  const H = (start: number, lines: string[]): Record<string, unknown> => ({ oldStart: start, oldLines: 0, newStart: start, newLines: 0, lines })
+  const RATCHET = { filePath: '/r/config/ratchet.tsv', hunks: [H(4, [' metric', '-casts_P\t96721', '+casts_P\t95753'])] }
+
+  test('one file: its diff, as an Edit card', async () => {
+    const v = bashEditOf(ok({ files: [RATCHET], moreFiles: 0 }), '/r')
+    expect(v).toEqual({ path: 'config/ratchet.tsv', created: false, add: 1, del: 1, more: 0, hunks: ['@@ -4,2 +4,2 @@\n metric\n-casts_P\t96721\n+casts_P\t95753'] })
+    expect(editHeader(v!)).toBe('Updated config/ratchet.tsv (+1 -1)')
+  })
+
+  test('a created file shows its lines as Write\'s card; a deleted one is one line', async () => {
+    const made = bashEditOf(ok({ files: [{ filePath: '/r/n.md', created: true, hunks: [H(0, ['+a', '+b'])] }], moreFiles: 0 }), '/r')
+    expect([made, editHeader(made!)]).toEqual([{ path: 'n.md', created: true, add: 2, del: 0, hunks: ['a\nb'], more: 0 }, 'Created n.md (2 lines)'])
+    const gone = bashEditOf(ok({ files: [{ filePath: '/r/old.md', deleted: true, hunks: [H(1, ['-a', '-b'])] }], moreFiles: 0 }), '/r')
+    expect([gone?.hunks, editHeader(gone!)]).toEqual([[], 'Deleted old.md (+0 -2)'])
+  })
+
+  test('several files: one line naming the first three, the rest counted, the diffed files\' counts, no hunks', async () => {
+    const files = ['a', 'b', 'c', 'd'].map(n => ({ filePath: `/r/src/${n}.c`, hunks: [H(1, ['-x', '+y'])] }))
+    const v = bashEditOf(ok({ files, moreFiles: 419 }), '/r')
+    expect([v?.hunks, v?.more, editHeader(v!)]).toEqual([[], 0, 'Changed 423 files: src/a.c, src/b.c, src/c.c and 420 more (+4 -4)'])
+    expect(editHeader(bashEditOf(ok({ files: files.slice(0, 2), moreFiles: 0 }), '/r')!)).toBe('Changed 2 files: src/a.c, src/b.c (+2 -2)')
+  })
+
+  test('names only when Claude Code gave no diff (binaries, too large)', async () => {
+    expect(editHeader(bashEditOf(ok({ files: [], moreFiles: 0, changedFiles: ['/r/a.bin', '/r/b.bin'], unavailable: true }), '/r')!))
+      .toBe('Changed 2 files: a.bin, b.bin (+0 -0)')
+    expect(editHeader(bashEditOf(ok({ files: [], moreFiles: 0, changedFiles: ['/r/a.bin'] }), '/r')!)).toBe('Updated a.bin (+0 -0)')
+  })
+
+  test('nothing: no diff, a skipped one, nothing changed, a denied call, a background call', async () => {
+    expect(bashEditOf(ok(undefined), '/r')).toBe(null)
+    expect(bashEditOf(ok({ skipped: true, files: [RATCHET], moreFiles: 0 }), '/r')).toBe(null)
+    expect(bashEditOf(ok({ files: [], moreFiles: 0 }), '/r')).toBe(null)
+    expect(bashEditOf({ deny: 'no' }, '/r')).toBe(null)
+    expect(bashEditOf({ result: { stdout: '', backgroundTaskId: 'b1' } }, '/r')).toBe(null)
+    expect(bashEditOf({ result: 'ok' }, '/r')).toBe(null)
   })
 })

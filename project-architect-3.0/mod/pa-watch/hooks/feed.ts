@@ -36,6 +36,33 @@ export function feedDirOf(stateText: string | null, root: string, sid: string): 
   return /^([A-Za-z]:)?[\\/]/.test(dir) ? dir.replace(/\\/g, '/') : `${root}/${dir.replace(/\\/g, '/')}`
 }
 
+const OUT: ReadonlySet<string> = new Set(['pending', 'running', 'waiting'])
+
+/** A JSON object file's text as a record ({} when absent or not an object). */
+function objOf(text: string | null): Record<string, unknown> {
+  try {
+    const v = JSON.parse(text ?? '{}') as unknown
+    return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * 3.32.20: whether an agent still has work out: a background shell of its own on record (shells.json, no `exit`), or a
+ * helper of its own pending, running or waiting (the list's `parentId`, else parents.json). A step with no tool call that
+ * ends its turn then is a waiting line ("the gate suite is running now"), not its report, which comes by the hand-back.
+ */
+export function workOut(agentId: string, shellsText: string | null, parentsText: string | null,
+  list: readonly { id: string; status: string; parentId?: string }[]): boolean {
+  const shells = objOf(shellsText)[agentId]
+  if (Array.isArray(shells) && shells.some(x => typeof x === 'object' && x !== null && (x as { exit?: unknown }).exit === undefined)) {
+    return true
+  }
+  const parents = objOf(parentsText)
+  return list.some(a => (a.parentId ?? parents[a.id]) === agentId && OUT.has(a.status))
+}
+
 /** The band's working line of a feed segment (3.23 T13d.c2): its last non-empty line, whitespace collapsed. */
 export function lastLine(text: string): string {
   const lines = text.split(/\r?\n/).map(l => l.replace(/\s+/g, ' ').trim()).filter(l => l !== '')
