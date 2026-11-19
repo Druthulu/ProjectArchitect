@@ -633,6 +633,17 @@ describe('the live feed records (3.23 T13d)', () => {
     expect(records(m).map(r => [r['agent'], r['kind'], r['text']])).toEqual([['C1', 'edit', 'Updated config/ratchet.tsv (+1 -1)']])
     expect((JSON.parse(m.get(`${ROOT}/.run/mod/S1/agents/C1.json`) ?? '{}') as Record<string, unknown>)['line']).toBe('Updated config/ratchet.tsv (+1 -1)')
   })
+
+  // 3.32.21: a command that changed two files, each with its diff, writes a card for each (bfm: "Changed 2 files" hid them).
+  test('3.32.21: a coder\'s Bash that changed two files writes two edit records, in order', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {}, [...LIST, { id: 'C1', description: 'T1.c1 ratchet', type: 'pa-coder', status: 'running' }])
+    const H = (f: string): Record<string, unknown> => ({ filePath: `${ROOT}/src/${f}`, hunks: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-x', '+y'] }] })
+    on('tool.call', { tool: 'Bash' }, async () => ({ result: { stdout: '', stderr: '', interrupted: false, bashEditDiff: { files: [H('a.c'), H('b.c')], moreFiles: 0 } }, text: '' }) as never)
+    await $.session.start(START)
+    await $.tool.call({ tool: 'Bash', command: 'python3 tools/fold.py', agentId: 'C1' } as never)
+    expect(records(m).map(r => r['text'])).toEqual(['Updated src/a.c (+1 -1)', 'Updated src/b.c (+1 -1)'])
+  })
 })
 
 describe('health records (3.24 T6)', () => {

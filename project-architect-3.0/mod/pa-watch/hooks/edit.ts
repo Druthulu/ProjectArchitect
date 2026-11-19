@@ -31,8 +31,15 @@ const PLAN_DRAFTS = ['.run/PHASE_PLAN.draft.md', '.run/GENERATION_PLAN.draft.md'
 /** The header line (the record's `text`, the band's line, the phone's line above the fence). */
 export function editHeader(e: FeedEdit): string {
   const verb = e.label ?? `${e.created ? 'Created' : 'Updated'} ${e.path}`
+  if (uncounted(e)) {
+    return verb
+  }
   return e.created ? `${verb} (${e.add} ${e.add === 1 ? 'line' : 'lines'})` : `${verb} (+${e.add} -${e.del})`
 }
+
+/** 3.32.21: a labelled card that counted nothing (a file Claude Code gave no diff for) shows no `(+0 -0)`: it would be
+ * false. The router's editHead keeps the same rule. */
+export const uncounted = (e: FeedEdit): boolean => e.label !== undefined && !e.created && e.add === 0 && e.del === 0 && e.hunks.length === 0
 
 /** A text's lines: CRLF and CR as LF, other control characters but tab as spaces, no empty last line after a final newline. */
 export function linesOf(text: string): string[] {
@@ -222,26 +229,29 @@ const isObj = (x: unknown): x is Obj => typeof x === 'object' && x !== null && !
 export const BASH_NAMES = 3
 
 /**
- * 3.32.20: the card of the files one Bash command changed, from Claude Code's `bashEditDiff` on its result (auto mode;
- * none for a call run in the background, whose changes come after it), or null: no diff, skipped, or nothing changed.
- * One file: its diff, as an Edit's card (`Deleted <path>` when the command removed it). Several: one line, `Changed N
- * files: a, b, c and K more`, with the counts of those diffed and no hunks (a script can rewrite hundreds of files).
+ * 3.32.20: the cards of the files one Bash command changed, from Claude Code's `bashEditDiff` on its result (auto mode;
+ * none for a call run in the background, whose changes come after it); none when it has no diff, skipped one, or nothing
+ * changed. `files` are the files with a diff; `moreFiles` counts the others, which `changedFiles` names (a file too large
+ * to diff, a deleted one): each file counts once (3.32.21: one such file showed as "Changed 2 files"). 3.32.21: up to
+ * BASH_NAMES files, every one with a diff: one card each, as an Edit's (Created as Write's, `Deleted <path>` with no
+ * hunks); one file with no diff: `Changed <path>`; else one line, `Changed N files: a, b, c and K more`, the diffed
+ * files' counts and no hunks (a script can rewrite hundreds of files).
  */
-export function bashEditOf(r: unknown, root: string): FeedEdit | null {
+export function bashEditOf(r: unknown, root: string): FeedEdit[] {
   if (!isObj(r) || r['deny'] !== undefined || !isObj(r['result'])) {
-    return null
+    return []
   }
   const d = r['result']['bashEditDiff']
   if (!isObj(d) || d['skipped'] === true) {
-    return null
+    return []
   }
   const files = (Array.isArray(d['files']) ? d['files'] : []).filter(isObj).filter(f => str(f['filePath']) !== '')
-  const named = files.length > 0 ? files.map(f => str(f['filePath']))
-    : (Array.isArray(d['changedFiles']) ? d['changedFiles'] : []).map(str).filter(p => p !== '')
+  const diffed = files.map(f => str(f['filePath']))
+  const others = (Array.isArray(d['changedFiles']) ? d['changedFiles'] : []).map(str).filter(p => p !== '' && !diffed.includes(p))
   const more = typeof d['moreFiles'] === 'number' && d['moreFiles'] > 0 ? Math.floor(d['moreFiles']) : 0
-  const total = named.length + more
+  const total = diffed.length + Math.max(more, others.length)
   if (total === 0) {
-    return null
+    return []
   }
   const views = files.map((f): FeedEdit => {
     const path = shownPath(str(f['filePath']), root)
@@ -252,15 +262,18 @@ export function bashEditOf(r: unknown, root: string): FeedEdit | null {
     const v = patchView(path, patch)
     return f['deleted'] === true ? { ...v, hunks: [], more: 0, label: `Deleted ${path}` } : v
   })
-  const names = named.slice(0, BASH_NAMES).map(p => shownPath(p, root))
-  if (total === 1) { // one file: its diff, or only its name when Claude Code gave none (a binary, too large)
-    return views[0] ?? { path: names[0] ?? '', created: false, add: 0, del: 0, hunks: [], more: 0 }
+  if (total === views.length && total <= BASH_NAMES) {
+    return views
+  }
+  const names = [...diffed, ...others].slice(0, BASH_NAMES).map(p => shownPath(p, root))
+  if (total === 1) { // one file Claude Code gave no diff for: its name only
+    return [{ path: names[0] ?? '', created: false, add: 0, del: 0, hunks: [], more: 0, label: `Changed ${names[0] ?? ''}` }]
   }
   const rest = total - names.length
-  return {
+  return [{
     path: names[0] ?? '', created: false, add: views.reduce((s, v) => s + v.add, 0), del: views.reduce((s, v) => s + v.del, 0),
-    hunks: [], more: 0, label: `Changed ${total} files: ${names.join(', ')}${rest > 0 ? ` and ${rest} more` : ''}`,
-  }
+    hunks: [], more: 0, label: `Changed ${String(total)} files: ${names.join(', ')}${rest > 0 ? ` and ${String(rest)} more` : ''}`,
+  }]
 }
 
 /**

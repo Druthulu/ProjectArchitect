@@ -73,6 +73,11 @@ export function editOfRecord(x: unknown): FeedEdit | undefined {
 /** 3.24 T8b: an edit card's header, native: `Updated <path>` and ` (+N -M)`, or `Created <path>` and ` (N lines)`; 3.24
  * T13B: the record's `label` in place of the verb and path (a plan draft: `Plan drafted (58 lines)`). */
 export function editHead(e: FeedEdit): { verb: string; counts: string } {
+  // 3.32.21: a labelled card that counted nothing (a file Claude Code gave no diff for) shows no `(+0 -0)`, as the
+  // watcher's editHeader.
+  if (e.label !== undefined && !e.created && e.add === 0 && e.del === 0 && e.hunks.length === 0) {
+    return { verb: e.label, counts: '' }
+  }
   return e.created
     ? { verb: e.label ?? `Created ${e.path}`, counts: ` (${e.add} ${e.add === 1 ? 'line' : 'lines'})` }
     : { verb: e.label ?? `Updated ${e.path}`, counts: ` (+${e.add} -${e.del})` }

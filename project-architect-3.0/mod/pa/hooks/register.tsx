@@ -1839,6 +1839,31 @@ export const register: Register = (on, options) => {
         await $.fs.write(...ev('image.error', { err: clip(String(err), 300) })).catch(quiet)
       }
     }
+    // 3.23 T13d: the feed's records wait in feedAtom for the next feed turn; a skipped number, or a line Claude Code cut
+    // (3.23 T13d.c6a), is read from the log at once.
+    const takeFeed = async (text: string) => {
+      const evs = feedEvents(text)
+      const recs = evs.flatMap(x => (x.kind === 'record' ? [x.rec] : []))
+      const root = await $.session.root()
+      const dir = `${root}/${(await read($, stateAtom))?.feed.dir ?? feedDirOf(await $.session.id())}`
+      let f = await update($, feedAtom, x => addRecords(x, recs))
+      const cuts = evs.flatMap(x => (x.kind === 'cut' && (f.drawn === null || x.n > f.drawn) ? [x.n] : []))
+      const miss = [...new Set([...missingNs(f), ...cuts])].sort((a, b) => a - b)
+      let filled: number[] = []
+      if (miss.length > 0) {
+        const got = fromLog(await feedLogText($, dir), miss)
+        filled = got.map(r => r.n)
+        f = await update($, feedAtom, x => addRecords(x, got))
+      }
+      return { evs, recs, dir, cuts, miss, filled }
+    }
+    // 3.32.21: a feed event's records are taken before next(e), as a message's images are (3.32.4): Claude Code may start
+    // the feed turn inside next(e), and that turn draws what waits (bfm 2026-11-19: each turn drew the record before its
+    // own, so the newest waited for the next event, minutes on a quiet stretch).
+    let feedIn: Awaited<ReturnType<typeof takeFeed>> | null = null
+    if (early === 'feed') {
+      feedIn = await takeFeed(e.text).catch(() => null)
+    }
     const out = await next(e)
     if (out.drop !== undefined) {
       if (early === 'developer') {
@@ -1955,23 +1980,11 @@ export const register: Register = (on, options) => {
         const takenAt = await read($, receivedAtom)
         await update($, workAtom, w => (w.rows.some(r => r.role === 'claude') ? w : { ...w, rows: [receivedRow(takenAt, now), ...w.rows], working: true }))
       } else if (route === 'feed') {
-        // 3.23 T13d: the feed's records wait in feedAtom for the next feed turn; a skipped number is read from the log;
-        // records delivered into a running turn get a nudge, so a feed turn follows that draws them.
+        // The records were taken before next(e) (takeFeed); records delivered into a running turn get a nudge, so a feed
+        // turn follows that draws them.
         kind = 'feed.in'
-        const evs = feedEvents(e.text)
-        const recs = evs.flatMap(x => (x.kind === 'record' ? [x.rec] : []))
-        const root = await $.session.root()
-        const dir = `${root}/${(await read($, stateAtom))?.feed.dir ?? feedDirOf(await $.session.id())}`
-        let f = await update($, feedAtom, x => addRecords(x, recs))
-        // 3.23 T13d.c6a: a record's line Claude Code cut is read from the log at once, as a gap is.
-        const cuts = evs.flatMap(x => (x.kind === 'cut' && (f.drawn === null || x.n > f.drawn) ? [x.n] : []))
-        const miss = [...new Set([...missingNs(f), ...cuts])].sort((a, b) => a - b)
-        let filled: number[] = []
-        if (miss.length > 0) {
-          const got = fromLog(await feedLogText($, dir), miss)
-          filled = got.map(r => r.n)
-          f = await update($, feedAtom, x => addRecords(x, got))
-        }
+        const { evs, recs, dir, cuts, miss, filled } = feedIn ?? (await takeFeed(e.text))
+        const f = await read($, feedAtom)
         const nudge = e.turnId !== undefined && recs.length + cuts.length > 0 && f.pending.length > 0
         if (nudge) {
           nseq += 1

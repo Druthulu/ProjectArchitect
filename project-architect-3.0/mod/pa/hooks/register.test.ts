@@ -2469,7 +2469,12 @@ describe('the live feed (3.23 T13d)', () => {
       n.sends.push(e.text)
       return { isDelivered: true }
     })
-    on('prompt.submit', async ($, e) => ({ text: e.text, origin: e.origin }))
+    // 3.32.21: `inside.turn`, when set, is a turn Claude Code starts inside next(e), before the mod's hook goes on.
+    const inside: { turn: ((text: string) => Promise<void>) | null } = { turn: null }
+    on('prompt.submit', async ($, e) => {
+      await inside.turn?.(e.text)
+      return { text: e.text, origin: e.origin }
+    })
     on('turn.start', async ($, e) => ({ turnId: e.turnId }))
     on('turn.complete', async ($, e) => ({ text: e.answer }))
     on('turn.step', async function* ($, e) {
@@ -2495,7 +2500,7 @@ describe('the live feed (3.23 T13d)', () => {
       await submit(text)
       return turn(text)
     }
-    return { w, n, clock, submit, turn, answer }
+    return { w, n, clock, submit, turn, answer, inside }
   }
 
   test('a feed notification is not forwarded, filed, carded or sent; its turn draws the line', async ($, on) => {
@@ -2625,6 +2630,21 @@ describe('the live feed (3.23 T13d)', () => {
     w.files.set(`${FEED}/log.jsonl`, `${rec(3, 'C1', 'line 3')}\n`)
     const cut = `${rec(2, 'C1', 'line 2').slice(0, 30)}...(truncated)`
     expect(await answer(note(rec(1, 'C1', 'line 1'), cut))).toBe('**🟩 Coder · T3**\n> line 1\n>\n> line 2')
+  })
+
+  // 3.32.21: bfm 2026-11-19 06:18: Claude Code started each feed turn inside next(e), before the mod took the event's
+  // records, so the turn drew the record before its own ("Updated include/struct_types.h" one event late) and the newest
+  // waited for the next event. The records are taken before next(e) now: each turn draws its own.
+  test('3.32.21: a feed turn started inside next(e) draws its own record, every time', async ($, on) => {
+    const { turn, inside } = await feed($, on)
+    const got: string[] = []
+    inside.turn = async (text) => {
+      got.push(await turn(text))
+    }
+    await $.prompt.submit({ text: note(rec(1, 'C1', 'Now the header edit.')), origin: { kind: 'task-notification' }, wait: false })
+    await $.prompt.submit({ text: note(rec(2, 'C1', 'Updated include/struct_types.h')), origin: { kind: 'task-notification' }, wait: false })
+    await $.prompt.submit({ text: note(rec(3, 'C1', 'Updated src/ov_SC07_002.c')), origin: { kind: 'task-notification' }, wait: false })
+    expect(got).toEqual(['**🟩 Coder · T3**' + '\n> Now the header edit.', '> Updated include/struct_types.h', '> Updated src/ov_SC07_002.c'])
   })
 
   test('a delivery into a running turn writes a nudge file; a nudge alone does not', async ($, on) => {

@@ -251,3 +251,15 @@ describe('the held /model switch card (3.32.20)', () => {
     }
   })
 })
+
+// 3.32.21: a labelled card that counted nothing (a file Claude Code gave no diff for) shows no (+0 -0); counted and
+// created cards keep their counts.
+describe('edit card counts (3.32.21)', () => {
+  test('no false counts on a name-only card; others unchanged', () => {
+    const none = { path: 'config/struct_dispositions.tsv', created: false, add: 0, del: 0, hunks: [], more: 0, label: 'Changed config/struct_dispositions.tsv' }
+    expect(editHead(none)).toEqual({ verb: 'Changed config/struct_dispositions.tsv', counts: '' })
+    expect(editHead({ ...none, add: 4, del: 4, label: 'Changed 2 files: a.c, b.c' }).counts).toBe(' (+4 -4)')
+    expect(editHead({ ...none, created: true, add: 58, label: 'Plan drafted' })).toEqual({ verb: 'Plan drafted', counts: ' (58 lines)' })
+    expect(editHead({ ...none, label: undefined }).counts).toBe(' (+0 -0)')
+  })
+})

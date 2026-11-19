@@ -139,43 +139,55 @@ describe('which calls draw', () => {
 
 // 3.32.20: the files a Bash command changed, from Claude Code's `bashEditDiff` on its result (bfm, six days: 1,174 such
 // commands changed 2,373 files and none showed in the main session; c22b's `struct_twins.py --write-ratchet` among them).
-describe('the files a Bash command changed (3.32.20)', () => {
+// 3.32.21: up to three files with diffs, one card each; a file with no diff counted once (bfm: "Changed 2 files" for one).
+describe('the files a Bash command changed (3.32.20, 3.32.21)', () => {
   const ok = (bashEditDiff: unknown): Record<string, unknown> => ({ result: { stdout: '', stderr: '', interrupted: false, bashEditDiff }, text: 'ok' })
   const H = (start: number, lines: string[]): Record<string, unknown> => ({ oldStart: start, oldLines: 0, newStart: start, newLines: 0, lines })
   const RATCHET = { filePath: '/r/config/ratchet.tsv', hunks: [H(4, [' metric', '-casts_P\t96721', '+casts_P\t95753'])] }
+  const heads = (cards: ReturnType<typeof bashEditOf>): string[] => cards.map(editHeader)
 
   test('one file: its diff, as an Edit card', async () => {
     const v = bashEditOf(ok({ files: [RATCHET], moreFiles: 0 }), '/r')
-    expect(v).toEqual({ path: 'config/ratchet.tsv', created: false, add: 1, del: 1, more: 0, hunks: ['@@ -4,2 +4,2 @@\n metric\n-casts_P\t96721\n+casts_P\t95753'] })
-    expect(editHeader(v!)).toBe('Updated config/ratchet.tsv (+1 -1)')
+    expect(v).toEqual([{ path: 'config/ratchet.tsv', created: false, add: 1, del: 1, more: 0, hunks: ['@@ -4,2 +4,2 @@\n metric\n-casts_P\t96721\n+casts_P\t95753'] }])
+    expect(heads(v)).toEqual(['Updated config/ratchet.tsv (+1 -1)'])
   })
 
   test('a created file shows its lines as Write\'s card; a deleted one is one line', async () => {
     const made = bashEditOf(ok({ files: [{ filePath: '/r/n.md', created: true, hunks: [H(0, ['+a', '+b'])] }], moreFiles: 0 }), '/r')
-    expect([made, editHeader(made!)]).toEqual([{ path: 'n.md', created: true, add: 2, del: 0, hunks: ['a\nb'], more: 0 }, 'Created n.md (2 lines)'])
+    expect([made, heads(made)]).toEqual([[{ path: 'n.md', created: true, add: 2, del: 0, hunks: ['a\nb'], more: 0 }], ['Created n.md (2 lines)']])
     const gone = bashEditOf(ok({ files: [{ filePath: '/r/old.md', deleted: true, hunks: [H(1, ['-a', '-b'])] }], moreFiles: 0 }), '/r')
-    expect([gone?.hunks, editHeader(gone!)]).toEqual([[], 'Deleted old.md (+0 -2)'])
+    expect([gone[0]?.hunks, heads(gone)]).toEqual([[], ['Deleted old.md (+0 -2)']])
   })
 
-  test('several files: one line naming the first three, the rest counted, the diffed files\' counts, no hunks', async () => {
+  test('two or three files, every one with a diff: a card each, with its diff (bfm: two src files, +4 -4, showed no diff)', async () => {
+    const files = ['a', 'b'].map(n => ({ filePath: `/r/src/${n}.c`, hunks: [H(1, ['-x', '+y'])] }))
+    const v = bashEditOf(ok({ files, moreFiles: 0 }), '/r')
+    expect(heads(v)).toEqual(['Updated src/a.c (+1 -1)', 'Updated src/b.c (+1 -1)'])
+    expect(v.map(c => c.hunks.length)).toEqual([1, 1])
+  })
+
+  test('four files or more: one line naming the first three, the rest counted, the diffed files\' counts, no hunks', async () => {
     const files = ['a', 'b', 'c', 'd'].map(n => ({ filePath: `/r/src/${n}.c`, hunks: [H(1, ['-x', '+y'])] }))
     const v = bashEditOf(ok({ files, moreFiles: 419 }), '/r')
-    expect([v?.hunks, v?.more, editHeader(v!)]).toEqual([[], 0, 'Changed 423 files: src/a.c, src/b.c, src/c.c and 420 more (+4 -4)'])
-    expect(editHeader(bashEditOf(ok({ files: files.slice(0, 2), moreFiles: 0 }), '/r')!)).toBe('Changed 2 files: src/a.c, src/b.c (+2 -2)')
+    expect([v.length, v[0]?.hunks, heads(v)]).toEqual([1, [], ['Changed 423 files: src/a.c, src/b.c, src/c.c and 420 more (+4 -4)']])
+    expect(heads(bashEditOf(ok({ files, moreFiles: 0 }), '/r'))).toEqual(['Changed 4 files: src/a.c, src/b.c, src/c.c and 1 more (+4 -4)'])
   })
 
-  test('names only when Claude Code gave no diff (binaries, too large)', async () => {
-    expect(editHeader(bashEditOf(ok({ files: [], moreFiles: 0, changedFiles: ['/r/a.bin', '/r/b.bin'], unavailable: true }), '/r')!))
-      .toBe('Changed 2 files: a.bin, b.bin (+0 -0)')
-    expect(editHeader(bashEditOf(ok({ files: [], moreFiles: 0, changedFiles: ['/r/a.bin'] }), '/r')!)).toBe('Updated a.bin (+0 -0)')
+  test('a file with no diff counts once and shows by name, with no (+0 -0) (bfm\'s struct_dispositions.tsv, a deleted file)', async () => {
+    expect(heads(bashEditOf(ok({ files: [], moreFiles: 1, changedFiles: ['/r/config/struct_dispositions.tsv'] }), '/r')))
+      .toEqual(['Changed config/struct_dispositions.tsv'])
+    expect(heads(bashEditOf(ok({ files: [], moreFiles: 0, changedFiles: ['/r/a.bin', '/r/b.bin'], unavailable: true }), '/r')))
+      .toEqual(['Changed 2 files: a.bin, b.bin'])
+    expect(heads(bashEditOf(ok({ files: [RATCHET], moreFiles: 1, changedFiles: ['/r/config/ratchet.tsv', '/r/big.tsv'] }), '/r')))
+      .toEqual(['Changed 2 files: config/ratchet.tsv, big.tsv (+1 -1)'])
   })
 
   test('nothing: no diff, a skipped one, nothing changed, a denied call, a background call', async () => {
-    expect(bashEditOf(ok(undefined), '/r')).toBe(null)
-    expect(bashEditOf(ok({ skipped: true, files: [RATCHET], moreFiles: 0 }), '/r')).toBe(null)
-    expect(bashEditOf(ok({ files: [], moreFiles: 0 }), '/r')).toBe(null)
-    expect(bashEditOf({ deny: 'no' }, '/r')).toBe(null)
-    expect(bashEditOf({ result: { stdout: '', backgroundTaskId: 'b1' } }, '/r')).toBe(null)
-    expect(bashEditOf({ result: 'ok' }, '/r')).toBe(null)
+    expect(bashEditOf(ok(undefined), '/r')).toEqual([])
+    expect(bashEditOf(ok({ skipped: true, files: [RATCHET], moreFiles: 0 }), '/r')).toEqual([])
+    expect(bashEditOf(ok({ files: [], moreFiles: 0, shared: true }), '/r')).toEqual([])
+    expect(bashEditOf({ deny: 'no' }, '/r')).toEqual([])
+    expect(bashEditOf({ result: { stdout: '', backgroundTaskId: 'b1' } }, '/r')).toEqual([])
+    expect(bashEditOf({ result: 'ok' }, '/r')).toEqual([])
   })
 })

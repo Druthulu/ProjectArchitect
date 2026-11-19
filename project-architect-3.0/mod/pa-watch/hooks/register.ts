@@ -553,15 +553,16 @@ export const register: Register = on => {
       if (EDIT_TOOLS.includes(e.tool)) {
         // 3.24 T8b: a successful file edit by Claude, an expert or a coder is one `edit` feed record; the band's line names it.
         const r = await next(e)
-        await editCard(root => editOf(e.tool, args, r, root))
+        await editCard(root => [editOf(e.tool, args, r, root)].filter((x): x is FeedEdit => x !== null))
         return r
       }
     }
     return next(e)
 
     /** 3.24 T8b: one `edit` feed record for a change by Claude, an expert or a coder (editsShown), the band's line naming
-     * it; 3.32.20: the card from `build` (an edit tool's call, or the files a Bash command changed). */
-    async function editCard(build: (root: string) => FeedEdit | null): Promise<void> {
+     * it; 3.32.20: the cards from `build` (an edit tool's call; 3.32.21: the files a Bash command changed, one card each
+     * for up to three files), a record each, in order. */
+    async function editCard(build: (root: string) => FeedEdit[]): Promise<void> {
       if (e.agentId === undefined) {
         return
       }
@@ -573,18 +574,17 @@ export const register: Register = on => {
       const row = f.type !== '' ? null : (await $.agent.list().catch(() => [])).find(a => a.id === e.agentId)
       const type = row === null ? f.type : (row?.type ?? '')
       const desc = row === null ? f.description : hintOf(row?.description ?? '').desc
-      const edit = editsShown(type, partnerIdOf(stateText) === e.agentId) ? build(root) : null
-      if (edit === null) {
-        return
+      const cards = editsShown(type, partnerIdOf(stateText) === e.agentId) ? build(root) : []
+      for (const edit of cards) {
+        const at = Date.now()
+        const text = editHeader(edit)
+        feedSeq += 1
+        const body = feedRecord({ agent: e.agentId, type, desc, planning: me?.planning === true, text, at, kind: 'edit', edit })
+        await $.fs.write(`${feedDirOf(stateText, root, sid)}/in/${feedName(at, feedSeq)}`, body).catch(quiet)
+        const f2 = { ...factsOf(e.agentId), line: text }
+        facts.set(e.agentId, f2)
+        await $.fs.write(`${root}/.run/mod/${sid}/agents/${e.agentId}.json`, factsText(f2, me?.ctx ?? 0, at)).catch(quiet)
       }
-      const at = Date.now()
-      const text = editHeader(edit)
-      feedSeq += 1
-      const body = feedRecord({ agent: e.agentId, type, desc, planning: me?.planning === true, text, at, kind: 'edit', edit })
-      await $.fs.write(`${feedDirOf(stateText, root, sid)}/in/${feedName(at, feedSeq)}`, body).catch(quiet)
-      const f2 = { ...factsOf(e.agentId), line: text }
-      facts.set(e.agentId, f2)
-      await $.fs.write(`${root}/.run/mod/${sid}/agents/${e.agentId}.json`, factsText(f2, me?.ctx ?? 0, at)).catch(quiet)
     }
   })
 

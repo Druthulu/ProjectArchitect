@@ -2,6 +2,15 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.21 — Edits show when they happen
+
+- Lines and file edits from experts and coders sometimes reached the main session one step late, only when the next
+  one arrived, so the last one before a long command could wait minutes. They now show as they happen.
+- A command that changes two or three files now shows each file's changes, as an edit does. Four or more still show
+  as one line naming them.
+- A file a command changed that Claude Code shows no changes for (a very large file, or a deleted one) was counted
+  twice ("Changed 2 files" for one file) with a meaningless "(+0 -0)". It now shows as one file, by name.
+
 ## 3.32.20 — No false stops, and you see what coders do
 
 - When a coder finished just as its expert had dropped off Claude Code's agent list, PA3 could take the expert for
