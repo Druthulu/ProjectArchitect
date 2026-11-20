@@ -1897,6 +1897,40 @@ def _gen_open_phase(project):
     return None
 
 
+OWNER_STALE_S = 45   # the mod's OWNER_STALE_MS (mod/pa/hooks/loop.ts): an older heartbeat has no owner
+
+
+def _loop_elsewhere(ctx, now):
+    """3.32.22 (GitHub #17): ``(owner, holds)`` when another session runs the loop: ``.run/mod/loop.json``
+    names an ``ownerSid`` other than this session's, with a heartbeat (ms) under :data:`OWNER_STALE_S` old
+    (the mod's ``ownsLoop``, without its prevSid part); ``owner`` is its first 8 characters. Else None."""
+    sid, project = ctx.get("sid") or "", ctx.get("project") or ""
+    if not sid or not project:
+        return None
+    doc = _read_json(os.path.join(project, ".run", "mod", "loop.json"), None)
+    if not isinstance(doc, dict):
+        return None
+    owner, beat = _text(doc.get("ownerSid")), doc.get("heartbeatAt")
+    if not owner or owner == sid or isinstance(beat, bool) or not isinstance(beat, (int, float)):
+        return None
+    if now * 1000 - beat >= OWNER_STALE_S * 1000:
+        return None
+    holds = doc.get("holds")
+    holds = [h for h in holds if isinstance(h, str) and h] if isinstance(holds, list) else []
+    return owner[:8], holds
+
+
+def _elsewhere_line(elsewhere, task, max_w, colors):
+    """``conversation only · the loop runs T5 in 28319876 · held: stopped`` (3.32.22), DIM."""
+    owner, holds = elsewhere
+    text = "conversation only%sthe loop runs %sin %s" % (SEP, (task + " ") if task else "", owner)
+    if holds:
+        text += "%sheld: %s" % (SEP, ", ".join(holds))
+    if max_w > 0 and len(text) > max_w:
+        text = text[:max_w - 1] + "…"
+    return _paint(text, DIM, colors)
+
+
 def _task_block(payload, ctx, cfg, sl, now):
     """The task block (T10.c1): a header line, then the active task first, then
     the plan's not-done tasks in plan order, within the same line budget as
@@ -1942,8 +1976,9 @@ def _task_block(payload, ctx, cfg, sl, now):
     if max_w > 0 and len(header_text) > max_w:
         header_text = header_text[:max_w - 1] + "…"
     header = _paint(header_text, DIM, colors)
+    elsewhere = _loop_elsewhere(ctx, now)     # 3.32.22: this window doesn't run the loop
     if not tasks:
-        return [header]
+        return [header] + ([_elsewhere_line(elsewhere, "", max_w, colors)] if elsewhere else [])
     task_ids = {t["id"] for t in tasks}
     if current_task not in task_ids:
         current_task = ""     # status names no task in the plan: nothing is "running" (T10.c2)
@@ -1961,6 +1996,8 @@ def _task_block(payload, ctx, cfg, sl, now):
             break
 
     lines = [header]
+    if elsewhere and active is None:
+        lines.append(_elsewhere_line(elsewhere, "", max_w, colors))
 
     for t in block_tasks:
         tid = t["id"]
@@ -1968,6 +2005,10 @@ def _task_block(payload, ctx, cfg, sl, now):
         title = _short_title(t["title"])
         if tid == current_task and st != "done":
             st = "running"
+        if st == "running" and elsewhere:
+            lines.append(_elsewhere_line(elsewhere, tid, max_w, colors))
+            lines.extend(_shell_lines(ctx, now, max_w, colors))     # this session's own shells
+            continue
         glyph = _TASK_GLYPHS.get(st, GLYPH_QUEUED)
         color = _TASK_COLORS.get(st, DIM)
 

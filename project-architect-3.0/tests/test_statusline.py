@@ -2126,6 +2126,50 @@ Milestone: the levers are off — verified by: python -m unittest discover tests
         self.assertIn("recipe rung", joined)
         self.assertNotIn("runs in another session", joined)
 
+    def _loop(self, owner, age_s, holds=()):
+        write_json(os.path.join(self.project, ".run", "mod", "loop.json"), {
+            "v": 1, "ownerSid": owner, "heartbeatAt": (time.time() - age_s) * 1000,
+            "state": "running", "holds": list(holds)})
+
+    def test_loop_owner_window_unchanged(self):
+        """3.32.22 (GitHub #17): the loop owner's own window shows the running task as before."""
+        self.make_project(plan=self.PLAN_SIX, status={"task": "T3", "phase": "36",
+                                                      "started": "2026-09-12T20:58:00Z"})
+        self._loop(self.sid, 5)
+        joined = self.render()
+        self.assertIn("recipe rung", joined)
+        self.assertNotIn("conversation only", joined)
+
+    def test_other_window_says_conversation_only(self):
+        """3.32.22 (GitHub #17): another session's fresh heartbeat: the running line names the loop's task
+        and owner, then its holds; the header and the other task lines stay."""
+        self.make_project(plan=self.PLAN_SIX, status={"task": "T3", "phase": "36",
+                                                      "started": "2026-09-12T20:58:00Z"})
+        self._loop("28319876-aaaa-bbbb", 10)
+        lines = self.lines()
+        self.assertIn("Phase 36 · 2/6", lines[0])
+        self.assertEqual(lines[1], "conversation only · the loop runs T3 in 28319876")
+        self.assertNotIn("recipe rung", chr(10).join(lines))
+        self.assertIn("overnight bake", chr(10).join(lines))
+        self._loop("28319876-aaaa-bbbb", 10, ["talk", "stopped"])
+        self.assertEqual(self.lines()[1],
+                         "conversation only · the loop runs T3 in 28319876 · held: talk, stopped")
+
+    def test_other_window_no_task(self):
+        """3.32.22: no running task: ``conversation only · the loop runs in <sid8>`` under the header."""
+        self.make_project(plan=self.PLAN_SIX, status={"task": None, "phase": "36"})
+        self._loop("28319876-aaaa-bbbb", 10)
+        self.assertEqual(self.lines()[1], "conversation only · the loop runs in 28319876")
+
+    def test_other_window_stale_heartbeat_unchanged(self):
+        """3.32.22: a heartbeat 45 s or older has no owner (the mod's OWNER_STALE_MS): lines as today."""
+        self.make_project(plan=self.PLAN_SIX, status={"task": "T3", "phase": "36",
+                                                      "started": "2026-09-12T20:58:00Z"})
+        self._loop("28319876-aaaa-bbbb", 50)
+        joined = self.render()
+        self.assertIn("recipe rung", joined)
+        self.assertNotIn("conversation only", joined)
+
     def test_running_task_shows_its_background_shells(self):
         """3.28.1 T15: the mod's shells.json: a line per expert or coder shell under the
         running task, a spinner frame and the elapsed time; a dead one ✗ with its exit."""

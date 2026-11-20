@@ -536,6 +536,44 @@ export function windowResumes(s: LoopState, now: number): boolean {
   return s.holds.includes('window') && s.resumeAt > 0 && now >= s.resumeAt
 }
 
+/** 3.32.22 (GitHub #17): a usage limit's restart waits this long past the window's reset. */
+export const LIMIT_SLACK_MS = 2 * 60_000
+
+/** The usage limit the account is at (`$.session.usage().rateLimits`): the window at or over 100% whose reset is still
+ * ahead (the latest reset when several are), or null. */
+export function usageLimit(limits: readonly { kind: string; percentUsed: number; resetsAt?: string }[], now: number): { kind: string; resetsAt: number } | null {
+  let best: { kind: string; resetsAt: number } | null = null
+  for (const l of limits) {
+    const at = Date.parse(l.resetsAt ?? '')
+    if (l.percentUsed >= 100 && Number.isFinite(at) && at > now && (best === null || at > best.resetsAt)) {
+      best = { kind: l.kind, resetsAt: at }
+    }
+  }
+  return best
+}
+
+/** A task held at a usage limit carries `stopped.status` `limit:<kind>`; its kind, or null for any other stop. */
+export const limitKindOf = (status: string | undefined): string | null =>
+  status !== undefined && status.startsWith('limit:') ? status.slice('limit:'.length) : null
+
+/** The developer's name for a limit window: `5-hour limit`, `weekly limit`, else `usage limit`. */
+export const limitName = (kind: string): string =>
+  kind === 'five_hour' ? '5-hour limit' : kind.startsWith('seven_day') ? 'weekly limit' : 'usage limit'
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+const hm = (d: Date): string => `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`
+
+/** The transcript line when a task is held at a usage limit, in local time: `‹pa› T7 paused: 5-hour limit reached.
+ * Resumes at 18:52.`; a weekly one with its day, `Resumes Nov 10, 12:02.` */
+export function limitHeldLine(id: string, kind: string, resumeAt: number): string {
+  const d = new Date(resumeAt)
+  const when = kind === 'five_hour' ? `at ${hm(d)}` : `${MONTHS[d.getMonth()] ?? ''} ${String(d.getDate())}, ${hm(d)}`
+  return `‹pa› ${id} paused: ${limitName(kind)} reached. Resumes ${when}.`
+}
+
+/** The transcript line when a task held at a usage limit restarts. */
+export const limitResumedLine = (id: string, kind: string): string => `‹pa› ${id} resumed after the ${limitName(kind)}.`
+
 /** The agent to spawn for a plan entry's column (3.25 T6b: one agent per role): no column, or an old expert type
  * (`expert-opus55`, `expert-fable`, their `-5m` twins), is `pa-expert`; another column passes through, a `-5m` twin as
  * its 1h type. The effort is the spawn's `[effort <level>]` hint (effortFor), not the type. */

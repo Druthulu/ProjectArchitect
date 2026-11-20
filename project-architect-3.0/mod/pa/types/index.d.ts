@@ -23,6 +23,11 @@ export type Partner = {
   filingInFlight: boolean
   /** 3.31 T2: the `topic` call's summary, kept for the filing request ('' none). */
   summary: string
+  /** 3.32.22 (#17): when the newest developer message or picker answer was sent it (0 none): no filing until a text reply
+   * whose turn started then or later (a filing in the same run would hide the reply). */
+  owedAt: number
+  /** 3.32.22 (#17): a filing turn ended with no text: no filing again until a text reply (shown or filed). */
+  filingStalled: boolean
 }
 
 export type Child = { parent: string; type: string; startedAt: number; status: string }

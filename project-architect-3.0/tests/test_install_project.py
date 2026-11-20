@@ -386,15 +386,18 @@ class TestFreshInstall(ProjectCase):
         rel = self.path(".claude", "settings.json")
         settings = json.loads(read(rel))
         del settings["promptSuggestionEnabled"]
+        del settings["disableAgentView"]                                      # 3.32.22: set up before
         settings["idleCompaction"] = True
         write(rel, json.dumps(settings, indent=2) + "\n")
         out = self.install()
         after = json.loads(read(rel))
         self.assertIs(after["promptSuggestionEnabled"], False, out)
         self.assertIs(after["idleCompaction"], True)                         # project's value kept
+        self.assertIs(after["disableAgentView"], True, out)                  # 3.32.22 (#17)
         self.assertIn("~ settings  promptSuggestionEnabled: null -> false", out)
         self.assertNotIn("idleCompaction:", out)
-        self.assertEqual({k: v for k, v in after.items() if k != "promptSuggestionEnabled"},
+        self.assertEqual({k: v for k, v in after.items()
+                          if k not in ("promptSuggestionEnabled", "disableAgentView")},
                          settings)                                            # nothing else moved
         out = self.install()
         self.assertEqual(json.loads(read(rel)), after)                        # idempotent
@@ -777,6 +780,7 @@ class TestMod(ProjectCase):
         self.assertIs(st["promptSuggestionEnabled"], False)
         self.assertIs(st["precomputeCompactionEnabled"], False)
         self.assertIs(st["autoContinueAtUsageLimit"], True)                  # 3.23 T2
+        self.assertIs(st["disableAgentView"], True)                          # 3.32.22 (#17)
         self.assertTrue(pa["bash"])
         if os.name == "nt" and not os.environ.get("CLAUDE_CODE_GIT_BASH_PATH") and pa["bash"] != "bash":
             self.assertTrue(pa["bash"].endswith("/bin/bash.exe"), pa["bash"])

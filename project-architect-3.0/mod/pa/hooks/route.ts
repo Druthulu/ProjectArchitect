@@ -309,7 +309,7 @@ export const switchPending = (p: Partner): boolean => p.modelSwitchAt > p.lastTu
 export const keptSwitch = (p: Partner, now: number): number => (switchPending(p) ? Math.max(p.modelSwitchAt, now + 1) : p.modelSwitchAt)
 
 export function newPartner(agentId: string, model: string, now: number): Partner {
-  return { agentId, spawnedAt: now, lastTurnAt: 0, model, ctx: 0, topic: false, modelSwitchAt: 0, switchTo: '', switchTold: false, pingInFlight: false, firstCtx: 0, filingInFlight: false, summary: '' }
+  return { agentId, spawnedAt: now, lastTurnAt: 0, model, ctx: 0, topic: false, modelSwitchAt: 0, switchTo: '', switchTold: false, pingInFlight: false, firstCtx: 0, filingInFlight: false, summary: '', owedAt: 0, filingStalled: false }
 }
 
 /** The partner's agent type (3.22 T8g; `claude` at T8f, `partner` before): never the built-in `claude` catch-all. */
@@ -669,9 +669,10 @@ function withMark(s: RouterState, key: string, m: ReplyMark): Record<string, Rep
 /**
  * The partner's reply recorded: usage, model and the ping hold updated; a new wait starts for warming. Its hand-back
  * already showed it (`key` marked `handback`): marked `done`, no marker. Else its file is marker `n`, marked `wait`:
- * dueMarkers queues it when no hand-back came within HANDBACK_WAIT_MS.
+ * dueMarkers queues it when no hand-back came within HANDBACK_WAIT_MS. 3.32.22 (#17): a text reply lifts a stalled
+ * filing; one whose turn started at or after the owed send (`startedAt`) answers it (an earlier turn's end does not).
  */
-export function applyReply(s: RouterState, n: number, path: string, key: string, now: number, ctx: number | null, model = ''): RouterState {
+export function applyReply(s: RouterState, n: number, path: string, key: string, now: number, ctx: number | null, model = '', startedAt = now): RouterState {
   const p = s.partner
   const shown = s.replies[key]?.via === 'handback'
   return {
@@ -686,6 +687,8 @@ export function applyReply(s: RouterState, n: number, path: string, key: string,
       pingInFlight: false,
       model: model !== '' ? model : p.model,
       firstCtx: p.firstCtx === 0 && ctx !== null ? ctx : p.firstCtx,
+      owedAt: p.owedAt > 0 && startedAt >= p.owedAt ? 0 : p.owedAt,
+      filingStalled: false,
     },
     awaiting: null,
     warm: { ...s.warm, waitStart: now, waitUsd: 0, waitPings: 0, waitCount: 0 },
@@ -757,10 +760,19 @@ export function filingRequest(o: { after: string; through: string; topic: boolea
     `.claude-state/journal/ (the entries after ${o.after}).\nIn force now (supersede or retire by id):\n${inforce}`
 }
 
-/** The filing request sent: the partner held until its turn ends, the span it covers kept. */
+/** The filing request sent: the partner held until its turn ends, the span it covers kept. 3.32.22 (#17): refused (`s`
+ * itself) while a filing runs, a message waits for its visible reply (owedAt), or the last filing ended with no text. */
 export function startFiling(s: RouterState, agentId: string, through: string): RouterState {
   const p = s.partner
-  return p === null || p.agentId !== agentId ? s : { ...s, partner: { ...p, filingInFlight: true }, filingThrough: through }
+  return p === null || p.agentId !== agentId || p.filingInFlight || p.owedAt > 0 || p.filingStalled
+    ? s
+    : { ...s, partner: { ...p, filingInFlight: true }, filingThrough: through }
+}
+
+/** 3.32.22 (#17): a developer message or picker answer sent to the partner at `at`: it waits for a visible reply. */
+export function markOwed(s: RouterState, agentId: string, at: number): RouterState {
+  const p = s.partner
+  return p === null || p.agentId !== agentId ? s : { ...s, partner: { ...p, owedAt: Math.max(p.owedAt, at) } }
 }
 
 /** The filing request undelivered: the hold lifted, nothing filed. */
@@ -773,8 +785,8 @@ export function dropFiling(s: RouterState): RouterState {
  * filing hold lifted; a `/model` switch pending before it stays pending (its rotation still due after this turn end). */
 export function filingTurnEnded(s: RouterState, now: number, ctx: number | null): RouterState {
   const e = partnerTurnEnded(s, now, ctx) // 3.32.20: it keeps a pending switch (keptSwitch), as every turn's end now does
-  const q = e.partner
-  return q === null ? e : { ...e, partner: { ...q, filingInFlight: false } }
+  const q = e.partner // 3.32.22 (#17): no text (endFiling clears it when filed): no resend until a text reply
+  return q === null ? e : { ...e, partner: { ...q, filingInFlight: false, filingStalled: true } }
 }
 
 /**
@@ -787,7 +799,7 @@ export function endFiling(s: RouterState, now: number, ctx: number | null, key: 
   const q = e.partner
   return {
     ...e,
-    partner: q === null ? null : { ...q, filingInFlight: false, summary: '' },
+    partner: q === null ? null : { ...q, filingInFlight: false, summary: '', filingStalled: false },
     filedThrough: s.filingThrough !== '' ? s.filingThrough : s.filedThrough,
     filingThrough: '',
     todo: [...s.todo, ...todo],

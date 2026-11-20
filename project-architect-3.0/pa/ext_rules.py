@@ -162,14 +162,34 @@ _MOUNTS = ("/mnt/", "/media/", "/run/media/", "/Volumes/")
 _WIN_SYSTEM = ("c:/windows/", "c:/program files/", "c:/program files (x86)/", "c:/programdata/")
 
 
-def _norm(p):
-    return os.path.normcase(os.path.normpath(os.path.abspath(p)))
+_CI = {}
+
+
+def _case_insensitive(root):
+    """3.32.22 (GitHub #18): whether `root`'s volume folds case. Windows does; elsewhere (macOS's default APFS) one
+    cached probe per root: the root spelled with swapped case exists and is the root."""
+    if os.name == "nt":
+        return True
+    r = os.path.normpath(os.path.abspath(root))
+    if r not in _CI:
+        s = r.swapcase()
+        try:
+            _CI[r] = s != r and os.path.samefile(r, s)
+        except (OSError, ValueError):
+            _CI[r] = False
+    return _CI[r]
+
+
+def _norm(p, root):
+    """`p` normalized, its case folded when `root`'s volume folds case."""
+    p = os.path.normpath(os.path.abspath(p))
+    return p.lower() if _case_insensitive(root) else p
 
 
 def _inside(p, root):
     if not root:
         return False
-    p, root = _norm(p), _norm(root)
+    p, root = _norm(p, root), _norm(root, root)
     return p == root or p.startswith(root.rstrip(os.sep) + os.sep)
 
 
@@ -263,7 +283,7 @@ def outside_path(tool, inp, proj, dirs=(), own=(), home=None, keep=(), cwd=None)
     if tool not in ("Bash", "PowerShell"):
         return ""
     cmd = str(inp.get("command") or "")
-    kept = [_norm(k) for k in keep if k]
+    kept = [k for k in keep if k]
     scoped = any(ch in cmd for ch in "()`")       # a subshell or a command substitution: a cd in it is not followed
 
     def quoted(word):
@@ -285,7 +305,7 @@ def outside_path(tool, inp, proj, dirs=(), own=(), home=None, keep=(), cwd=None)
                 p = _expand(c, None if quoted(c) else here, home)
                 if p is None or _inside(p, proj) or any(_inside(p, d) for d in list(dirs) + list(own)):
                     continue
-                if _norm(p) in kept or _executable(p):
+                if any(_norm(p, k) == _norm(k, k) for k in kept) or _executable(p):
                     continue
                 if _foreign(p, home):
                     return p

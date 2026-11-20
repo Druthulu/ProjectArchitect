@@ -1404,7 +1404,9 @@ def foreign_pins(settings, rel):
 
 
 # 3.22 T2d: defaults a pa3 upgrade adds when absent; a value the project has is kept
-PA3_ADD_DEFAULTS = (("promptSuggestionEnabled", False), ("idleCompaction", False))
+# 3.32.22 (GitHub #17): disableAgentView, no PA3 session moves to the background
+PA3_ADD_DEFAULTS = (("promptSuggestionEnabled", False), ("idleCompaction", False),
+                    ("disableAgentView", True))
 
 
 def add_pa3_defaults(settings):

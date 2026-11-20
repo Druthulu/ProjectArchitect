@@ -110,17 +110,19 @@ export const dialogKey = (agentId: string | undefined, tool: string, input: unkn
 export const dropAgentDialogs = (keys: readonly string[], agentId: string | undefined): string[] =>
   keys.filter(k => !k.startsWith(`${agentId ?? 'main'}|`))
 
-/** The open-dialog flag (3.23 T6a1): `.run/mod/<sid>/dialog.json`, written only by the router, read by the loop. */
+/** The open-dialog flag (3.23 T6a1): `.run/mod/<sid>/dialog.json`, written only by the router, read by the loop.
+ * 3.32.22 (GitHub #17): with the dialog's `kind` (`plan` or `ask`), so the loop holds only a task's start under the plan view. */
 export const DIALOG_FILE = 'dialog.json'
-export const dialogJson = (open: boolean, id: string, at: number): string => `${JSON.stringify({ open, id, at })}
+export const dialogJson = (open: boolean, id: string, at: number, kind = ''): string => `${JSON.stringify({ open, id, at, ...(kind === '' ? {} : { kind }) })}
 `
-/** The flag file's text says a dialog is open. */
-export function dialogOpen(text: string | null): boolean {
+/** The open dialog's kind from the flag file's text: `plan`, `ask`, ... ('plan' for an open flag without one); '' when
+ * none is open. */
+export function dialogKind(text: string | null): string {
   try {
     const v: unknown = JSON.parse(text ?? '')
-    return isObj(v) && v['open'] === true
+    return isObj(v) && v['open'] === true ? (typeof v['kind'] === 'string' && v['kind'] !== '' ? v['kind'] : 'plan') : ''
   } catch {
-    return false
+    return ''
   }
 }
 

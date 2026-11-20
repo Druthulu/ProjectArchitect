@@ -2,6 +2,28 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.22 — A usage limit pauses the work, and the work stays in your window
+
+- When an expert or coder hit your 5-hour or weekly limit in the middle of a task, PA3 took it for an unknown failure
+  and waited for Claude, whom the same limit blocked, so the task stood still until you typed. Now the task waits for
+  the limit to reset and starts again by itself, and the main session says so: "T7 paused: 5-hour limit reached.
+  Resumes at 18:52."
+- A task that finished while a question or the plan view was open waited for your answer before the next one started.
+  It is now handed on at once; only the plan view still holds the next task's start until it closes.
+- Your message or answer could share a turn with Claude filing its records, and that turn's reply isn't shown, so you
+  got no answer. Filing now waits until Claude has answered you, and at a usage limit it is no longer retried every
+  30 seconds.
+- PA3 turns off Claude Code's agent view in its projects (`"disableAgentView": true` in `.claude/settings.json`). With
+  tasks running, `/exit` offered "Move to background and exit", which kept PA3's work running in a background session
+  you couldn't see or steer. Now `/exit` stops the running work, and your next session picks it up where it was.
+  Agent view, `claude agents` and `--bg` stay on in your other projects; remove the line to have them here.
+- A second window open on the same project shows `conversation only · the loop runs T5 in 28319876` on its statusline:
+  you can talk there, and the work runs in the other session.
+- External coders: the rule against paths outside the project now ignores letter case on a disk that ignores it
+  (macOS's default), so `~/downloads/<project>` is the project `~/Downloads/<project>`. `pa_ext.py runs` names the real
+  command of a refusal that starts with `export VAR=…`, and shows refusals outside the project or to the network with
+  their reasons.
+
 ## 3.32.21 — Edits show when they happen
 
 - Lines and file edits from experts and coders sometimes reached the main session one step late, only when the next

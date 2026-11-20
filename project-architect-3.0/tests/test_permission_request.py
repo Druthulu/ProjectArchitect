@@ -296,6 +296,22 @@ class ExtRulesTest(unittest.TestCase):
         self.assertEqual(self.out("Glob", {"pattern": "**/*.c"}), "")
         self.assertEqual(self.out("Edit", {"file_path": "src/a.c"}), "")
 
+    def test_outside_path_folds_case_on_a_case_insensitive_volume(self):
+        """3.32.22 (GitHub #18): on a volume that folds case (macOS's APFS), the project in another case is the
+        project; on a case-sensitive one it is outside, as before."""
+        log = os.path.join(self.home, "PROJ", "logs", "T6.c2.md")
+        cmd = "cat %s" % log.replace("\\", "/")
+        real = ext_rules._case_insensitive
+        try:
+            ext_rules._case_insensitive = lambda root: True
+            self.assertEqual(self.out("Write", {"file_path": log}), "")
+            self.assertEqual(self.out("Bash", {"command": cmd}), "")
+            ext_rules._case_insensitive = lambda root: False
+            self.assertEqual(self.out("Write", {"file_path": log}), os.path.normpath(log))
+            self.assertEqual(self.out("Bash", {"command": cmd}), os.path.normpath(log))
+        finally:
+            ext_rules._case_insensitive = real
+
     def test_outside_path_follows_the_shells_folder(self):
         """3.32.9: relative words are taken from the shell's folder and each cd the rule can follow; a quoted relative
         string, a word with a variable and anything past a cd it cannot follow go to the judge; absolute, ~ and $HOME

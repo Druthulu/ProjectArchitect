@@ -5,7 +5,7 @@ import {
   hideSpinner, hideUser, isSeedName, localAnswer, markerText, newestPartner, newPartner, nextMarker, outboxHeld, parentOf, parseMarker, partnerReport, registerTurn,
   replyKey, stepFactsOf, STUB, takeHandback, takeReply, usageCtx, isPointer, lateReport, markerFacts, workingIds, handbackKey, newHandback,
   bareMessage, seedEntries, noReportHandback, loopPending, yourTurnStep, YOUR_TURN_MS, bangOf, bangText,
-  nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, todoBlock, enqueue, withImageSources,
+  nothingToFile, recordBody, filingRequest, startFiling, dropFiling, filingTurnEnded, endFiling, markOwed, todoBlock, enqueue, withImageSources,
   withSourceLines, imagesPending, IMAGE_WAIT_MS, resumeCheck, RESUME_CHECK_MS, heldBy, keptSwitch, partnerTurnEnded, switchPending,
 } from './route'
 import type { Entry } from './journal'
@@ -400,6 +400,42 @@ describe('3.31 T2: the filing turn', () => {
     expect([late.partner?.lastTurnAt, late.filedThrough, late.replies]).toEqual([60, iso(10, 40), {}])
     // no span in flight: filedThrough kept
     expect(endFiling({ ...s0, filingThrough: '' }, 100, null, '', []).filedThrough).toBe(iso(9, 5))
+  })
+
+  // 3.32.22 (#17 case 3b): no filing while a sent message waits for its visible reply; the refusal is startFiling's own.
+  test('3.32.22: an owed reply refuses the filing; only a reply whose turn started after the send answers it', () => {
+    const s0 = { ...defaultState('S', 1), partner: { ...newPartner('P', 'opus', 1), lastTurnAt: 50 } }
+    const o = markOwed(s0, 'P', 100)
+    expect(o.partner?.owedAt).toBe(100)
+    expect(markOwed(o, 'Q', 200)).toBe(o)
+    expect(markOwed(markOwed(o, 'P', 300), 'P', 200).partner?.owedAt).toBe(300)
+    expect(startFiling(o, 'P', iso(10, 40))).toBe(o)
+    // a busy turn that began before the send ends: still owed
+    const early = applyReply(o, 1, 'm.md', 'P:a', 150, null, '', 90)
+    expect([early.partner?.owedAt, startFiling(early, 'P', 'x')]).toEqual([100, early])
+    // the reply's own turn (started at the send or later) answers it; the filing may go
+    const r = applyReply(early, 2, 'n.md', 'P:b', 200, null, '', 100)
+    expect(r.partner?.owedAt).toBe(0)
+    expect(startFiling(r, 'P', 'x').partner?.filingInFlight).toBe(true)
+    // a filing in flight refuses a second; a fresh partner owes nothing
+    const f = startFiling(r, 'P', 'x')
+    expect(startFiling(f, 'P', 'y')).toBe(f)
+    expect([newPartner('Q', 'opus', 1).owedAt, newPartner('Q', 'opus', 1).filingStalled]).toEqual([0, false])
+  })
+
+  // 3.32.22 (#17 case 3c): a filing turn with no text is not re-sent until a text reply, filed or shown.
+  test('3.32.22: a filing that ended with no text stalls the next until a text reply, filed or shown', () => {
+    const s0 = startFiling({ ...defaultState('S', 1), partner: newPartner('P', 'opus', 1) }, 'P', iso(10, 40))
+    const e = filingTurnEnded(s0, 100, null)
+    expect([e.partner?.filingStalled, e.partner?.filingInFlight]).toEqual([true, false])
+    expect(startFiling(e, 'P', 'x')).toBe(e)
+    expect(partnerTurnEnded(e, 150, null).partner?.filingStalled).toBe(true) // a `.` or an empty answer
+    const shown = applyReply(e, 1, 'm.md', 'P:k', 200, null)
+    expect(shown.partner?.filingStalled).toBe(false)
+    expect(startFiling(shown, 'P', 'x').partner?.filingInFlight).toBe(true)
+    // its late hand-back filed: the stall lifts too
+    expect(endFiling(e, 300, null, '', [], false).partner?.filingStalled).toBe(false)
+    expect(endFiling(s0, 300, null, 'P:k', []).partner?.filingStalled).toBe(false)
   })
 
   test('the to-do block', () => {

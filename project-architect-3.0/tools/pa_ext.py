@@ -1105,6 +1105,9 @@ READ_GUARD_RE = re.compile(r"over guard\.whole_read_chars|is unchanged and alrea
 UNANSWERED_RE = re.compile(r"its permission judge gave no answer")
 
 
+_DECLARE = frozenset(("export", "declare", "typeset", "readonly", "local"))
+
+
 def _deny_kind(tool, cmd):
     """A denied call's kind: Bash by the command a rule would have to cover (after any `cd <dir> &&` or `VAR=x`),
     an interpreter with its script's folder (`python3 .run/…`); any other tool by its name."""
@@ -1113,6 +1116,8 @@ def _deny_kind(tool, cmd):
     saw_cd = False
     for seg in re.split(r"&&|\|\||;|\n", cmd):
         words = [w for w in seg.strip().split() if not re.match(r"[A-Za-z_][A-Za-z0-9_]*=", w)]
+        if words and words[0] in _DECLARE and all(re.match(r"-\w+$|[A-Za-z_][A-Za-z0-9_]*$", w) for w in words[1:]):
+            continue    # 3.32.22 (#18): `export X=…` sets a variable, the kind is the command after it
         if words and words[0] == "cd":
             saw_cd = True
         if not words or words[0] == "cd":
@@ -1182,6 +1187,8 @@ class Health:
                "retries": self.retries, "nudges": self.nudges}
         if self.judge:
             out["judge"] = dict((k, v) for k, v in self.judge.items() if k != "examples")
+            if self.judge.get("examples"):
+                out["judge"]["examples"] = self.judge["examples"][:2]     # 3.32.22 (#18): what was refused, and why
         return out
 
     def lines(self, denials=None):
@@ -2260,6 +2267,10 @@ def runs(count=False, mark=False, out=print, cwd=None):
         mins = (int(r.get("ended") or r.get("heartbeat") or 0) - int(r.get("started") or 0)) // 60
         judged = " · judge allowed %d, refused %d, learned %d" % (j.get("allowed", 0), j.get("denied", 0), len(
             j.get("learned") or [])) if j else ""
+        judged += "".join(" · %s %d" % (n, j[k]) for k, n in (("outside", "outside the project"), ("network", "network"))
+                          if j.get(k))
+        if j.get("examples"):   # 3.32.22 (#18): the first refusals' reasons
+            judged += " (e.g. %s)" % "; ".join(re.sub(r"\s+", " ", str(e)).strip()[:80] for e in j["examples"][:2])
         out("- %s · %s · %s · %d min%s · denied %d%s · sandbox %s · read guard %s · retries %s%s%s" % (
             r.get("label"), r.get("name") or r.get("model"), r.get("status"), mins,
             " · %s turns" % r["turns"] if r.get("turns") else "", sum(denied.values()),

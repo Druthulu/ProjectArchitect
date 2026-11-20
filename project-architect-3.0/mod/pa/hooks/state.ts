@@ -86,6 +86,8 @@ function parsePartner(x: unknown): Partner | null {
     firstCtx: num(x['firstCtx'], 0),
     filingInFlight: x['filingInFlight'] === true,
     summary: str(x['summary'], ''),
+    owedAt: num(x['owedAt'], 0),
+    filingStalled: x['filingStalled'] === true,
   }
 }
 

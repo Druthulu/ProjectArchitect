@@ -92,6 +92,7 @@ import {
   agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
   nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, proposalOf, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, ruleCandidateOf, RULE_OPTIONS, runEnded, nextTaskOf,
   serializeLoop, silenceReleases, steerText, stoppedText, quietReply, liveness, ABSENT_MS, takesOver, WAIT_MAX_MS, WAIT_POLL_MS, waitSpec, windowResumes,
+  LIMIT_SLACK_MS, limitHeldLine, limitKindOf, limitName, limitResumedLine, usageLimit,
   contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
   archiveLines, bandLine, batchDoneNotice, batchOf, CHAIN_STEPS, closeNotice, driveOf, extHealthNotice, extHealthOf, extReviewLine, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withDrive, withPhaseSid,
@@ -103,7 +104,7 @@ import {
   PARENTS_FILE, parentsOf, withParents,
   bgJobOf, type BgJob, INTAKE_TRIES, INTAKE_WAITS, intakeCapNotice, intakeDue, intakeOwed, type IntakeStep, intakeTriesOf, STATE_PAGE,
 } from './loop'
-import { APPROVED, changesAsked, DIALOG_FILE, dialogOpen, planFilePath } from './planview'
+import { APPROVED, changesAsked, DIALOG_FILE, dialogKind, planFilePath } from './planview'
 import { asksQuestion, classify, handbackChild, isNote, journalOut, noteBody, partnerReport } from './route'
 import { DONE_TTL_MS, feedDirOf } from './state'
 import { cacheTtlOf, isCold } from './policy'
@@ -644,7 +645,7 @@ export function armAutopilot(on: On): void {
       }
 
       const dialogFile = `${root}/.run/mod/${sidNow}/${DIALOG_FILE}`
-      const dialogIsOpen = async (): Promise<boolean> => dialogOpen(await $.fs.read(dialogFile).catch(() => null))
+      const planViewOpen = async (): Promise<boolean> => dialogKind(await $.fs.read(dialogFile).catch(() => null)) === 'plan'
 
       // 3.23 T13: the band above the prompt, from loop.json, the plan's phase, `$.agent.list()` and the watcher's facts
       // files; the atom is written only when it changed, and the AbovePrompt rule (register.tsx) only draws it.
@@ -1841,7 +1842,19 @@ ${REPLAN_NOTICE}`)
         // contract, after this process saw it at work (3.28.1 T9c; else a session end, recovered). The stop is the
         // developer's: the `stopped` hold and one notice to Claude (no toast); nothing is resumed or respawned until
         // release(stopped), and nothing new starts while it is held.
+        // 3.32.22 (GitHub #17): a failure at a usage limit (the account's 5-hour or weekly window at 100%, its reset ahead) is
+        // no stop: the `window` hold until the reset plus LIMIT_SLACK_MS, one transcript line, no notice (Claude is refused
+        // too); the task's `stopped` status `limit:<kind>` restarts it when the hold is gone (the limit restart below).
         const stopHold = async (t: LoopTask, status: string): Promise<void> => {
+          const lim = status === 'failed' ? usageLimit((await $.session.usage().catch(() => null))?.rateLimits ?? [], now) : null
+          if (lim !== null) {
+            const resumeAt = lim.resetsAt + LIMIT_SLACK_MS
+            await save({ ...pushHold({ ...s, task: { ...t, stopped: { at: now, status: `limit:${lim.kind}` } } }, 'window'), resumeAt }, 'limit')
+            await journal('mod', 'hold', { task: t.id, agentId: t.agentId },
+              `${t.agentId} failed with no contract at the ${limitName(lim.kind)}: ${t.id} held (window) until ${new Date(resumeAt).toISOString()}; it restarts then.`)
+            $.ui.log(limitHeldLine(t.id, lim.kind, resumeAt), { to: 'transcript' })
+            return
+          }
           const who = `${t.id}'s expert`
           const how = status === 'failed'
             ? `${who} failed: reason unknown (an error, not the developer). The task is paused; you may resume it yourself.`
@@ -2459,10 +2472,6 @@ ${REPLAN_NOTICE}`)
           await save({ ...s, update: null } as LoopState, 'update.done')
         }
 
-        // While the router shows a dialog (its flag file), nothing is drained, spawned, resumed, forwarded or sent (T6a1).
-        if (await dialogIsOpen()) {
-          return
-        }
         // 3.29.1 T8: the session start's update gate (used below): this start's check, a running update, the stale mod.
         const checkText = await $.fs.read(`${root}/${START_CHECK}`).catch(() => null)
         const startState = startCheckState(checkText, sidNow, startAt, now)
@@ -2694,6 +2703,26 @@ ${REPLAN_NOTICE}`)
             `${heldTask.id}: ${heldTask.agentId} reported after it went missing, so it was not killed; the stopped hold is lifted.`)
           await notice(`‹pa› ${heldTask.id}'s expert reported after the stop notice: it was never stopped. The stopped hold is lifted and its report goes on as usual.`)
         }
+        // 3.32.22 (GitHub #17): a task held at a usage limit, its window hold gone: its expert (gone) respawned with PROGRESS,
+        // as release(stopped) does; not under another hold but `talk`, nor while the plan view is open.
+        const limitKind = s.task === null ? null : limitKindOf(s.task.stopped?.status)
+        if (s.state === 'running' && s.task !== null && limitKind !== null && s.holds.every(h => h === 'talk') && !(await planViewOpen())) {
+          const t = s.task
+          delete facts[t.agentId]
+          const plan = planOf(t)
+          if (plan === null) {
+            await block(s, `restart of ${t.id} after the ${limitName(limitKind)}: no plan entry to respawn from`, 'mod', 'hold', '')
+            return
+          }
+          const k = t.attempt + 1
+          const progress = await progressDigest(t)
+          await py('tools/status.py', 'set', '--task', t.id, '--agent', t.agent, '--kind', 'relaunch', '--attempt', String(k), '--session', sidNow)
+          await journal('mod', 'hold', { task: t.id, agentId: t.agentId },
+            `${t.id} restarted after the ${limitName(limitKind)}: respawned with PROGRESS (TASK_PROGRESS.md ${progress}) (attempt ${String(k)}).`)
+          await spawnTask(plan, k, 'relaunch', { progress: PROGRESS })
+          $.ui.log(limitResumedLine(t.id, limitKind), { to: 'transcript' })
+          return
+        }
         // Any hold but `talk` stops the loop; `talk` only stops a new task (the running one is captured and routed).
         if (s.holds.some(h => h !== 'talk')) {
           return
@@ -2834,6 +2863,9 @@ ${REPLAN_NOTICE}`)
           if (retry !== null && now - retry.at < SPAWN_RETRY_MS) {
             return
           }
+          if (await planViewOpen()) {
+            return // 3.32.22: no pick while the plan view is open (a plan may replace this one); it runs after the view closes
+          }
           const nx =await py('tools/plan_edit.py', 'next', '--brief', '--json', ...(batch.length > 0 ? ['--only', batch.join(',')] : []))
           const pick = nx.exitCode === 0 ? jsonOf(nx.stdout) : null
           if (pick === null) {
@@ -2928,8 +2960,8 @@ ${REPLAN_NOTICE}`)
             await block(s, `window-gate exit ${String(gate.exitCode)}: ${clip(gate.stderr || gate.stdout, 200)}`, 'mod', 'hold', '')
             return
           }
-          if (await dialogIsOpen()) {
-            return // a dialog opened during this tick: the pick runs again after it
+          if (await planViewOpen()) {
+            return // the plan view is open (3.32.22: an ask picker holds nothing): the pick runs again after it
           }
           const agent = agentFor(plan.agent, plan.effort)
           const opts: ExpertOpts = {}
@@ -3158,6 +3190,9 @@ ${REPLAN_NOTICE}`)
         const body = contract === '' ? 'no contract' : contract
         const meta: Meta = { agentId: t.agentId, role: t.agent, task: t.id }
         const route = routeStatus(t.contract)
+        if (route === 'handoff' && (await planViewOpen())) {
+          return // 3.32.22: the respawn waits for the plan view to close (plan mode reaches agents); routed on the next tick
+        }
         const proposals = extHealthOf(contract)   // 3.30: an expert's proposals for later external coders, once a report
         if (proposals.length > 0) {
           await notice(extHealthNotice(t.id, proposals))

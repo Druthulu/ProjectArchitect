@@ -3118,20 +3118,20 @@ describe('external coders (3.3 T7)', () => {
 })
 
 describe('3.31 T2: the hidden filing turn', () => {
-  type Fs = { partner: { agentId: string; filingInFlight: boolean; summary: string; topic: boolean } | null; filedThrough: string; filingThrough: string; todo: string[] }
+  type Fs = { partner: { agentId: string; filingInFlight: boolean; summary: string; topic: boolean; owedAt?: number; filingStalled?: boolean } | null; filedThrough: string; filingThrough: string; todo: string[] }
   const fsOf = (w: World): Fs => JSON.parse(w.files.get(`${BASE}/S1/state.json`) ?? '{}') as Fs
   const LAST = OCT - 20 * 60_000
   const THROUGH = new Date(LAST).toISOString()
   const REPLY = 'topic: alpha\nidea: "ship it"\ndecision: ship alpha\nheadline: alpha ships'
   const TODO = 'land R2 (binds work) in the plan or the card\'s expert part'
   /** A partner quiet for 20 minutes with an unfiled exchange; records.py and the ledger answered. */
-  const filing = async ($: Engine, on: On): Promise<{ w: World; n: Net; clock: ReturnType<typeof mock.clock>; logs: string[] }> => {
+  const filing = async ($: Engine, on: On, env: Record<string, string> = {}): Promise<{ w: World; n: Net; clock: ReturnType<typeof mock.clock>; logs: string[] }> => {
     const clock = mock.clock(on, { now: OCT })
     const w = world(on, {
       [`${ROOT}/.claude/pa.json`]: PY,
       [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', lastExchangeAt: LAST,
         partner: { agentId: 'P1', model: 'claude-opus-5-5', ctx: 50_000, lastTurnAt: LAST, spawnedAt: OCT - 40 * 60_000 } }),
-    }, { USERPROFILE: 'H' })
+    }, { USERPROFILE: 'H', ...env })
     const n = net(on)
     n.list = [{ id: 'P1', status: 'idle' }]
     const out: Record<string, string> = { inforce: 'R1 decision: ship beta.\n', index: 'indexed: 2 outcomes in 2 topics\n', todo: `${TODO}\n`, headlines: 'alpha: alpha ships\n' }
@@ -3308,6 +3308,78 @@ describe('3.31 T2: the hidden filing turn', () => {
     expect([n.sends.length, n.spawns.length]).toEqual([1, 1])
     expect((n.spawns[0] ?? '').endsWith('new subject')).toBe(true)
     expect(fsOf(w).partner?.agentId).toBe('P1')
+  })
+
+  // 3.32.22 (GitHub #17 case 3b): a filing in the same run as the developer's message hid his reply.
+  const filingsOf = (n: Net): number => n.sends.filter(s => s.text.startsWith('‹pa› file:')).length
+  const topicState = (w0: Record<string, string>): Record<string, string> => ({
+    [`${ROOT}/.claude/pa.json`]: PY, ...w0,
+    [`${BASE}/S1/state.json`]: JSON.stringify({ v: 1, gen: 1, sid: 'S1', lastExchangeAt: OCT - 60_000,
+      partner: { agentId: 'P1', model: 'claude-opus-5-5', ctx: 50_000, lastTurnAt: OCT - 60_000, spawnedAt: OCT - 40 * 60_000 } }),
+  })
+  test('3.32.22: a message routed to a busy Claude holds a due filing until its own reply is shown', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [ip, it] = inboxReq(OCT - 500, 1, 'topic', { summary: 'the alpha plan' })
+    const w = world(on, topicState({ [ip]: it }), { USERPROFILE: 'H' })
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'running' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '', stderr: '' })
+    await $.session.start(ISTART)
+    await clock.advance(1_000)
+    expect(fsOf(w).partner?.topic).toBe(true)
+    await $.prompt.submit({ text: 'yes, close the phase', origin: { kind: 'composer' }, wait: false })
+    await clock.advance(1_000)
+    expect(n.sends.map(x => x.text.endsWith('yes, close the phase'))).toEqual([true])
+    expect(fsOf(w).partner?.owedAt ?? 0).toBeGreaterThan(0)
+    // the answer it was giving ends (its turn began before the send): its turn end and the warm ticks file nothing
+    n.list = [{ id: 'P1', status: 'idle' }]
+    await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: 'the alpha plan, done', durationMs: 60_000, isAborted: false, reason: 'answer', usage: USAGE })
+    await clock.advance(90_000)
+    expect(filingsOf(n)).toBe(0)
+    // its reply to the message, shown: the mark cleared, the rotation's filing goes next
+    await $.turn.complete({ turnId: 'A2', agentId: 'P1', answer: 'Closing the phase.', durationMs: 1_000, isAborted: false, reason: 'answer', usage: USAGE })
+    expect([filingsOf(n), fsOf(w).partner?.owedAt]).toEqual([1, 0])
+  })
+
+  test('3.32.22: a picker answer sent to Claude holds a filing the same way', async ($, on) => {
+    const clock = mock.clock(on, { now: OCT })
+    const [ap, at] = inboxReq(OCT - 500, 1, 'ask', { question: 'Close the phase?', options: ['Yes', 'No'] })
+    const w = world(on, topicState({ [ap]: at }), { USERPROFILE: 'H' })
+    const n = net(on)
+    n.list = [{ id: 'P1', status: 'idle' }]
+    n.run = argv => (argv.includes('prices') ? { exitCode: 0, stdout: PRICES, stderr: '' } : { exitCode: 0, stdout: '', stderr: '' })
+    const d = dialog(on)
+    d.answer = 'Yes'
+    await $.session.start(ISTART)
+    await clock.advance(3_000)
+    expect(d.calls).toEqual(['ask:Close the phase?'])
+    expect(n.sends.length).toBe(1)
+    expect(n.sends[0]?.to).toBe('P1')
+    expect(fsOf(w).partner?.owedAt ?? 0).toBeGreaterThan(0)
+    // a rotation falls due (Claude calls topic); a turn that began before the answer ends: no filing
+    const [ip, it] = inboxReq(OCT + 3_000, 2, 'topic', { summary: 'the alpha plan' })
+    w.files.set(ip, it)
+    await clock.advance(1_000)
+    expect(fsOf(w).partner?.topic).toBe(true)
+    await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: 'noted', durationMs: 60_000, isAborted: false, reason: 'answer', usage: USAGE })
+    await clock.advance(60_000)
+    expect(filingsOf(n)).toBe(0)
+    await $.turn.complete({ turnId: 'A2', agentId: 'P1', answer: 'Closing the phase.', durationMs: 1_000, isAborted: false, reason: 'answer', usage: USAGE })
+    expect(filingsOf(n)).toBe(1)
+  })
+
+  // 3.32.22 (GitHub #17 case 3c): at a usage limit each filing run failed with no text and was re-sent every 30 s.
+  test('3.32.22: a filing turn with no text is not re-sent by the warm ticks; a text reply lets the next go', async ($, on) => {
+    const { w, n, clock } = await filing($, on, { PA_MOD_FILE_QUIET_MS: '60000' })
+    expect(filingsOf(n)).toBe(1)
+    await $.turn.complete({ turnId: 'F1', agentId: 'P1', answer: '', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    expect([fsOf(w).partner?.filingInFlight, fsOf(w).partner?.filingStalled]).toEqual([false, true])
+    await clock.advance(3 * 60_000)
+    expect(filingsOf(n)).toBe(1)
+    await $.turn.complete({ turnId: 'A1', agentId: 'P1', answer: 'back', durationMs: 9, isAborted: false, reason: 'answer', usage: USAGE })
+    expect(fsOf(w).partner?.filingStalled).toBe(false)
+    await clock.advance(2 * 60_000)
+    expect(filingsOf(n)).toBe(2)
   })
 
   /** 3.31 T6: a partner quiet 3 minutes by the tick; the filing requests sent. */

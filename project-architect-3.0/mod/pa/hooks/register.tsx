@@ -57,7 +57,7 @@ import {
   registerTurn, replyKey, resumeCheck, seedEntries, takeHandback, takeReply, toastArgv, toastOut, usageCtx,
   handbackReport, isNote, noteBody, isFeedText, armYourTurn, yourTurnStep, loopPending, STUB, dueToast, heardDeveloper,
   isPointer, lateReport, markerFacts, workingIds, noReportHandback, NO_REPORT_REASON, imageSourceLines, imagesPending, newHandback,
-  withImageSources, withSourceLines, dropFiling, endFiling, filingRequest, filingTurnEnded, recordBody, startFiling, todoBlock,
+  withImageSources, withSourceLines, dropFiling, endFiling, filingRequest, filingTurnEnded, markOwed, recordBody, startFiling, todoBlock,
   heldBy, switchPending,
 } from './route'
 import { buildSeed, charTokens, type Child as SeedChild, GENERATION_TOKENS, localStamp, RECORDS_TOKENS, SEED_BUDGET_TOKENS, STATE_TOKENS, tokenChars } from './seed'
@@ -946,6 +946,13 @@ export const register: Register = (on, options) => {
               if (p !== null && route === 'resume') {
                 // 3.32.10 (#13): stamped before the send, so an answer that comes before the send returns counts as after it.
                 const at = await $.clock.now()
+                // 3.32.22 (#17): owed a visible reply, marked before the send (no filing joins its run); a filing that
+                // started since this tick read the state runs first: the message goes back to wait for its end.
+                const marked = await step(x => (x.partner?.filingInFlight === true ? { ...x, outbox: [msg, ...x.outbox] } : markOwed(x, p.agentId, at)))
+                if (marked?.partner?.filingInFlight === true) {
+                  st = marked
+                  continue
+                }
                 const sent = await $.session.send({ to: { agentId: p.agentId }, text: msg.text })
                 await log('route.send', { agentId: p.agentId, kind: msg.kind, sent })
                 if (sent.isDelivered) {
@@ -1264,7 +1271,7 @@ export const register: Register = (on, options) => {
               return
             }
             lastHold = ''
-            await $.fs.write(dialogPath, dialogJson(true, head.id, await $.clock.now()))
+            await $.fs.write(dialogPath, dialogJson(true, head.id, await $.clock.now(), head.kind))
             // Taken before acting: a crash mid-dialog never shows it twice.
             await save(x => ({ ...x, present: x.present.filter(p => p.id !== head.id) }))
             // 3.32 B9: while the PA3 intake is due (pa.json), no plan is presented; Claude is told why.
@@ -1502,10 +1509,20 @@ export const register: Register = (on, options) => {
         }
         const after = st.filedThrough !== '' ? st.filedThrough : new Date(p.spawnedAt).toISOString()
         const through = new Date(st.lastExchangeAt).toISOString()
+        // 3.32.22 (#17): decided in the update itself (startFiling refuses while a message waits for its visible reply,
+        // or after a filing that ended with no text), so a message the route tick sends meanwhile is never hidden.
+        const took = { ok: false }
+        const held = await update($, stateAtom, x => {
+          const y = x === null ? x : startFiling(x, p.agentId, through)
+          took.ok = y !== x
+          return y
+        })
+        if (!took.ok) {
+          return false
+        }
         filingHandback = null
         filingLate = null
         filingWhy = fd.why
-        const held = await update($, stateAtom, x => (x === null ? x : startFiling(x, p.agentId, through)))
         if (held !== null) {
           await $.fs.write(statePath(base, sidNow), serializeState(held))
         }
@@ -2411,7 +2428,7 @@ export const register: Register = (on, options) => {
         if (x === null) {
           return x
         }
-        const r = applyReply(fileEntry({ ...x, lastExchangeAt: now }, out), n, path, key, now, ctx, e.usage?.model ?? '')
+        const r = applyReply(fileEntry({ ...x, lastExchangeAt: now }, out), n, path, key, now, ctx, e.usage?.model ?? '', now - e.durationMs)
         toast = r.stopToast === null ? null : toastOut(r.stopToast, answer, now)
         return armYourTurn(toast === null ? r : { ...r, stopToast: null, toasts: [...r.toasts, toast] }, turnId, answer, now, known, toast !== null)
       })

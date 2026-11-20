@@ -2067,19 +2067,53 @@ describe('plan install (T6a1)', () => {
     expect(experts(w).length).toBe(0)
   })
 
-  test('dialog.json open: the loop drains, spawns and sends nothing; closed, it goes on', async ($, on) => {
+  // 3.32.22 (GitHub #17 case 3a): an open flag without a kind counts as the plan view: drained, but no task starts.
+  test('dialog.json open (the plan view): the loop drains but starts no task; closed, it goes on', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [DIALOG]: JSON.stringify({ open: true, id: 'x', at: NOW }) })
     const id = releaseReq(w, NOW, { hold: 'talk' })
     await $.session.start(START)
     await clock.advance(6_000)
     expect(w.spawns.length).toBe(0)
-    expect(ran(w, 'tools/launch.py').length).toBe(0)
-    expect(Object.keys((JSON.parse(w.files.get(LOOP) ?? '{}') as { inboxDone?: Record<string, number> }).inboxDone ?? {})).not.toContain(id)
+    expect(ran(w, 'tools/plan_edit.py next').length).toBe(0)
+    expect(Object.keys((JSON.parse(w.files.get(LOOP) ?? '{}') as { inboxDone?: Record<string, number> }).inboxDone ?? {})).toContain(id)
     w.files.set(DIALOG, JSON.stringify({ open: false, id: 'x', at: NOW }))
     await clock.advance(2_000)
-    expect(Object.keys((JSON.parse(w.files.get(LOOP) ?? '{}') as { inboxDone?: Record<string, number> }).inboxDone ?? {})).toContain(id)
     expect(experts(w).length).toBe(1)
+  })
+
+  const handbackText = (from: string, report: string): string =>
+    `Another Claude session sent a message:\n<agent-message from="${from}">\n[Subagent hand-back] The report follows:\n` +
+    `${report.split('\n').map(l => `  ${l}`).join('\n')}\n</agent-message>`
+  const doneUnder = (on: On, kind: string): { w: W; clock: { advance: (ms: number) => Promise<unknown> } } =>
+    ({ clock: mock.clock(on, { now: NOW }), w: world(on, { [LOOP]: running(), [DIALOG]: JSON.stringify({ open: true, id: 'x', at: NOW, kind }) }) })
+  const DONE_BACK = { text: handbackText('E1', 'done. Roads reach every town.\nSummary: logs/T1.md (commit def5678).'), origin: { kind: 'peer' as const }, wait: false }
+
+  test('3.32.22: a hand-back under an open ask picker is routed and the next task starts', async ($, on) => {
+    const { w, clock } = doneUnder(on, 'ask')
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.prompt.submit(DONE_BACK)
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(ran(w, 'tools/plan_edit.py set-status')[0]).toEqual(['py', 'tools/plan_edit.py', 'set-status', 'T1', 'done', '--by', 'router'])
+    expect(w.spawns.length).toBe(1)
+  })
+
+  test('3.32.22: a hand-back under the plan view is routed; the next task waits until the view closes', async ($, on) => {
+    const { w, clock } = doneUnder(on, 'plan')
+    await $.session.start(START)
+    await clock.advance(2_000)
+    await $.prompt.submit(DONE_BACK)
+    for (let i = 0; i < 4; i += 1) {
+      await clock.advance(2_000)
+    }
+    expect(ran(w, 'tools/plan_edit.py set-status')[0]).toEqual(['py', 'tools/plan_edit.py', 'set-status', 'T1', 'done', '--by', 'router'])
+    expect([w.spawns.length, ran(w, 'tools/plan_edit.py next').length]).toEqual([0, 0])
+    w.files.set(DIALOG, JSON.stringify({ open: false, id: 'x', at: NOW, kind: 'plan' }))
+    await clock.advance(2_000)
+    expect(w.spawns.length).toBe(1)
   })
 })
 
@@ -4002,6 +4036,65 @@ describe('a stopped loop agent (T11-fix2)', () => {
     expect(loop2(w).holds).toEqual(['stopped'])
     expect(notices(w)[0]?.input.text).toContain('T1\'s expert failed: reason unknown')
     expect([w.sends.length, w.spawns.length]).toEqual([0, 0])
+  })
+
+  // 3.32.22 (GitHub #17): a failure at a usage limit holds `window` until the reset plus 2 min, then respawns by itself.
+  const limitWorld = (on: On, kind: string, resetsAt: number): { w: W; logs: string[] } => {
+    const w = world(on, { [LOOP]: running() })
+    const logs: string[] = []
+    on('session.usage', async () => ({ value: { startedAt: 0, context: {}, rateLimits: [{ kind, percentUsed: 100, resetsAt: new Date(resetsAt).toISOString() }] } as never }))
+    on('ui.log', async ($, e) => {
+      logs.push(e.text)
+      return { value: undefined }
+    })
+    setStatus(w, 'E1', 'failed')
+    return { w, logs }
+  }
+  const hhmm = (ms: number): string => `${String(new Date(ms).getHours()).padStart(2, '0')}:${String(new Date(ms).getMinutes()).padStart(2, '0')}`
+
+  test('3.32.22: failed at the 5-hour limit: held (window) to the reset + 2 min, one transcript line, no notice; then respawned', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const reset = NOW + 10_000
+    const { w, logs } = limitWorld(on, 'five_hour', reset)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect([loop2(w).holds, loop2(w).resumeAt]).toEqual([['window'], reset + 120_000])
+    expect(logs).toEqual([`‹pa› T1 paused: 5-hour limit reached. Resumes at ${hhmm(reset + 120_000)}.`])
+    expect(notices(w)).toEqual([])
+    expect(w.files.get(entries(w, 'mod-hold').pop() ?? '')).toContain('E1 failed with no contract at the 5-hour limit')
+    await clock.advance(100_000)
+    expect(experts(w).length).toBe(0)
+    w.list = [] // the mock's next spawn reuses the id E1
+    await clock.advance(30_000)
+    await clock.advance(2_000)
+    expect(experts(w).length).toBe(1)
+    expect(experts(w)[0]?.prompt).toContain('PROGRESS: phase-ends/current/TASK_PROGRESS.md')
+    expect([loop2(w).holds, loopOf(w).task?.attempt, loopOf(w).task?.kind]).toEqual([[], 2, 'relaunch'])
+    expect(logs[1]).toBe('‹pa› T1 resumed after the 5-hour limit.')
+    expect(notices(w)).toEqual([])
+  })
+
+  test('3.32.22: failed at the weekly limit: the line names the day', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const reset = NOW + 3 * 86_400_000
+    const { w, logs } = limitWorld(on, 'seven_day', reset)
+    await $.session.start(START)
+    await clock.advance(2_000)
+    const d = new Date(reset + 120_000)
+    const month = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getMonth()] ?? ''
+    expect(loop2(w).holds).toEqual(['window'])
+    expect(logs).toEqual([`‹pa› T1 paused: weekly limit reached. Resumes ${month} ${String(d.getDate())}, ${hhmm(reset + 120_000)}.`])
+  })
+
+  test('3.32.22: failed under 100% of every window: the stopped hold and the notice, as before', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    on('session.usage', async () => ({ value: { startedAt: 0, context: {}, rateLimits: [{ kind: 'five_hour', percentUsed: 97, resetsAt: new Date(NOW + 10_000).toISOString() }] } as never }))
+    setStatus(w, 'E1', 'failed')
+    await $.session.start(START)
+    await clock.advance(2_000)
+    expect(loop2(w).holds).toEqual(['stopped'])
+    expect(notices(w)[0]?.input.text).toContain('T1\'s expert failed: reason unknown')
   })
 
   test('absent from the list 15 s after its spawn: treated as killed, and the notice says so', async ($, on) => {

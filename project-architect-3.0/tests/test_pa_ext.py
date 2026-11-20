@@ -1138,8 +1138,19 @@ class JudgeRunTest(_ModBase):
         rec = self._record()
         self.assertEqual(rec["health"]["judge"], {"allowed": 1, "denied": 0, "unanswered": 0, "network": 1, "outside": 0,
                                                   "again": 0, "judge_s": 4.2,
-                                                  "learned": ["Bash(mipsel-linux-gnu-objdump:*)"]})
+                                                  "learned": ["Bash(mipsel-linux-gnu-objdump:*)"],
+                                                  "examples": ["curl x: network: curl"]})
         self.assertFalse(pa_ext.run_clean(self.proj, rec))
+        out = []    # 3.32.22 (#18): `runs` names the fixed rules' refusals and the first reasons
+        pa_ext.runs(out=out.append, cwd=self.proj)
+        self.assertIn(" · judge allowed 1, refused 0, learned 1 · network 1 (e.g. curl x: network: curl)", out[1])
+
+    def test_deny_kind_skips_variable_declarations(self):
+        """3.32.22 (#18): `export X=… && cargo …` is a cargo denial, not an export one."""
+        for cmd, want in (("export CARGO_X=/a && cargo build", "cargo"), ("declare -x A=1 B=2; make", "make"),
+                          ("export PATH && cd x && ls", "ls"), ("export B=2", "Bash"),
+                          ("cd x && objdump -d a.o", "objdump")):
+            self.assertEqual(pa_ext._deny_kind("Bash", cmd), want, cmd)
 
     def test_learned_rules_reach_the_next_coder_runs_lists_them_and_forget_drops_them(self):
         from pa import ext_rules
