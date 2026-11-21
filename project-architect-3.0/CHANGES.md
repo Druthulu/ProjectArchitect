@@ -2,6 +2,13 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.32.23 — The Session line's "fewer" and "longer" stay right after a /login
+
+- The Session line's `N% fewer · lasts Mx longer` divided the whole session's savings by Claude Code's own cost
+  figure, which starts again at $0 after a `/login` or a restart. A long session that had switched accounts read
+  95% fewer and 18.5x longer instead of 64% and 2.8x. Both now come from the same figures as the line's `x/y of 7d`:
+  the session's spend and savings in the seven-day window.
+
 ## 3.32.22 — A usage limit pauses the work, and the work stays in your window
 
 - When an expert or coder hit your 5-hour or weekly limit in the middle of a task, PA3 took it for an unknown failure

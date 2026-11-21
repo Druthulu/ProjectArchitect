@@ -2667,9 +2667,11 @@ class VanillaColorsTest(LedgerCase):
         write_json(paths.summary_path(), {
             "schema": 1,
             "accounts": {"dev@example.com": {"label": "win", "windows": {
-                "five_hour": {"fit_quality": "ok", "pct_per_dollar": 0.05}}}},
+                "five_hour": {"fit_quality": "ok", "pct_per_dollar": 0.05},
+                "seven_day": {"fit_quality": "ok", "pct_per_dollar": 0.005}}}},
             "sessions": {self.sid: {"account": "dev@example.com", "saved_measured": 5.0,
-                                    "windows": {"five_hour": {"cost_used": 11.70, "net_saved": 5.0}}}}})
+                                    "windows": {"five_hour": {"cost_used": 11.70, "net_saved": 5.0},
+                                                "seven_day": {"cost_used": 11.70, "net_saved": 5.0}}}}})
         colored = statusline.render(self.payload, config.defaults())
         # discount number LIGHT_BLUE
         self.assertIn(statusline.LIGHT_BLUE + "30%", colored)
@@ -2851,6 +2853,19 @@ class SessionMissingBlockTest(LedgerCase):
         self.assertNotIn("lasts %.1fx longer" % ((cost + 11.15) / cost), line)
         wins = {"seven_day": {"fit_quality": "ok", "pct_per_dollar": 0.0855}}
         self.assertIn("/%d%% of 7d" % statusline._cost_as_pct(37.19, wins, "seven_day"), line)
+
+    def test_fewer_lasts_from_the_seven_day_window_not_the_harness_counter(self):
+        """3.32.23: the pair is the 7d window's cost and savings, the x/y beside it: never the whole
+        session's saved_net over cost.total_cost_usd, which restarts at 0 on a /login (bfm: 95%, 18.5x)."""
+        self.payload["cost"]["total_cost_usd"] = 82.11          # since the /login
+        self._summary({self.sid: {"account": self.ACCT, "cost_usd": 1505.11, "saved_net": 1440.21,
+                                  "windows": {
+            "five_hour": {"cost_used": 2.48, "net_saved": 0.81},
+            "seven_day": {"cost_used": 90.37, "net_saved": 158.51}}}})
+        line = self._session()
+        self.assertIn("64% fewer", line)
+        self.assertIn("lasts 2.8x longer", line)
+        self.assertNotIn("95% fewer", line)
 
     def test_live_only_never_zero_percent(self):
         self._summary({self.sid: {"account": self.ACCT, "saved_measured": 0.0, "windows": {

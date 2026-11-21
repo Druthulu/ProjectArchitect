@@ -1462,15 +1462,7 @@ def _line_session(payload, ctx, cfg, sl, now):
 
     cost = _num(_dig(payload, "cost", "total_cost_usd"), None)
     session_row = _dig(summary, "sessions", ctx["sid"]) or {}
-    # session-wide vanilla-net walk; older summary.json: largest windows net (3.9.8 T4)
-    measured = _num(session_row.get("saved_net"), None)
-    if measured is None:
-        nets = [_num(w.get("net_saved"), None) for w in (session_row.get("windows") or {}).values()
-                if isinstance(w, dict)]
-        nets = [n for n in nets if n is not None]
-        measured = max(nets) if nets else None
     live, expert_running = _live_saved(ctx["running"], ctx["sid"])
-    saved = (measured or 0.0) + live
     approx = "~" if expert_running else ""
 
     # windowed pairs from per-session data in summary (T1.c7)
@@ -1554,11 +1546,18 @@ def _line_session(payload, ctx, cfg, sl, now):
 
     # was: $cost/$net behind show.dollars (default off, T1.c7); retired with the per-part keys (issue #10)
 
-    # discount and multiplier: whole session scope (T1.c7)
+    # discount and multiplier: the session's cost and savings in its account's seven-day window, the
+    # x/y of 7d beside them. Was the whole session's saved_net over Claude Code's cost.total_cost_usd,
+    # which restarts at 0 on a /login or a restart: bfm read 95% fewer, 18.5x for 64%, 2.8x (3.32.23)
     fold_idx = fold_seg = None
-    v = None if no_block else _vanilla_pieces(cost, saved, False, colors, approx)
-    if cost is not None and cost > 0 and (no_block or (not measured and (
-            v is None or int(round(100.0 * saved / (cost + saved))) == 0))):
+    sw7 = session_windows.get("seven_day") or {}
+    paid = _num(sw7.get("cost_used"), None)
+    measured = _num(sw7.get("net_saved"), None)
+    saved = (measured or 0.0) + live
+    v = None if no_block else _vanilla_pieces(paid, saved, False, colors, approx)
+    spent = (cost is not None and cost > 0) or (paid is not None and paid > 0)
+    if spent and (no_block or (not measured and (
+            v is None or int(round(100.0 * saved / (paid + saved))) == 0))):
         v = _vanilla_dash(colors)  # no windows block, or live-only rounding to 0% fewer (T11.1)
     if v:
         if not segments:
