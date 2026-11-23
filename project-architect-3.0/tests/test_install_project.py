@@ -469,6 +469,91 @@ class TestSecondRun(ProjectCase):
         self.assertEqual(read(self.path("HOW_WE_WORK.md")), "# hand written\n")
         self.assertEqual(read(self.path("rules", "M4.md")), "# edited rule\n")
 
+    def _stale_card(self, crlf=False):
+        """The installed card with three PA3 changes undone: the one-line Scratch line, the Rhythm section and a
+        hand-edited ratify line; plus a line of the project's. CLAUDE.md loses its Drive line."""
+        card = read(self.path("HOW_WE_WORK.md"))
+        scratch = "- Scratch: " + card.split("\n- Scratch: ", 1)[1].split("\n\n", 1)[0]
+        ratify = "The developer pushes; agents never do. They ratify rules at the next plan approval."
+        rhythm = ("## Rhythm <!-- roles: planner review auditor curator -->\n"
+                  "autonomous  <!-- autonomous: the loop (the mod) runs the phase end to end, stopping\n"
+                  "                  only at the two gates. review: tasks marked `review: yes` stop the queue "
+                  "with REVIEW.md. -->\nGates: plan approval (in the plan-mode view) and the milestone (confirmed "
+                  "by the\ndeveloper at the close question).\n\n")
+        stale = (card.replace(scratch, "- Scratch: `.run/` (gitignored; never the system temp)\n- Our own path")
+                 .replace(ratify, ratify.replace("next plan approval", "phase close"))
+                 .replace("## Tools ", rhythm + "## Tools ", 1))
+        for part in ("- Scratch: `.run/` (gitignored", "## Rhythm", "rules at the phase close"):
+            self.assertIn(part, stale)
+        write_bytes(self.path("HOW_WE_WORK.md"), (stale.replace("\n", "\r\n") if crlf else stale).encode("utf-8"))
+        claude = read(self.path("CLAUDE.md"))
+        drive = [ln for ln in claude.split("\n") if ln.startswith("Drive:")][0]
+        write(self.path("CLAUDE.md"), claude.replace(drive + "\n", ""))
+        return card, scratch, ratify, drive
+
+    def test_upgrade_refreshes_the_cards_pa3_lines(self):
+        """3.33 C1: every update refreshes the card's PA3 lines anywhere (a past block takes the current one; Rhythm
+        goes), keeps the project's lines, and leaves the PA3 lines it edited for Claude: .run/mod/card-merge.json."""
+        self.install()
+        card, scratch, ratify, drive = self._stale_card()
+        stale, merge = read(self.path("HOW_WE_WORK.md")), self.path(".run", "mod", "card-merge.json")
+        rc, out = self.run_install("--dry-run")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(read(self.path("HOW_WE_WORK.md")), stale, out)                   # a dry run writes nothing
+        self.assertFalse(os.path.exists(merge), out)
+        self.assertIn("~ HOW_WE_WORK.md: 6 PA3 lines refreshed", out)
+        out = self.install()
+        self.assertEqual(steps(out).get("P7"), "DONE", out)
+        got = read(self.path("HOW_WE_WORK.md"))
+        self.assertIn(scratch + "\n- Our own path", got)
+        self.assertNotIn("## Rhythm", got)
+        self.assertIn("They ratify rules at the phase close.", got)
+        self.assertIn("~ HOW_WE_WORK.md: 6 PA3 lines refreshed", out)                     # Scratch 1 + Rhythm 5
+        self.assertIn("HOW_WE_WORK.md: 1 PA3 lines for Claude to merge after the restart", out)
+        self.assertIn("CLAUDE.md: 1 PA3 lines for Claude to merge after the restart", out)
+        doc = json.loads(read(merge))
+        self.assertEqual(sorted(doc), ["at", "card", "claude_md", "version"])
+        self.assertEqual((doc["version"], doc["card"], doc["claude_md"]), (pj.PA_VERSION, [ratify], [drive]))
+        self.assertIsInstance(doc["at"], float)
+        self.install()                                                                      # still missing: kept
+        self.assertEqual(json.loads(read(merge))["card"], [ratify])
+        write(self.path("HOW_WE_WORK.md"), got.replace("They ratify rules at the phase close.",
+                                                       "They ratify rules at the next plan approval."))
+        write(self.path("CLAUDE.md"), read(self.path("CLAUDE.md")).replace(
+            "Every agent, always:", drive + "\n\nEvery agent, always:"))
+        out = self.install()                                                                # merged: the file goes
+        self.assertFalse(os.path.exists(merge), out)
+        self.assertNotIn("for Claude to merge", out)
+
+    def test_upgrade_card_refresh_failure_is_a_warning(self):
+        """3.33 C1: a refresh that breaks warns; the update goes on and the card stays."""
+        from unittest import mock
+        self.install()
+        self._stale_card()
+        stale = read(self.path("HOW_WE_WORK.md"))
+        with mock.patch.object(pj, "_curate", side_effect=RuntimeError("boom")):
+            out = self.install()
+        self.assertIn("warn: card and CLAUDE.md refresh stopped: RuntimeError: boom", out)
+        self.assertEqual(read(self.path("HOW_WE_WORK.md")), stale)
+
+    def test_upgrade_card_refresh_is_committed_and_keeps_crlf(self):
+        """3.33 C1: the refreshed card is part of the install commit, and a CRLF card stays CRLF."""
+        rc, out = self.run_install()
+        self.assertEqual(rc, 0, out)
+        self._stale_card(crlf=True)
+        git(self.repo, "add", "HOW_WE_WORK.md", "CLAUDE.md")
+        git(self.repo, "commit", "-qm", "stale card")
+        rc, out = self.run_install()
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(git(self.repo, "log", "-1", "--format=%s").stdout.strip(), pj.COMMIT_MSG, out)
+        names = git(self.repo, "show", "--name-only", "--format=", "HEAD").stdout.split()
+        self.assertIn("HOW_WE_WORK.md", names)
+        self.assertNotIn(".run/mod/card-merge.json", names)
+        with open(self.path("HOW_WE_WORK.md"), "rb") as fh:
+            raw = fh.read()
+        self.assertNotIn(b"## Rhythm", raw)
+        self.assertEqual(raw.count(b"\n"), raw.count(b"\r\n"))
+
     def test_upgrade_adds_the_journal_line_to_an_older_block(self):
         """3.32.9: a project installed before keeps its .gitignore, plus the journal's day folders line under the PA3
         marker; a rerun changes nothing."""

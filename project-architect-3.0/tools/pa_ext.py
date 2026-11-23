@@ -512,8 +512,9 @@ You run in Claude Code, a harness tuned for Claude models. These habits keep you
 - Commands: you start in the project root. Never prefix a command with `cd <dir> &&` and never use `git -C`: use
   relative paths. A chained command is denied when any part of it is not allowed, so keep each Bash call to commands
   the project allows.
-- Scope: edit only the files the brief names. Write scratch scripts and notes under .run/ with the Write tool, which
-  makes the folders (no mkdir); never put them in the project's own folders.
+- Scope: edit only the files the brief names. Write scratch scripts and notes under the brief's SCRATCH folder in .run/
+  with the Write tool, which makes the folders (no mkdir); never put them in the project's own folders. Say in your
+  report which copies you made there (tree copies, build output), so they can be cleared.
 - Checks: after your last code change, run the brief's test or check again and report its result."""
 FLAGS = ("autoCompactEnabled", "todoFeatureEnabled", "awaySummaryEnabled", "promptSuggestionEnabled")
 MODEL_VARS = ("ANTHROPIC_MODEL", "ANTHROPIC_DEFAULT_OPUS_MODEL", "ANTHROPIC_DEFAULT_SONNET_MODEL",

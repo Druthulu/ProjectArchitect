@@ -243,6 +243,39 @@ export function stoppedText(note: string): string {
   return `continue: the developer stopped you and now wants you to go on.${note.trim() === '' ? '' : ` ${note.trim()}`} ` +
     'Check what your coder left (git status, git diff) before continuing; a coder stopped mid-edit may have left partial changes.'
 }
+/** 3.33: a child's hand-back its expert never got (autopilot's stop check): who, when (ms), the report, its type. */
+export type UnreadReport = { id: string; at: number; text: string; type: string }
+
+/** 3.33: how much of an unread report a stop notice carries. */
+export const UNREAD_CHARS = 1_500
+
+/**
+ * 3.33: Claude's notice when a task's expert stops with no contract. Only Claude Code's `killed` is a stop the developer
+ * made (Ctrl+C); `failed` is an error; anything else (`absent`: gone from the agent list) is no Ctrl+C: the expert went
+ * away without a report. bfm-decomp 2026-11-23: on a full disk its coder's report ("the disk is full") was lost on the
+ * way, and the notice blamed a Ctrl+C nobody pressed. `unread`, a child's report the expert never got, rides along.
+ */
+export function stopNotice(task: string, agentId: string, status: string, unread: UnreadReport | null, now: number): string {
+  const who = `${task}'s expert`
+  const mins = unread === null ? 0 : Math.round((now - unread.at) / 60_000)
+  const when = mins < 1 ? 'moments' : `${String(mins)} min`
+  const text = unread === null ? '' : unread.text.length > UNREAD_CHARS ? `${unread.text.slice(0, UNREAD_CHARS)} …` : unread.text
+  const report = unread === null ? '' : ` Its ${unread.type || 'helper'} ${unread.id} handed back ${when} ago, and that ` +
+    `report never reached the expert:\n${text}\n`
+  if (status === 'failed') {
+    return `${who} failed: reason unknown (an error, not the developer).${report} The task is paused; you may resume it yourself.`
+  }
+  const go = 'A go they already gave counts: if their latest message asked for this task or the work to go on'
+  if (status === 'killed') {
+    return `${who} was stopped (Ctrl+C); its coder too if it had one.${report} The task is paused until the developer ` +
+      `wants it to go on. ${go}, resume it now (release stopped); otherwise ask them.`
+  }
+  return `${who} went away without a report: ${agentId} left Claude Code's agent list, and it was not a Ctrl+C (a ` +
+    `Ctrl+C shows as killed).${report} The task is paused. Tell the developer plainly what happened, never as a ` +
+    `Ctrl+C${unread === null ? '' : ', and what the report says'}. Recommend resuming only when nothing blocks the work ` +
+    `(a full disk needs space first). ${go} and nothing blocks it, resume it now (release stopped); otherwise ask them.`
+}
+
 /** A loop agent absent from `$.agent.list()` this long after its spawn counts as killed (T11-fix2). */
 export const ABSENT_MS = 15_000
 
@@ -1076,6 +1109,101 @@ export const runReviewNotice = (go: boolean): string => go
     'is done.' + CONTINUE_ASK
   : '‹pa› The developer put off the one-time `.run/` cleanup; do nothing about it unless they ask, it is not asked again. ' +
     'The update\'s after-restart work is done.' + CONTINUE_ASK
+/** 3.33: the catch-up's version in the cleanup marker (`v`): a marker without it (3.29's) is offered the catch-up once. */
+export const CATCH_UP_V = '3.33'
+/** 3.33: PA3 lines a project edited, which the update's card refresh could not swap (pa/install/project.py writes it). */
+export const CARD_MERGE_FILE = '.run/mod/card-merge.json'
+/** 3.33: the lines to merge from card-merge.json; none when they were handed to Claude already (`handed`) or unreadable. */
+export function cardMergeOf(text: string | null): { card: string[]; claudeMd: string[] } {
+  const none = { card: [], claudeMd: [] }
+  let o: unknown
+  try {
+    o = JSON.parse(text ?? '')
+  } catch {
+    return none
+  }
+  if (typeof o !== 'object' || o === null || 'handed' in o) {
+    return none
+  }
+  const rec = o as Record<string, unknown>
+  const lines = (k: string): string[] => (Array.isArray(rec[k]) ? (rec[k] as unknown[]).filter((x): x is string => typeof x === 'string' && x.trim() !== '') : [])
+  return { card: lines('card'), claudeMd: lines('claude_md') }
+}
+/** 3.33: the card lines already handed to Claude: never handed again (a project may keep its own wording, and every
+ * update's refresh lists the line once more). */
+export const CARD_MERGE_SEEN = '.run/mod/card-merge-seen.json'
+/** 3.33: the handed lines (whitespace collapsed) from card-merge-seen.json; none when unreadable. */
+export function mergeSeenOf(text: string | null): string[] {
+  try {
+    const o = JSON.parse(text ?? '') as { lines?: unknown }
+    return Array.isArray(o.lines) ? o.lines.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+const collapse = (l: string): string => l.replace(/\s+/g, ' ').trim()
+/** 3.33: `merge` without the lines handed before (`seen`). */
+export function unseenMerge(merge: { card: string[]; claudeMd: string[] }, seen: readonly string[]): { card: string[]; claudeMd: string[] } {
+  const s = new Set(seen.map(collapse))
+  return { card: merge.card.filter(l => !s.has(collapse(l))), claudeMd: merge.claudeMd.filter(l => !s.has(collapse(l))) }
+}
+/** 3.33: card-merge-seen.json with `merge`'s lines added. */
+export const mergeSeenText = (seen: readonly string[], merge: { card: string[]; claudeMd: string[] }): string =>
+  `${JSON.stringify({ lines: [...new Set([...seen.map(collapse), ...[...merge.card, ...merge.claudeMd].map(collapse)])] })}\n`
+/** 3.33: the open phase's id from PHASE_PLAN.md's first line (`# Phase 3.45 ...`), '' when none. */
+export const openPhaseOf = (planText: string | null): string =>
+  /^#\s*Phase\s+([A-Za-z0-9._-]+)/.exec((planText ?? '').split(/\r?\n/, 1)[0] ?? '')?.[1] ?? ''
+/**
+ * 3.33: the open phase's finished tasks' folders: `.run/<phase>/` entries named `t<N>` (any suffix: `t14`, `t14_prevc2`)
+ * whose plan line reads `- T<N> | done |`, the running task's never (run_cleanup.py's own check, mirrored).
+ */
+export function finishedTaskDirs(names: readonly string[], planText: string | null, running: string): string[] {
+  const done = new Set<string>()
+  for (const m of (planText ?? '').matchAll(/^- T(\d+) \| done \|/gm)) {
+    done.add(m[1] ?? '')
+  }
+  const run = /^T(\d+)/i.exec(running)?.[1] ?? ''
+  return names.filter(n => {
+    const k = /^t(\d+)/i.exec(n)?.[1]
+    return k !== undefined && k !== run && done.has(k)
+  })
+}
+/** 3.33: the one-time catch-up's picker: offered once per project (again at the next start after "Not now"). */
+export const CATCH_UP_QUESTION = "PA3 3.33 keeps .run/ a temp folder all phase long: coders and experts now clear their own " +
+  "copies, a tool never relies on a phase's scratch, and nothing tracked points into .run/. This project's .run/ still " +
+  "holds finished tasks' or earlier phases' work that this never covered. A one-time catch-up is highly recommended: " +
+  'Claude moves what later work or docs still need out of .run/, makes each tool that relied on it rebuild its data or ' +
+  'say so, and shows you what it would delete, with sizes. Nothing is deleted until you say yes. Catch up now?'
+export const CATCH_UP_OPTIONS: readonly string[] = ['Catch up now (Recommended)', 'Not now']
+/** 3.33: Claude's part of the card refresh: the PA3 lines the project had edited, to merge with judgment. */
+export function mergeText(m: { card: string[]; claudeMd: string[] }): string {
+  const part = (file: string, lines: string[]): string => lines.length === 0 ? ''
+    : `\n${file}:\n${lines.map(l => `  ${l.trim()}`).join('\n')}`
+  if (m.card.length + m.claudeMd.length === 0) {
+    return ''
+  }
+  return ' The update refreshed PA3\'s lines in the card, but these current PA3 lines are missing because the project ' +
+    'had edited their older wording. Merge each into its file where its section is, replacing the older wording it ' +
+    'updates and keeping the project\'s own lines; commit it with commit_task.sh:' +
+    part('HOW_WE_WORK.md', m.card) + part('CLAUDE.md', m.claudeMd) + '\n'
+}
+/** 3.33: after the catch-up's picker; `merge` rides along either way. */
+export const catchUpNotice = (go: boolean, merge: { card: string[]; claudeMd: string[] }): string => go
+  ? '‹pa› The developer chose the one-time 3.33 catch-up in the mod\'s picker. Do it now, as your instructions say ' +
+    '("The one-time catch-up (3.33)"): start from `PY tools/run_cleanup.py --cites`; move what later work or docs still ' +
+    'need out of .run/ (a coder for any code change); make each tool that read a phase\'s scratch rebuild its missing ' +
+    'data or stop with a message naming the rebuild command, nothing more; fix the links; then write exactly the items ' +
+    'to delete to .run/mod/cleanup.json and call cleanup({summary}): the mod asks the developer with its picker and ' +
+    'deletes on their yes (never delete anything yourself).' + mergeText(merge) + ' When it is done (or they stop it), ' +
+    'the update\'s after-restart work is done; a held task\'s resume note (release stopped, note) names what moved.' +
+    CONTINUE_ASK
+  : '‹pa› The developer put off the one-time 3.33 catch-up; it is offered again at the next session start.' +
+    mergeText(merge) + (merge.card.length + merge.claudeMd.length === 0 ? ' The update\'s after-restart work is done.'
+      : ' When that is done, the update\'s after-restart work is done.') + CONTINUE_ASK
+/** 3.33: after an update whose card refresh left lines to merge, with no catch-up due. */
+export const mergeNotice = (merge: { card: string[]; claudeMd: string[] }): string =>
+  `‹pa› The update's after-restart work:${mergeText(merge)} When that is done, the update's after-restart work is done.` +
+  CONTINUE_ASK
 /** 3.30: the one-time cookbook banking of the lessons the 3.2 close stopped promoting: offered once per project with
  * the mod's picker when its task summaries mark lessons for the cookbook (`tools/task_log.py gotchas`). */
 export const BANK_MARKER = '.run/mod/bank-backlog.json'

@@ -14,7 +14,9 @@ demoted), and a real run writes pa.json `migrated: "3.2"` and drops `first_run`,
 memory --reindex: MEMORY.md as one line per memory file (frontmatter name, description);
 rules --reseed ID... --gen G: the project's rule to rules/gen<G>/, the current seed under its id;
 claude-md --refresh / card --refresh: lines equal to a past shipped template line (after the
-fills; templates/HISTORY.json) take the current template's; the rest are listed.
+fills; templates/HISTORY.json) take the current template's, anywhere in the file; the rest are
+listed (`yours:`; the card's Tools, Rhythm and Docs map only), then the current template's lines
+the file lacks (`missing:`). The card's cap counts its own lines only (card.py:own_chars).
 ops --sunset --gen G: retire unreferenced ops topics; ops --reindex: refresh the
 docs/ops/INDEX.md line counts and append rows for unindexed docs/ops/*.md.
 Every subcommand takes --dry-run and prints a table of what it would do.
@@ -29,11 +31,6 @@ import re
 import shutil
 import subprocess
 import sys
-
-try:
-    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
-except Exception:
-    pass
 
 
 def die(msg):
@@ -303,9 +300,10 @@ def _plan_routes(specs, root, memdir, index_lines, gen):
                 refusals.append((fname, "HOW_WE_WORK.md has no section matching %s"
                                  % _CARD_SECTIONS[store]))
                 continue
-            if len(new) > cap:
-                refusals.append((fname, "HOW_WE_WORK.md would be %d/%d chars"
-                                 % (len(new), cap)))
+            own = _card_own(root, new)          # 3.33 C2: PA3's lines don't count
+            if own > cap:
+                refusals.append((fname, "HOW_WE_WORK.md's own lines would be %d/%d chars"
+                                 % (own, cap)))
                 continue
             card_text = new
             r["target"] = "HOW_WE_WORK.md"
@@ -898,35 +896,54 @@ def _fill_line(line, fills):
     return _PH_RE.sub(lambda m: fills[m.group(1)], line)
 
 
-def _refresh(args, root, rel_path, tmpl_name, owned):
-    """Replace each block of ``rel_path`` equal to a past template block (after the fills;
-    templates/HISTORY.json) with the current template's, and list the rest. ``owned(lines)``
-    gives the line numbers the refresh may touch and list (None: every line)."""
-    path = os.path.join(root, rel_path)
-    if not os.path.isfile(path):
-        die("no %s" % rel_path)
-    tmpl_path = _template_file(root, tmpl_name)
-    hist_path = _template_file(root, "HISTORY.json")
-    if not tmpl_path or not hist_path:
-        die("no templates/%s or templates/HISTORY.json" % tmpl_name)
-    with open(hist_path, encoding="utf-8") as fh:
-        pairs = json.load(fh).get(tmpl_name, [])
-    cur = read_text(tmpl_path).replace("\r\n", "\n").rstrip("\n").split("\n")
-    raw = read_text(path)
+def _collapse(line):
+    return " ".join(line.split())
+
+
+def _missing(cur, lines, fills, skip=()):
+    """3.33 C1: each current template line (``cur``) absent from ``lines``, whitespace collapsed, with the
+    project's fills: lines of at least _GENERIC_CHARS literal chars only; never an HTML comment line, a sample
+    row (``- (none yet``, a row of placeholders only), a line with an unfilled placeholder or one of ``skip``."""
+    have = {_collapse(ln) for ln in lines}
+    out, comment = [], False
+    for ln in cur:
+        s = ln.strip()
+        opened = s.rfind("<!--") > s.rfind("-->")
+        if comment or s.startswith("<!--"):
+            comment = (comment or s.startswith("<!--")) and "-->" not in s
+            continue
+        comment = opened
+        if (not s or _generic(ln) or s.startswith("- (none yet") or ln in skip
+                or _PH_RE.search(ln) and not re.search(r"\w", _PH_RE.sub("", ln))):
+            continue
+        filled = _fill_line(ln, fills)
+        if filled is not None and _collapse(filled) not in have and filled not in out:
+            out.append(filled)
+    return out
+
+
+def refresh_text(raw, cur_text, pairs, owned=None, skip=()):
+    """3.33 C1: the refresh of one project file's text, no I/O (the CLI below and pa/install/project.py's update).
+
+    Each block of ``raw`` equal to a past template block (``pairs``: templates/HISTORY.json's for the template,
+    after the project's fills) takes the current block, anywhere in the file. Returns ``{"text", "replaced",
+    "yours", "missing"}``: the new text (CRLF kept), ``[(line, old_lines, new_lines)]``, ``[(line, text)]`` for the
+    lines of ``owned(lines)`` (None: every line) that match no current template line, and :func:`_missing`'s
+    lines (``skip``: current template lines never listed)."""
+    cur = cur_text.replace("\r\n", "\n").rstrip("\n").split("\n")
     crlf = "\r\n" in raw
     lines = raw.replace("\r\n", "\n").split("\n")
-    allowed = owned(lines)
-    ok = (lambda i: True) if allowed is None else (lambda i: i in allowed)
-    # the project's fills, from every template line (current and past) that matches one of its lines
+    # the project's fills, from every template line (current, then past) that matches one of its lines: a past
+    # `{{PY}} tools/...` row must not fill PY with the card's `PY` before the current `- Python: {{PY}}` line does
     fills = {}
-    tmpl_lines = [ln for ln in cur + [x for old, new in pairs for x in old + new]
-                  if _PH_RE.search(ln) and not _generic(ln)]
-    for ln in lines:
-        for tl in tmpl_lines:
-            m = _line_re(tl).match(ln)
-            if m:
-                for k, v in m.groupdict().items():
-                    fills.setdefault(k, v)
+    for group in (cur, [x for old, new in pairs for x in old + new]):
+        tmpl_res = [_line_re(ln) for ln in group if _PH_RE.search(ln) and not _generic(ln)]
+        for ln in lines:
+            for rx in tmpl_res:
+                m = rx.match(ln)
+                if m:
+                    for k, v in m.groupdict().items():
+                        fills.setdefault(k, v)
     replaced = []
     for old, new in pairs:
         if not old:
@@ -936,7 +953,7 @@ def _refresh(args, root, rel_path, tmpl_name, owned):
         while i + len(old) <= len(lines):
             got = {}
             for k, rx in enumerate(res):
-                m = rx.match(lines[i + k]) if ok(i + k) else None
+                m = rx.match(lines[i + k])
                 if not m or any(got.get(n, v) != v for n, v in m.groupdict().items()):
                     break
                 got.update(m.groupdict())
@@ -945,38 +962,54 @@ def _refresh(args, root, rel_path, tmpl_name, owned):
                 if None not in filled:
                     replaced.append((i + 1, lines[i:i + len(old)], filled))
                     lines[i:i + len(old)] = filled
-                    if allowed is not None:       # shift the owned set past the swap
-                        d = len(filled) - len(old)
-                        allowed = {j if j < i else j + d for j in allowed if not i <= j < i + len(old)}
-                        allowed |= set(range(i, i + len(filled)))
-                        ok = (lambda a: lambda j: j in a)(allowed)
                     i += len(filled)
                     continue
             i += 1
+    allowed = owned(lines) if owned is not None else None
     cur_res = [(t, _line_re(ln), _generic(ln)) for t, ln in enumerate(cur) if ln.strip()]
     yours = []
     for i, ln in enumerate(lines):
-        if not ln.strip() or not ok(i):
+        if not ln.strip() or allowed is not None and i not in allowed:
             continue
         if not any((i == t) if gen else bool(rx.match(ln)) for t, rx, gen in cur_res):
             yours.append((i + 1, ln))
     new_text = "\n".join(lines)
     if crlf:
         new_text = new_text.replace("\n", "\r\n")
+    return {"text": new_text, "replaced": replaced, "yours": yours,
+            "missing": _missing(cur, lines, fills, skip)}
+
+
+def _refresh(args, root, rel_path, tmpl_name, owned):
+    """``rel_path``'s :func:`refresh_text` against the current template and templates/HISTORY.json, printed:
+    each swap, the ``owned(lines)`` lines the template doesn't have (None: every line), then the current
+    template's lines the file lacks."""
+    path = os.path.join(root, rel_path)
+    if not os.path.isfile(path):
+        die("no %s" % rel_path)
+    tmpl_path = _template_file(root, tmpl_name)
+    hist_path = _template_file(root, "HISTORY.json")
+    if not tmpl_path or not hist_path:
+        die("no templates/%s or templates/HISTORY.json" % tmpl_name)
+    with open(hist_path, encoding="utf-8") as fh:
+        pairs = json.load(fh).get(tmpl_name, [])
+    raw = read_text(path)
+    got = refresh_text(raw, read_text(tmpl_path), pairs, owned)
     sys.stdout.write("%s --refresh\n" % args.cmd)
-    for n, old, new in replaced:
+    for n, old, new in got["replaced"]:
         sys.stdout.write("  replace: line %d: %s -> %s\n"
                          % (n, " / ".join(old), " / ".join(new) or "(removed)"))
-    for n, ln in yours:
+    for n, ln in got["yours"]:
         sys.stdout.write("  yours: line %d: %s\n" % (n, ln))
-    return path, raw, new_text, replaced
+    for ln in got["missing"]:
+        sys.stdout.write("  missing: %s\n" % ln)
+    return path, raw, got["text"], got["replaced"]
 
 
 def cmd_claude_md(args, root):
     if not args.refresh:
         die("--refresh is required")
-    path, raw, new, replaced = _refresh(args, root, "CLAUDE.md", "CLAUDE.template.md",
-                                        lambda lines: None)
+    path, raw, new, replaced = _refresh(args, root, "CLAUDE.md", "CLAUDE.template.md", None)
     if args.dry_run:
         sys.stdout.write("dry-run: no changes\n")
         return 0
@@ -986,7 +1019,9 @@ def cmd_claude_md(args, root):
     return 0
 
 
-def _card_owned(lines):
+def card_owned(lines):
+    """The lines ``card --refresh`` lists as yours: the Tools, Rhythm and Docs map bodies and the
+    role-tagged headings."""
     owned, inside = set(), False
     for i, ln in enumerate(lines):
         if ln.startswith("## "):
@@ -999,14 +1034,29 @@ def _card_owned(lines):
     return owned
 
 
+def _card_tool():
+    """The sibling card.py, where the cap's count lives (3.33 C2)."""
+    _d = os.path.dirname(os.path.abspath(__file__))
+    if _d not in sys.path:
+        sys.path.insert(0, _d)
+    import card
+    return card
+
+
+def _card_own(root, text):
+    """3.33 C2: the card's chars the cap counts: its own lines (card.py:own_chars; PA3's lines don't count)."""
+    card = _card_tool()
+    return card.own_chars(text, card.template_text(root))
+
+
 def cmd_card(args, root):
     if not args.refresh:
         die("--refresh is required")
     path, raw, new, replaced = _refresh(args, root, "HOW_WE_WORK.md",
-                                        "HOW_WE_WORK.template.md", _card_owned)
-    cap = _card_cap(root)
-    if len(new) > cap:
-        sys.stdout.write("refused: HOW_WE_WORK.md would be %d/%d chars\n" % (len(new), cap))
+                                        "HOW_WE_WORK.template.md", card_owned)
+    cap, own = _card_cap(root), _card_own(root, new)
+    if own > cap:
+        sys.stdout.write("refused: HOW_WE_WORK.md's own lines would be %d/%d chars\n" % (own, cap))
         return 1
     if args.dry_run:
         sys.stdout.write("dry-run: no changes\n")
@@ -1106,22 +1156,16 @@ def _living_section(text, entries):
 
 
 def cmd_living_docs(args, root):
-    """3.32 B7: the card's `## Living docs` from --entry lines; refused past card.max_chars, or when Claude's slice would
-    pass the seed's card cap."""
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import card as card_tool
+    """3.32 B7: the card's `## Living docs` from --entry lines; refused when the card's own lines would pass
+    card.max_chars (3.33 C2: PA3's lines don't count; the seed no longer cuts Claude's slice)."""
     path = os.path.join(root, "HOW_WE_WORK.md")
     new = _living_section(read_text(path), args.entry)
-    cap, seen = _card_cap(root), len(card_tool.slice_text(new, "claude"))
-    if len(new) > cap:
-        sys.stdout.write("refused: HOW_WE_WORK.md would be %d/%d chars\n" % (len(new), cap))
+    cap, own = _card_cap(root), _card_own(root, new)
+    if own > cap:
+        sys.stdout.write("refused: HOW_WE_WORK.md's own lines would be %d/%d chars\n" % (own, cap))
         return 1
-    if seen > card_tool.SEED_CARD_CAP:
-        sys.stdout.write("refused: Claude's slice would be %d/%d chars, the seed's card cap: fewer or shorter lines\n"
-                         % (seen, card_tool.SEED_CARD_CAP))
-        return 1
-    sys.stdout.write("living docs: %d lines, card %d/%d chars, Claude's slice %d/%d\n"
-                     % (len(args.entry), len(new), cap, seen, card_tool.SEED_CARD_CAP))
+    sys.stdout.write("living docs: %d lines, card %d chars, own lines %d/%d\n"
+                     % (len(args.entry), len(new), own, cap))
     if args.dry_run:
         sys.stdout.write("dry-run: no changes\n")
         return 0
@@ -1489,6 +1533,10 @@ def _add_dry_run(parser):
 
 
 def main(argv=None):
+    try:            # 3.33 C1: here, not at import: the installer loads this module in-process (refresh_text)
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     p = argparse.ArgumentParser(
         prog="curate.py",
         description="Generation-start curator: demote memories, cookbook, rules; "
@@ -1536,13 +1584,14 @@ def main(argv=None):
     _add_dry_run(s)
     s.add_argument("--refresh", action="store_true",
                    help="replace lines equal to a past template line (after the fills) with "
-                        "the current template's; list the rest")
+                        "the current template's; list the rest and the template lines missing")
 
-    s = sub.add_parser("card", help="refresh HOW_WE_WORK.md's package-owned lines")
+    s = sub.add_parser("card", help="refresh HOW_WE_WORK.md's PA3 lines")
     _add_dry_run(s)
     s.add_argument("--refresh", action="store_true",
-                   help="the same for the Tools, Rhythm and Docs map sections and the "
-                        "role-tagged headings; refused past card.max_chars")
+                   help="the same for the card; yours: lists the Tools, Rhythm and Docs map "
+                        "sections and the role-tagged headings; refused when its own lines "
+                        "pass card.max_chars")
 
     s = sub.add_parser("living-docs", help="write the card's ## Living docs section", epilog=LIVING_HELP,
                        formatter_class=argparse.RawDescriptionHelpFormatter)

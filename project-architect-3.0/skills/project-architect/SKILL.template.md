@@ -41,8 +41,10 @@ Contracts (≤ 300 tokens each):
 - Expert brief: `TASK · PLAN · HOW · LOGS TO READ · CODER · EFFORT · PROGRESS (respawn only) · NOTE · DONE WHEN · RETURN`.
 - Expert report: starts with one plain word, `done`, `question`, `blocked`, `review` or `handoff`; the rest is free text.
 - Coder brief: `CODER TASK T<n>.c<k> · CHANGE (≤ 8 lines) · INTERFACES (named entries) · POINTERS (path:line-range read
-  already) · CONSTRAINTS · BUILD/TEST (exact commands, what green means) · DONE WHEN · LOG · RETURN`.
-- Coder report: starts with one plain word, `done`, `question` or `blocked`, then what changed and the commit.
+  already) · CONSTRAINTS · BUILD/TEST (exact commands, what green means) · SCRATCH (`.run/<phase>/t<n>/c<k>/`) · DONE
+  WHEN · LOG · RETURN`.
+- Coder report: starts with one plain word, `done`, `question` or `blocked`, then what changed and the commit, and one line
+  on what it deleted and left in its scratch.
 - Retriever brief: `QUESTION · FOR · SCOPE · CAP · REPORT yes|auto · KNOWN`; return: the answer only, `REPORT: pending/<file>`
   first when a report was written (the expert runs `{{PY}} tools/research_add.py adopt` and cites the id).
 Handoff: when the harness says the context threshold was reached, finish the change in hand until it builds and its tests
@@ -94,8 +96,11 @@ Generated files are regenerated from their inputs, never hand-edited. Preserve c
 disabled logic gets `// DISABLED: <name> — <date/phase> / Original intent / Why disabled (evidence) / Re-enable if
 <condition>`; a tuned value keeps its old value in a comment (`= 8; // was 5`). No system temp: all of a phase's work
 in `.run/` goes under `.run/<phase>/` (gitignored), nowhere else in `.run/`. It is a temp folder only, never a home for
-long-term content: what the project needs lives in its proper place in the repo, and a tool deletes its own temp folders
-when it finishes. Determinism and pinning at every boundary:
+long-term content: what the project needs lives in its proper place in the repo, and nothing tracked (a tool, config, the
+cookbook, a summary) points into `.run/`. A tool or coder deletes the copies it made (tree copies, build output) when done
+with them; an expert, at its task's end, moves what later tasks, docs or tools need to its proper place and deletes
+leftover copies. No tool reads a phase's scratch by a fixed path: data it needs and doesn't find is rebuilt, or the tool
+stops with a message naming the command that rebuilds it; it never skips a check quietly. Determinism and pinning at every boundary:
 stable sorts and fixed tie-breaks on gate-crossing metrics, toolchains pinned by evidence, cross-boundary contracts asserted
 at startup. Every imported datum carries source, scope and verification status; unverified data stays quarantined. Raw
 outputs and logs are never edited: analysis writes new files.

@@ -194,6 +194,50 @@ export function requestFile(ms: number, seq: number, kind: string, caller: strin
   return { name, body: JSON.stringify({ id: name.slice(0, -'.json'.length), kind, caller, input, at: ms }, null, 1) }
 }
 
+/**
+ * 3.33: a request write that reports whether the file landed whole (the caller's `$.fs.write`, then `$.fs.read` back and
+ * compared). bfm-decomp 2026-11-23: on a full disk the router's forward of a coder's report ("the disk is full") was
+ * written empty, the loop dropped it as unreadable, and the expert that never got it was taken for stopped by a Ctrl+C.
+ */
+export type Land = (path: string, body: string) => Promise<boolean>
+
+/** 3.33: how long a request that did not land is retried: a full disk usually frees within minutes (bfm: 6 min). */
+export const REQUEST_RETRY_MS = 30 * 60_000
+
+/** 3.33: a request that did not land, rebuilt under a fresh name at each retry (the loop marks a name done once read). */
+export type PendingRequest = { dir: string; build: (ms: number, seq: number) => { name: string; body: string }; since: number; what: string }
+
+/**
+ * 3.33: one retry round, oldest first: each request is written again under a fresh name (`nextSeq`); the first that
+ * fails again ends the round (the disk is still full) and it and the rest wait for the next. Past REQUEST_RETRY_MS a
+ * request is dropped. Returns what is still pending, what went and what was dropped.
+ */
+export async function retryRequests(land: Land, pending: readonly PendingRequest[], now: number, nextSeq: () => number):
+  Promise<{ left: PendingRequest[]; sent: PendingRequest[]; dropped: PendingRequest[] }> {
+  const left: PendingRequest[] = []
+  const sent: PendingRequest[] = []
+  const dropped: PendingRequest[] = []
+  let stuck = false
+  for (const p of pending) {
+    if (now - p.since > REQUEST_RETRY_MS) {
+      dropped.push(p)
+      continue
+    }
+    if (stuck) {
+      left.push(p)
+      continue
+    }
+    const r = p.build(now, nextSeq())
+    if (await land(`${p.dir}/${r.name}`, r.body)) {
+      sent.push(p)
+    } else {
+      stuck = true
+      left.push(p)
+    }
+  }
+  return { left, sent, dropped }
+}
+
 export function handle(req: Request, root = ''): Effect[] {
   return (HANDLERS[req.kind] ?? noop)(req, root)
 }

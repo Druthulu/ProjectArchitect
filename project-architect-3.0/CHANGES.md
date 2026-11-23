@@ -2,6 +2,28 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.33 — Scratch stays tidy, and every project catches up
+
+- An expert that disappears is no longer reported as stopped by a Ctrl+C. Only a real stop (Claude Code lists the
+  agent as killed) is a Ctrl+C. Otherwise Claude says the expert went away without a report, and when its coder's
+  report never reached it, Claude tells you what that report says instead of recommending a resume. On bfm-decomp a
+  full disk lost the coder's "the disk is full", and the night ended on a picker blaming a Ctrl+C nobody pressed.
+- When the disk fills for a few minutes, PA3's messages between its parts and its journal entries are written again
+  once there is room, instead of being lost. Lines Claude Code itself could not save to a transcript stay lost.
+- `.run/` stays a temp folder all phase long. A coder deletes the copies it makes (tree copies, build output) when it
+  is done with them and says what it left. An expert, at its task's end, moves what later tasks, docs or tools need out
+  of `.run/` and clears leftover copies. A tool never relies on a phase's scratch: when its data is missing, it
+  rebuilds it or stops with a message naming the command that does. `tools/run_cleanup.py --cites` lists the tracked
+  files that still point into `.run/`.
+- Every update now refreshes PA3's own lines in your card (`HOW_WE_WORK.md`) and `CLAUDE.md`. Until now that ran once,
+  when a project first joined, so later changes never reached existing projects. Lines your project had edited go to
+  Claude to merge after the restart. PA3's lines no longer count toward the card's size cap, and a fresh Claude sees
+  all of its part of the card (it was cut at 6,000 characters).
+- Once, after this update's restart: Claude offers to catch up `.run/` (earlier phases and this phase's finished
+  tasks). What later work still needs moves to its proper place, each tool that relied on scratch is made to rebuild
+  its data or say so, and Claude shows what it would delete, with sizes. Nothing is deleted until you say yes, and
+  "Not now" asks again at the next start. Work resumes when you say so.
+
 ## 3.32.23 — The Session line's "fewer" and "longer" stay right after a /login
 
 - The Session line's `N% fewer · lasts Mx longer` divided the whole session's savings by Claude Code's own cost

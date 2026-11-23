@@ -12,6 +12,8 @@ const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^[A-Za-z]:/, 
 
 type Row = { id: string; description: string; type: string; status: 'running'; parentId?: string }
 const PARTNER: Row[] = [{ id: 'A1', description: 'p', type: 'pa-claude', status: 'running' }]
+// 3.33: a full disk for the test that needs one: a write whose path it matches is denied (ENOSPC)
+let diskFull: ((path: string) => boolean) | null = null
 
 function world(on: On, files: Record<string, string>, env: Record<string, string>, list: Row[] = PARTNER, denyRegister: boolean | string = false): Map<string, string> {
   const m = new Map(Object.entries(files))
@@ -24,6 +26,10 @@ function world(on: On, files: Record<string, string>, env: Record<string, string
     return t === undefined ? { deny: `ENOENT ${norm(e.path)}` } : { value: t }
   })
   on('fs.write', async ($, e) => {
+    if (diskFull !== null && diskFull(norm(e.path))) {
+      m.set(norm(e.path), '') // created, then the write fails: left empty, as on a full disk
+      return { deny: 'ENOSPC: no space left on device' }
+    }
     m.set(norm(e.path), e.text)
     return { value: undefined }
   })
@@ -95,6 +101,36 @@ describe('watcher tools and thinking', () => {
     const r = await $.tool.call({ tool: 'mcp__pa-watch__ask', question: 'q?', options: ['only'], agentId: 'A1' } as never)
     expect(r.result).toBe('error: options must be 2-4 strings')
     expect(inbox(m).length).toBe(0)
+  })
+
+  test('3.33: a thinking entry a full disk left empty is written again at the next step', async ($, on) => {
+    mock.clock(on)
+    const m = world(on, { [`${ROOT}/.claude/pa.json`]: ON }, {})
+    let n = 0
+    on('turn.step', async function* ($, e) {
+      n += 1
+      yield { kind: 'thinking', index: 0, text: `Step ${String(n)}.` } as const
+      return { turnId: e.turnId, index: e.index, answer: 'ok', toolUses: [], stopReason: 'end_turn', usage: null }
+    })
+    await $.session.start(START)
+    const run = async (i: number): Promise<void> => {
+      const s = $.turn.step({ turnId: 'U1', index: i, model: 'claude-opus-5-5', effort: 'medium', messageCount: 1, agentId: 'A1' })
+      for await (const _ of s) { /* drain */ }
+      await s.result
+    }
+    const journal = (): [string, string][] => [...m].filter(([p]) => p.includes('/.claude-state/journal/'))
+    diskFull = p => p.includes('/.claude-state/journal/')
+    try {
+      await run(0)
+    } finally {
+      diskFull = null
+    }
+    expect(journal().map(([, t]) => t)).toEqual([''])
+    await run(1)
+    const texts = journal().map(([, t]) => t)
+    expect(texts).toHaveLength(2)
+    expect(texts.every(t => t.endsWith('---\nStep 1.\n') || t.endsWith('---\nStep 2.\n'))).toBe(true)
+    expect(texts.some(t => t.endsWith('---\nStep 1.\n'))).toBe(true)
   })
 
   test('turn.step passes chunks through and writes one thinking entry', async ($, on) => {

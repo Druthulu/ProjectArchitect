@@ -6,8 +6,9 @@ interview [--name --experience --domain --autonomy --notify] [--defaults]
           writes the template defaults)
 slice <role>
           print, in file order, each section whose role tag names the role
-check     print chars/cap/placeholders/standing and exit 1 when over cap,
-          with placeholders or a Standing decisions heading
+check     print chars/own/cap/placeholders/standing and exit 1 when the project's own lines
+          pass the cap, with placeholders or a Standing decisions heading (3.33 C2: a line
+          equal to a current template line, after the card's fills, is PA3's and not counted)
 
 Stdlib only; no imports from `pa/`.
 """
@@ -20,7 +21,8 @@ import sys
 
 _SCRIPT = "card.py"
 DEFAULT_MAX_CHARS = 10000   # 3.32 B7: was 7000; characters stay the unit: a tool needs no tokenizer to count them
-SEED_CARD_CAP = 6000        # 3.32 B7: seed.ts CARD_CAP_CHARS: what a fresh Claude sees of its slice
+TEMPLATE = "HOW_WE_WORK.template.md"
+_GENERIC_CHARS = 10         # curate.py's: a template line with fewer literal chars matches any line
 
 # placeholder pattern
 _PH_RE = re.compile(r"\{\{(\w+)\}\}")
@@ -253,18 +255,88 @@ def slice_text(text, role):
 
 # -- check --------------------------------------------------------------------
 
+def _pkg_home():
+    """The package root (curate.py:_pkg_home): this script's parent when it has pa/, else ~/.claude/pa3."""
+    up = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if os.path.isdir(os.path.join(up, "pa")):
+        return up
+    return os.path.join(os.path.expanduser("~"), ".claude", "pa3")
+
+
+def template_text(root):
+    """3.33 C2: the card template: the project's managed ``templates/`` copy, else the package's
+    (curate.py:_template_file); None when there is none."""
+    for base in (os.path.join(root, "templates"), os.path.join(_pkg_home(), "templates")):
+        path = os.path.join(base, TEMPLATE)
+        if os.path.isfile(path):
+            with open(path, "r", encoding="utf-8", newline="") as fh:
+                return fh.read()
+    return None
+
+
+def collapse(line):
+    """``line`` with its whitespace runs collapsed: how a card line is compared with a template line."""
+    return " ".join(line.split())
+
+
+def _line_re(line):
+    """A template line as a full-match regex, each {{KEY}} capturing its fill (mirrors curate.py:_line_re)."""
+    out, seen, pos = [], set(), 0
+    for m in _PH_RE.finditer(line):
+        out.append(re.escape(line[pos:m.start()]))
+        key = m.group(1)
+        out.append("(?P=%s)" % key if key in seen else "(?P<%s>.*?)" % key)
+        seen.add(key)
+        pos = m.end()
+    out.append(re.escape(line[pos:]))
+    return re.compile("".join(out) + r"\s*$")
+
+
+def pa3_lines(text, tmpl_text):
+    """3.33 C2: the indexes of ``text``'s lines that are PA3's: equal, whitespace collapsed, to a current
+    template line with the card's fills. The fills come from the template's placeholder lines with at
+    least _GENERIC_CHARS literal chars, matched against the card (first match wins); a template line
+    with a placeholder left unfilled matches nothing."""
+    lines = text.replace("\r\n", "\n").split("\n")
+    tmpl = [ln for ln in tmpl_text.replace("\r\n", "\n").split("\n") if ln.strip()]
+    rxs = [_line_re(t) for t in tmpl
+           if _PH_RE.search(t) and len(_PH_RE.sub("", t).strip()) >= _GENERIC_CHARS]
+    fills = {}
+    for ln in lines:
+        for rx in rxs:
+            m = rx.match(ln)
+            if m:
+                for k, v in m.groupdict().items():
+                    fills.setdefault(k, v)
+    ours = set()
+    for t in tmpl:
+        keys = _PH_RE.findall(t)
+        if all(k in fills for k in keys):
+            ours.add(collapse(_PH_RE.sub(lambda m: fills[m.group(1)], t)))
+    return {i for i, ln in enumerate(lines) if ln.strip() and collapse(ln) in ours}
+
+
+def own_chars(text, tmpl_text):
+    """3.33 C2: the cap's count: the chars of the card's own lines, each with its newline (PA3's lines,
+    :func:`pa3_lines`, don't count); the whole card when there is no template."""
+    if not tmpl_text:
+        return len(text)
+    lines = text.split("\n")
+    last = len(lines) - 1
+    return len(text) - sum(len(lines[i]) + (i < last) for i in pa3_lines(text, tmpl_text))
+
+
 def cmd_check(args, root):
     """Print card stats and exit 1 when unhealthy."""
     text = _read_card(root)
     _cnote(_card_path(root), script=_SCRIPT, sub="check", whole=True, root=root)
     chars = len(text)
+    own = own_chars(text, template_text(root))
     cap = _max_chars(root)
     placeholders = len(_PH_RE.findall(text))
     standing = 1 if re.search(r"^## Standing decisions", text, re.MULTILINE) else 0
-    # 3.32 B7: Claude's slice is printed, never a refusal here: the archive runs this check, and the seed only cuts lines.
-    print("chars=%d cap=%d placeholders=%d standing=%d claude=%d/%d"
-          % (chars, cap, placeholders, standing, len(slice_text(text, "claude")), SEED_CARD_CAP))
-    if chars > cap or placeholders > 0 or standing:
+    print("chars=%d own=%d cap=%d placeholders=%d standing=%d" % (chars, own, cap, placeholders, standing))
+    if own > cap or placeholders > 0 or standing:
         return 1
     return 0
 

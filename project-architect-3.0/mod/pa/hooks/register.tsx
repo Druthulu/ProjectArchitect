@@ -35,7 +35,7 @@ import {
 } from './card'
 import { parseCoderReturn } from './contract'
 import { clip, eventFile, isStale, PRUNE_DAYS, pruneArgv } from './debug'
-import { forwardRequest, handle, isLoopKind, noAnswer, parseRequest, pendingRequests, requestFile, RETRIEVE_TYPE, retrievePrompt } from './inbox'
+import { forwardRequest, handle, isLoopKind, type Land, noAnswer, parseRequest, type PendingRequest, pendingRequests, requestFile, retryRequests, RETRIEVE_TYPE, retrievePrompt } from './inbox'
 import { type Entry, entriesOf, ENTRIES_TOOL, filedThroughOf, parseEntryPath, stamp, TOPICS_PATH } from './journal'
 import { idleNow, runningNow, taskAgents } from './digest'
 import {
@@ -116,6 +116,7 @@ let routing = false
 let warming = false
 let jseq = 0 // per-load sequence of the router's journal entries
 let fseq = 0 // the loop `forward` requests' sequence in the inbox (3.23 T5d2a)
+let routerPending: PendingRequest[] = [] // 3.33: the router's requests to the loop that did not land, retried each route tick
 let nseq = 0 // the feed's nudge files' sequence (3.23 T13d)
 let expertSkip = '' // 3.23 T13b.c4: warmExpert's last skip reason, logged once per change
 let noToastLogged = false
@@ -716,11 +717,26 @@ export const register: Register = (on, options) => {
         const pingsLeft = w === undefined || w.waitCount === 0 || w.waitPings < w.waitCount
         return isCold(Math.max(t.lastCompleteAt, t.spawnedAt, w?.lastPingAt ?? 0), now, ttl, pingsLeft)
       }
+      // 3.33: a request written and read back: false when it did not land whole (inbox.ts Land)
+      const land: Land = async (path, body) => {
+        try {
+          await $.fs.write(path, body)
+        } catch {
+          return false
+        }
+        return (await $.fs.read(path).catch(() => null)) === body
+      }
       const toColdExpert = async (id: string, child: string, text: string): Promise<void> => {
         fseq += 1
         const now = await $.clock.now()
-        const r = requestFile(now, fseq, 'forward', 'router', { agentId: id, child, text })
-        await $.fs.write(`${base}/${sidNow}/inbox/${r.name}`, r.body).catch(quiet)
+        const build = (ms: number, seq: number): { name: string; body: string } => requestFile(ms, seq, 'forward', 'router', { agentId: id, child, text })
+        const r = build(now, fseq)
+        const dir = `${base}/${sidNow}/inbox`
+        // 3.33: a request that did not land whole (a full disk) is retried under a fresh name each route tick
+        if (!(await land(`${dir}/${r.name}`, r.body))) {
+          routerPending = [...routerPending, { dir, build, since: now, what: `forward of ${child}'s hand-back to ${id}` }]
+          await log('request.failed', { kind: 'forward', agentId: id, child })
+        }
         await log('route.cold', { agentId: id, child })
       }
       // The route tick: the journal's queued entries, the partner's resume check, the outbox, then the reply markers
@@ -743,6 +759,22 @@ export const register: Register = (on, options) => {
               await $.fs.write(stPath, serializeState(after))
             }
             return after
+          }
+          // 3.33: the requests to the loop that did not land (a full disk), oldest first, under fresh names
+          if (routerPending.length > 0) {
+            const taken = routerPending
+            routerPending = []
+            const res = await retryRequests(land, taken, await $.clock.now(), () => {
+              fseq += 1
+              return fseq
+            })
+            routerPending = [...res.left, ...routerPending]
+            for (const p of res.sent) {
+              await log('request.retried', { what: p.what })
+            }
+            for (const p of res.dropped) {
+              await log('request.dropped', { what: p.what })
+            }
           }
           // Each queued entry written, then dropped from the queue (a rewrite is the same file). 3.32.15: no month index
           // to sync after it (GitHub #15: that sync re-read every packed day of the month after each write).
@@ -2083,7 +2115,17 @@ export const register: Register = (on, options) => {
           if (parentId !== '' && loopTask?.agentId === parentId) {
             fseq += 1
             const r = forwardRequest(now, fseq, parentId, child)
-            await $.fs.write(`${await $.session.root()}/.run/mod/${await $.session.id()}/inbox/${r.name}`, r.body).catch(quiet)
+            const dir = `${await $.session.root()}/.run/mod/${await $.session.id()}/inbox`
+            let landedWhole = true // 3.33: written and read back whole, else retried each route tick (a full disk)
+            try {
+              await $.fs.write(`${dir}/${r.name}`, r.body)
+            } catch {
+              landedWhole = false
+            }
+            if (!landedWhole || (await $.fs.read(`${dir}/${r.name}`).catch(() => null)) !== r.body) {
+              const build = (ms: number, seq: number): { name: string; body: string } => forwardRequest(ms, seq, parentId, child)
+              routerPending = [...routerPending, { dir, build, since: now, what: `forward notice of ${child} to ${parentId}` }]
+            }
             data = { ...data, loopForward: parentId }
           }
         }

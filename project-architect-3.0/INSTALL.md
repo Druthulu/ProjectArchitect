@@ -1,6 +1,6 @@
 # Installing Project Architect 3.0
 
-Project Architect 3.0, version 3.32.23: PA 3.3 (the version is the phase that published it).
+Project Architect 3.0, version 3.33.0: PA 3.3 (the version is the phase that published it).
 
 PA 3.2 is one session: you open a bare `claude` and talk with Claude, your partner. When you
 approve a plan, the mod (a Claude Code plugin the installer sets up) runs its tasks inside that
@@ -141,9 +141,12 @@ commands, `templates/` and the methodology doc, replaced by upstream with yours 
 `.claude/pa3-upgrade/<rel>.upstream` with a line in `.claude/pa3-upgrade/UPGRADE.md`, which the
 mod hands to an upgrade expert. A file the package no longer ships is removed when you never
 edited it, and staged in `.claude/pa3-upgrade/` when you did. `--force` overwrites all;
-`--dry-run` writes nothing. Beyond that it changes only text PA3 itself wrote: the `CLAUDE.md`
-lines and seed rules 3.2 rewrote are refreshed where they equal a past package version; your own
-edits to them, the plan, the cookbook and `HOW_WE_WORK.md` are left alone.
+`--dry-run` writes nothing. Beyond that it changes only text PA3 itself wrote: every line of
+`HOW_WE_WORK.md` and `CLAUDE.md`, and the seed rules 3.2 rewrote, that equals a past package
+version takes the current text (3.33: at every update, not only a project's first). PA3 lines your
+project had edited stay as they are; the current ones go to Claude, after the restart, to merge
+(`.run/mod/card-merge.json`). Your own lines, the plan and the cookbook are left alone. PA3's
+lines don't count toward the card's cap (`card.max_chars`, the project's own lines).
 
 ### Upgrading a PA3 3.15.x project to 3.2
 

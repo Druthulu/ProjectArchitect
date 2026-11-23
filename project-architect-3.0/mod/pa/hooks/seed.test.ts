@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import type { LoopState } from '../types'
 import { entriesOf, type Entry, renderEntry } from './journal'
-import { buildSeed, CARD_CAP_CHARS, cardSection, charTokens, CHARS_PER_TOKEN, localStamp, loopSection, MEMORY_CAP_TOKENS, memorySection, openQuestion, RECENT_EXCHANGES_TOKENS, RECORDS_TOKENS, SEED_BUDGET_TOKENS, tokenChars } from './seed'
+import { buildSeed, cardSection, charTokens, CHARS_PER_TOKEN, localStamp, loopSection, MEMORY_CAP_TOKENS, memorySection, openQuestion, RECENT_EXCHANGES_TOKENS, RECORDS_TOKENS, SEED_BUDGET_TOKENS, tokenChars } from './seed'
 
 const D = '.claude-state/journal/2026-10-07'
 const T0 = Date.UTC(2026, 9, 7, 10, 0, 0) // entry n is n minutes later (3.22 T8g: real ISO ts)
@@ -182,9 +182,10 @@ describe('seed 3.23 T7', () => {
     expect([...at].sort((a, b) => a - b)).toEqual(at)
     expect(buildSeed(convo(1))).not.toContain('## CARD')
     expect(cardSection(' \n')).toBe('')
+    // 3.33: Claude's slice is never cut (was 6,000 chars): every line of a 15k slice reaches the seed
     const c = cardSection(Array.from({ length: 300 }, (_, i) => `- line ${String(i)} ${'y'.repeat(40)}`).join('\n'))
-    expect(c.length).toBeLessThan(CARD_CAP_CHARS + 200)
-    expect(c).toMatch(/\(\d+ more lines; see HOW_WE_WORK\.md \(PY tools\/card\.py slice claude\)\)\n\n$/)
+    expect(c).toContain('- line 299 ')
+    expect(c).not.toContain('more lines; see')
   })
 
   test('3.32 B9: the intake due: its line under ## Plan; absent: none', async () => {

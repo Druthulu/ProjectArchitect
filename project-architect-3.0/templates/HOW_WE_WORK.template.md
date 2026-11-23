@@ -1,7 +1,7 @@
 # How we work — {{PROJECT_NAME}}
 
 <!-- The card: standing facts for every agent. Never appended to; the cap is
-     card.max_chars in .claude/pa.json (default 10000), enforced by the archive.
+     card.max_chars in .claude/pa.json (default 10000) on the project's own lines (PA3's lines don't count).
      Each role prints its slice with `tools/card.py slice <role>`.
      Written at install (interview) and edited in the same task as whatever changed it (H7). -->
 
@@ -46,8 +46,12 @@ PY = {{PY}}
 - Hand-edited: {{HAND_EDITED_PATHS}}
 - Scratch: all of a phase's work in `.run/` goes under `.run/<phase>/` (gitignored; never the system temp), nowhere
   else in `.run/`. It is a temp folder only, never a home for long-term content: what the project needs lives in its
-  proper place in the repo. The phase's cleanup task checks it and
-  the close deletes it; a tool deletes its own temp folders when it finishes.
+  proper place in the repo, and nothing tracked points into `.run/`. A tool or coder deletes the copies it made
+  (tree copies, build output) when done with them; an expert, at its task's end, moves what later tasks, docs or
+  tools need to its proper place and deletes leftover copies; the phase's cleanup task checks the rest and the
+  close deletes it.
+- Tool data: no tool reads a phase's scratch by a fixed path. A tool whose data is missing rebuilds it or stops with
+  a message naming the command that rebuilds it; it never skips a check quietly.
 
 ## Build / run / test <!-- roles: claude expert coder planner review auditor curator -->
 - Build: `{{BUILD_COMMAND}}`

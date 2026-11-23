@@ -8,6 +8,7 @@ import {
   markerOf, modFilesKey, shellsOf, externalReminder, setupNotice, runRunning, runToReport, RUN_REPORT_MS, RUN_STALE_MS, updateDoneNotice, updateOutcome, UPDATE_LOG, UPGRADE_MD,
   extHealthOf, extHealthNotice, generalizableCount, bankQuestion, bankTask, bankNotice, startCheckOffline, startCheckState,
   batchDoneNotice, batchOf, driveOf, talkLine, withDrive, doneInName, STALL_NOTICE_MS, proposalOf,
+  stopNotice, UNREAD_CHARS, cardMergeOf, openPhaseOf, finishedTaskDirs, catchUpNotice, mergeNotice, mergeText, CATCH_UP_QUESTION, mergeSeenOf, mergeSeenText, unseenMerge,
 } from './loop'
 
 // 3.32.10: a rules or candidates entry carries the planner's simple-English note under its line (the card's body).
@@ -582,5 +583,65 @@ describe('the drive (3.32 B8)', () => {
     expect(quietReply('released: batch')).toBe(true)
     expect(quietReply('drive: coop')).toBe(true)
     expect(quietReply('drive: coop (not committed: x)')).toBe(false)
+  })
+})
+
+describe('3.33', () => {
+  const NOW = 1_795_422_543_000
+  test('stopNotice: only killed is a Ctrl+C; absent says it was not one and carries the unread report', () => {
+    const killed = stopNotice('T21', 'E1', 'killed', null, NOW)
+    expect(killed).toContain("T21's expert was stopped (Ctrl+C); its coder too if it had one. The task is paused until")
+    const gone = stopNotice('T21', 'E1', 'absent', null, NOW)
+    expect(gone).toContain("T21's expert went away without a report: E1 left Claude Code's agent list, and it was not a Ctrl+C")
+    expect(gone).toContain('never as a Ctrl+C.')
+    expect(gone).not.toContain('was stopped (Ctrl+C)')
+    const report = { id: 'C1', at: NOW - 5 * 60_000, text: 'blocked: the disk is full', type: 'pa-coder' }
+    const withReport = stopNotice('T21', 'E1', 'absent', report, NOW)
+    expect(withReport).toContain('Its pa-coder C1 handed back 5 min ago, and that report never reached the expert:\nblocked: the disk is full\n')
+    expect(withReport).toContain('and what the report says')
+    expect(withReport).toContain('a full disk needs space first')
+    expect(stopNotice('T21', 'E1', 'failed', null, NOW)).toBe("T21's expert failed: reason unknown (an error, not the developer). The task is paused; you may resume it yourself.")
+    const long = stopNotice('T21', 'E1', 'absent', { ...report, text: 'x'.repeat(UNREAD_CHARS + 50) }, NOW)
+    expect(long).toContain(`${'x'.repeat(UNREAD_CHARS)} …`)
+    expect(stopNotice('T21', 'E1', 'absent', { ...report, at: NOW - 10_000 }, NOW)).toContain('handed back moments ago')
+  })
+  test('cardMergeOf: the lines to merge; none once handed or unreadable', () => {
+    expect(cardMergeOf(JSON.stringify({ version: '3.33.0', card: ['- Scratch: x', ' '], claude_md: ['Drive: y'], at: 1 })))
+      .toEqual({ card: ['- Scratch: x'], claudeMd: ['Drive: y'] })
+    expect(cardMergeOf(JSON.stringify({ card: ['a'], handed: 2 }))).toEqual({ card: [], claudeMd: [] })
+    expect(cardMergeOf(null)).toEqual({ card: [], claudeMd: [] })
+    expect(cardMergeOf('{bad')).toEqual({ card: [], claudeMd: [] })
+  })
+  test("openPhaseOf and finishedTaskDirs: done tasks' folders only, never the running one", () => {
+    const plan = '# Phase 3.45 — waves\n\n- T19 | done | title: a\n- T20 | done | title: b\n- T21 | next | title: c\n- T2 | done | title: d\n'
+    expect(openPhaseOf(plan)).toBe('3.45')
+    expect(openPhaseOf('no plan')).toBe('')
+    expect(finishedTaskDirs(['t19', 't20', 't21', 't14_prevc2', 't2b', 'shape', 'T20x'], plan, 'T20')).toEqual(['t19', 't2b'])
+    expect(finishedTaskDirs(['t19'], null, '')).toEqual([])
+  })
+  test("catchUpNotice and mergeNotice: the catch-up's steps, the card lines either way, the continue ask", () => {
+    const none = { card: [], claudeMd: [] }
+    const go = catchUpNotice(true, none)
+    expect(go).toContain('run_cleanup.py --cites')
+    expect(go).toContain('cleanup({summary})')
+    expect(go).toContain('Ready to continue work?')
+    expect(go).not.toContain('Merge each')
+    const merge = { card: ["- Tool data: no tool reads a phase's scratch"], claudeMd: [] }
+    expect(catchUpNotice(true, merge)).toContain("HOW_WE_WORK.md:\n  - Tool data: no tool reads a phase's scratch")
+    const later = catchUpNotice(false, merge)
+    expect(later).toContain('offered again at the next session start')
+    expect(later).toContain("When that is done, the update's after-restart work is done.")
+    expect(catchUpNotice(false, none)).toContain("start. The update's after-restart work is done.")
+    expect(mergeNotice(merge)).toContain('Merge each into its file')
+    expect(mergeText(none)).toBe('')
+    expect(CATCH_UP_QUESTION).toContain('Catch up now?')
+  })
+  test('unseenMerge and mergeSeenText: a line handed once is not handed again, whatever its spacing', () => {
+    const merge = { card: ['- Scratch:  a', '- Tool data: b'], claudeMd: ['Drive: c'] }
+    const seen = mergeSeenOf(mergeSeenText([], { card: ['- Scratch: a'], claudeMd: [] }))
+    expect(seen).toEqual(['- Scratch: a'])
+    expect(unseenMerge(merge, seen)).toEqual({ card: ['- Tool data: b'], claudeMd: ['Drive: c'] })
+    expect(mergeSeenOf(mergeSeenText(seen, merge))).toEqual(['- Scratch: a', '- Tool data: b', 'Drive: c'])
+    expect(mergeSeenOf('{bad')).toEqual([])
   })
 })

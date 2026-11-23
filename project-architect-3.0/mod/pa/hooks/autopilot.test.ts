@@ -2226,7 +2226,7 @@ describe('the session hold (T13d.c11)', () => {
     const lp = loop3(w)
     const stopped = (lp.task as { stopped?: { status?: string } | null } | null)?.stopped?.status
     expect([lp.holds.includes('stopped'), stopped, w.sends]).toEqual([true, 'post-update', []])
-    expect(asked.filter(a => a.q.includes('one-time cleanup'))).toHaveLength(1)
+    expect(asked.filter(a => a.q.includes('one-time catch-up'))).toHaveLength(1)
     expect(notices(w).some(n => n.input.text.includes('Ready to continue work?'))).toBe(true)
     expect(notices(w).some(n => n.input.text.includes('cut off when the session ended'))).toBe(false)
   })
@@ -3178,50 +3178,103 @@ describe('drift, hook-context and the gated update (T6a2.c3)', () => {
     expect(w.files.get(RELM)).toBe(running)
   })
 
-  test('3.29 T6: the first start offers the one-time .run/ cleanup when .run/ holds older work, once', async ($, on) => {
+  test('3.33: the first start offers the one-time catch-up when .run/ holds older work, once', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n', [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
-    const asked = askWith(on, w, ['Clean it up (Recommended)'])
-    const offers = (): number => asked.filter(a => a.q.includes('one-time cleanup')).length
+    const asked = askWith(on, w, ['Catch up now (Recommended)'])
+    const offers = (): number => asked.filter(a => a.q.includes('one-time catch-up')).length
     await $.session.start(START)
     await clock.advance(20_000)
     expect(offers()).toBe(1) // 3.29.3: the mod's own picker
-    expect(w.files.has(`${ROOT}/.run/mod/run-review.json`)).toBe(true)
-    expect(notices(w).some(n => n.input.text.includes('chose the one-time'))).toBe(true)
+    expect(JSON.parse(w.files.get(`${ROOT}/.run/mod/run-review.json`) ?? '{}').v).toBe('3.33')
+    expect(notices(w).some(n => n.input.text.includes('chose the one-time 3.33 catch-up') && n.input.text.includes('run_cleanup.py --cites'))).toBe(true)
     await $.session.start(START)
     await clock.advance(20_000)
     expect(offers()).toBe(1)
   })
 
-  test('3.29.5: a project offered in plain text before the picker (3.29-3.29.2) gets the picker once', async ($, on) => {
+  test('3.33: a 3.29 marker gets the catch-up; "Not now" offers it again at the next start, a yes never again', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
-    const w = world(on, { [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n', [`${ROOT}/.run/mod/run-review.json`]: '{"offered":"3.29","at":1}\n',
+    const w = world(on, { [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n', [`${ROOT}/.run/mod/run-review.json`]: '{"offered":"3.29","at":1,"asked":"x"}\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, ['Not now', 'Catch up now (Recommended)'])
+    const offers = (): number => asked.filter(a => a.q.includes('one-time catch-up')).length
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(1)
+    expect(notices(w).some(n => n.input.text.includes('offered again at the next session start'))).toBe(true)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(2)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(2)
+  })
+
+  test("3.33: a finished task's folder in the open phase is due; other phase entries and the running task's are not", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    // the world's task state starts T1, so T1 runs here whatever the plan line says
+    const plan = '# Phase 9.1 — test\n\n- T1 | done | title: a\n- T2 | blocked | title: b\n- T3 | done | title: c\n'
+    // the generation start already done this session (a phase plan starts the curator's run first)
+    const w = world(on, { [`${ROOT}/${PLAN}`]: plan, [`${ROOT}/.run/9.1/logs/x.log`]: 'x\n',
+      [LOOP]: loopAt({ state: 'off', holds: [], genStart: { kind: 'gen', sid: 'S1', step: 'done' } }),
       [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
     const asked = askWith(on, w, ['Not now'])
-    const offers = (): number => asked.filter(a => a.q.includes('one-time cleanup')).length
+    const offers = (): number => asked.filter(a => a.q.includes('one-time catch-up')).length
     await $.session.start(START)
     await clock.advance(20_000)
-    expect(offers()).toBe(1)
+    expect(offers()).toBe(0)
+    w.files.delete(`${ROOT}/.run/mod/run-review.json`)
+    w.files.set(`${ROOT}/.run/9.1/t1/c1/tree/a.c`, 'x\n') // the running task's
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(offers()).toBe(0)
+    w.files.delete(`${ROOT}/.run/mod/run-review.json`)
+    w.files.set(`${ROOT}/.run/9.1/t3/c1/tree/a.c`, 'x\n') // a finished one's
     await $.session.start(START)
     await clock.advance(20_000)
     expect(offers()).toBe(1)
   })
 
-  test('3.29.2: the cleanup offer waits for the update check, then says it is part of the phase end and recommended', async ($, on) => {
+  test("3.33: the card refresh's lines alone: no picker; Claude merges them, then asks to continue; handed once", async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const merge = JSON.stringify({ version: '3.33.0', card: ["- Tool data: no tool reads a phase's scratch by a fixed path."], claude_md: [], at: 1 })
+    const w = world(on, { [`${ROOT}/.run/mod/card-merge.json`]: merge, [`${ROOT}/.run/mod/run-review.json`]: '{"asked":"","v":"3.33"}\n',
+      [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
+    const asked = askWith(on, w, [])
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(asked).toHaveLength(0)
+    const sent = notices(w).filter(n => n.input.text.includes('Merge each into its file'))
+    expect(sent).toHaveLength(1)
+    expect(sent[0]?.input.text).toContain("- Tool data: no tool reads a phase's scratch by a fixed path.")
+    expect(sent[0]?.input.text).toContain('Ready to continue work?')
+    expect(JSON.parse(w.files.get(`${ROOT}/.run/mod/card-merge.json`) ?? '{}').handed).toBeGreaterThan(0)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes('Merge each into its file'))).toHaveLength(1)
+    // the next update's refresh lists the line again (the project kept its own wording): never handed twice
+    w.files.set(`${ROOT}/.run/mod/card-merge.json`, merge)
+    await $.session.start(START)
+    await clock.advance(20_000)
+    expect(notices(w).filter(n => n.input.text.includes('Merge each into its file'))).toHaveLength(1)
+  })
+
+  test('3.29.2, 3.33: the catch-up offer waits for the update check, then says what it is and that it is recommended', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [`${ROOT}/.run/P37/census/sites.jsonl`]: '{}\n', [`${ROOT}/${START_CHECK}`]: '{}',
       [STAMP]: JSON.stringify({ checked_at: (NOW - 7 * 3_600_000) / 1000 }) })
     const asked = askWith(on, w, ['Not now'])
-    const offers = (): string[] => asked.map(a => a.q).filter(t => t.includes('one-time cleanup'))
+    const offers = (): string[] => asked.map(a => a.q).filter(t => t.includes('one-time catch-up'))
     await $.session.start(START)
     await clock.advance(20_000)
     expect(offers()).toEqual([])
     w.files.set(`${ROOT}/${START_CHECK}`, JSON.stringify({ session: 'S1', at: (NOW + 21_000) / 1000, update: false, state: 'done' }))
     await clock.advance(4_000)
     expect(offers()).toHaveLength(1)
-    expect(offers()[0]).toContain('cleanup step to every phase end')
+    expect(offers()[0]).toContain('keeps .run/ a temp folder all phase long')
     expect(offers()[0]).toContain('highly recommended')
-    expect(notices(w).some(n => n.input.text.includes('put off the one-time'))).toBe(true)
+    expect(notices(w).some(n => n.input.text.includes('put off the one-time 3.33 catch-up'))).toBe(true)
   })
 
   test('3.30: lessons marked for the cookbook get the one-time banking picker once; yes tells Claude the exact task', async ($, on) => {
@@ -4097,7 +4150,7 @@ describe('a stopped loop agent (T11-fix2)', () => {
     expect(notices(w)[0]?.input.text).toContain('T1\'s expert failed: reason unknown')
   })
 
-  test('absent from the list 15 s after its spawn: treated as killed, and the notice says so', async ($, on) => {
+  test('absent from the list 15 s after its spawn: held as stopped, and the notice says it was no Ctrl+C', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const w = world(on, { [LOOP]: running() })
     await $.session.start(START)
@@ -4105,8 +4158,40 @@ describe('a stopped loop agent (T11-fix2)', () => {
     w.list = []
     await clock.advance(2_000)
     expect(loop2(w).holds).toEqual(['stopped'])
-    expect(notices(w)[0]?.input.text).toContain('E1 is gone from the agent list, so I treat it as killed')
+    // 3.33: only Claude Code's `killed` is a Ctrl+C (bfm-decomp 2026-11-23)
+    expect(notices(w)[0]?.input.text).toContain("E1 left Claude Code's agent list, and it was not a Ctrl+C")
+    expect(notices(w)[0]?.input.text).not.toContain('stopped (Ctrl+C')
     expect([w.sends.length, w.spawns.length]).toEqual([0, 0])
+  })
+
+  test('3.33: killed is the Ctrl+C notice', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const w = world(on, { [LOOP]: running() })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    w.list = [{ id: 'E1', status: 'killed', type: 'pa-expert' }]
+    await clock.advance(2_000)
+    expect(loop2(w).holds).toEqual(['stopped'])
+    expect(notices(w)[0]?.input.text).toContain("T1's expert was stopped (Ctrl+C)")
+  })
+
+  test('3.33: bfm 2026-11-23: the coder\'s report never reached the absent expert: the stop notice carries it, no Ctrl+C', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    on('tool.check', async () => ({ decision: 'allow', reason: 'core' }))
+    const w = world(on, { [LOOP]: running(), [`${BASE}/S1/parents.json`]: '{"C1":"E1"}', [`${BASE}/S1/agents/C1.json`]: '{"type":"pa-coder"}' })
+    await $.session.start(START)
+    await clock.advance(2_000)
+    w.list = [{ id: 'C1', status: 'running', parentId: 'E1', type: 'pa-coder' }]
+    await clock.advance(2_000)
+    await $.tool.check({ tool: 'SubagentHandback', agentId: 'C1', input: { message: 'blocked: the disk is full; free space, then rerun b1.txt.' } })
+    w.list = [] // the forward was lost on the full disk: the expert never woke, and the coder is done
+    for (let i = 0; i < 160; i++) await clock.advance(2_000) // past FORWARD_TTL_MS
+    expect(loop2(w).holds).toEqual(['stopped'])
+    const n = notices(w).map(x => x.input.text).find(t => t.includes("T1's expert went away without a report")) ?? ''
+    expect(n).toContain('it was not a Ctrl+C')
+    expect(n).toContain('Its pa-coder C1 handed back')
+    expect(n).toContain('blocked: the disk is full; free space, then rerun b1.txt.')
+    expect(n).toContain('a full disk needs space first')
   })
 
   test('3.28.1 T9c: a takeover with the recorded agent gone (a restart): continue: under its id, no stopped hold', async ($, on) => {

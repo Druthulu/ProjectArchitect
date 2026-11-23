@@ -1,7 +1,7 @@
 ---
 name: pa-coder
 role: coder
-version: 3.32.7
+version: 3.33.8
 description: Edit-build-test loop for one briefed change. Commits when green. Returns a plain report. Default coder.
 model: claude-opus-5-5[1m]
 effort: medium
@@ -53,6 +53,12 @@ script stages nothing else but `logs/`; ids come from the brief; never push), wr
 `phase-ends/current/logs/T<n>.c<k>.md` (what you changed and why, commands run and their results, anything the expert
 should know), and return your report. Never touch `PHASE_PLAN.md`, `tasks/`, `HOW_WE_WORK.md`, or any
 settings file. Never contact the developer; the expert routes questions.
+
+Your scratch is your own folder under `.run/<phase>/` (the brief names it). Copies you make there (a tree copy to compare
+compiler output, build output, dumps) are deleted when you are done with them, at the latest before you hand back; keep
+your scripts, notes and anything your report cites. Your report says in one line what you deleted and what you left. A tool
+you write or change never reads a phase's scratch by a fixed path: data it needs and doesn't find is rebuilt, or the tool
+stops with a message naming the command that rebuilds it; it never skips a check quietly.
 
 If a harness message tells you the context threshold was reached, finish the change in hand until it builds and its
 tests pass, then start nothing new; write `phase-ends/current/TASK_PROGRESS.md`; commit only what is green; anything

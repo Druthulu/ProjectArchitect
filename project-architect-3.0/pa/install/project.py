@@ -13,8 +13,8 @@ Public:
 
 Only two of design B's five layouts run here: **fresh** (the whole tree) and
 **pa3** (refresh the packaged files only -- agents, project-architect skill, commands,
-tools, templates -- and never touch plans, rules, cookbook, HOW_WE_WORK or
-CLAUDE.md).  The three migration layouts (``stock20``, ``onex``, ``overlay``)
+tools, templates -- and never touch plans, rules, cookbook, or the project's own lines of
+HOW_WE_WORK and CLAUDE.md: 3.33 C1 refreshes their PA3 lines).  The three migration layouts (``stock20``, ``onex``, ``overlay``)
 are detected and refused: they need the P4..P9 moves, splits and memory sort
 that M6 implements, and a half-install over a 2.0 tree is worse than none.
 
@@ -727,8 +727,8 @@ def detect_project(opts):
 
 def _plan_line(env):
     if env.layout == "pa3":
-        return "refresh %s (byte-for-byte); plans, rules, cookbook, " \
-               "HOW_WE_WORK.md and CLAUDE.md are left alone" % ", ".join(REFRESHED)
+        return "refresh %s (byte-for-byte) and the PA3 lines of HOW_WE_WORK.md and CLAUDE.md; " \
+               "plans, rules, cookbook and the project's own lines are left alone" % ", ".join(REFRESHED)
     return ("bootstrap .run/ + phase-ends/current/, .claude/{agents,skills,commands,"
             "pa.json,settings.json}, tools/, templates/, rules/, cookbook/, docs/, "
             "CLAUDE.md, HOW_WE_WORK.md")
@@ -1597,22 +1597,57 @@ def _swap_block(text, old, new):
     return text if pos < 0 else text[:pos] + new + text[pos + len(old):]
 
 
-def refresh_claude_md(env):
+def _raw_text(env, rel):
+    """``<repo>/<rel>`` as written (CRLF kept), else ``""``."""
+    path = env.path(rel)
+    return _read(path).decode("utf-8", "replace") if os.path.isfile(path) else ""
+
+
+def _curate(env):
+    """The package's ``tools/curate.py``, loaded in-process once per run (3.33 C1: its ``refresh_text``)."""
+    if getattr(env, "_curate_mod", None) is None:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("_pa3_curate", os.path.join(env.pkg, "tools", "curate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        env._curate_mod = mod
+    return env._curate_mod
+
+
+def _pa3_refresh(env, tmpl_name, text, tmpl=None, skip=()):
+    """3.33 C1: ``curate.py``'s refresh of ``text``: each block equal to a past template block (the package's
+    ``templates/HISTORY.json``, after the project's fills) takes the current one, anywhere in the file.
+    -> ``(new_text, refreshed_lines, missing)``: ``missing`` the current template lines the file still lacks."""
+    hist = fsutil.read_json(_template(env, "HISTORY.json"), {})
+    pairs = hist.get(tmpl_name, []) if isinstance(hist, dict) else []
+    got = _curate(env).refresh_text(text, tmpl if tmpl is not None else _template_text(env, tmpl_name),
+                                    pairs, None, skip)
+    n = sum(1 for _at, old, _new in got["replaced"] for ln in old if ln.strip())
+    return got["text"], n, got["missing"]
+
+
+def refresh_claude_md(env, merge=None):
     """3.24 T5: CLAUDE.md's Roles line and "Every agent, always" memory clause take the current
     template's where they equal a past shipped one byte for byte; any other is left for the curator
-    (``curate.py claude-md --refresh``). Returns the note lines."""
+    (``curate.py claude-md --refresh``). 3.33 C1: then the general refresh (:func:`_pa3_refresh`, the
+    template with the project's ``phase_ends_dir``); the template lines still missing go to
+    ``merge["claude_md"]``, but not the "Older documents" block while the file has no pointer
+    (:func:`claude_md_pointer` adds it whole with the docs index).
+    Returns the note lines."""
     rel = "CLAUDE.md"
-    raw = fsutil.read_text(env.path(rel), "") or ""
-    tmpl = _template_text(env, "CLAUDE.template.md").replace("\r\n", "\n")
+    raw = _raw_text(env, rel)                     # 3.33 C1: as written, so a CRLF file stays CRLF
+    tmpl = _claude_ped(env, _template_text(env, "CLAUDE.template.md").replace("\r\n", "\n"))
     roles = [ln for ln in tmpl.split("\n") if ln.startswith("Roles:")]
     mem = _MEMORY_RE.search(tmpl)
-    if not raw or not roles or not mem:
+    if not raw:
         return []
     crlf = "\r\n" in raw
     text = new = raw.replace("\r\n", "\n")
     out = []
-    for what, past, cur in (("Roles line", _PAST_ROLES, roles[0]),
-                            ("memory clause", _PAST_MEMORY, mem.group(0))):
+    for what, past, cur in (("Roles line", _PAST_ROLES, roles[0] if roles else None),
+                            ("memory clause", _PAST_MEMORY, mem.group(0) if mem else None)):
+        if cur is None:
+            continue
         for old in past:
             got = _swap_block(new, old, cur)
             if got != new:
@@ -1625,8 +1660,69 @@ def refresh_claude_md(env):
             if have and cur not in have:
                 out.append("CLAUDE.md %s: yours, left for the curator (curate.py claude-md --refresh)"
                            % what)
+    older = _OLDER_DOCS_RE.search(tmpl)               # the pointer's block: it adds it with the docs index
+    skip = older.group(0).split("\n") if older and DOCS_INDEX_REL not in new else ()
+    new, n, missing = _pa3_refresh(env, "CLAUDE.template.md", new, tmpl, skip)
+    if n:
+        out.append("~ CLAUDE.md: %d PA3 lines refreshed" % n)
+    if merge is not None:
+        merge["claude_md"] = missing
     if new != text:
         write_changed(env, rel, new.replace("\n", "\r\n") if crlf else new, backup=False)
+    return out
+
+
+CARD_MERGE_REL = ".run/mod/card-merge.json"       # 3.33 C1: the mod reads it after the restart
+
+
+def refresh_card(env, merge=None):
+    """3.33 C1, at every update: HOW_WE_WORK.md's PA3 lines take the current template's (:func:`_pa3_refresh`:
+    any block equal to a past template block, anywhere on the card; Rhythm goes). Never refused for the cap:
+    only PA3 lines change. The template lines still missing go to ``merge["card"]``. Returns the note lines."""
+    rel = "HOW_WE_WORK.md"
+    raw = _raw_text(env, rel)
+    if not raw:
+        return []
+    new, n, missing = _pa3_refresh(env, "HOW_WE_WORK.template.md", raw)
+    if merge is not None:
+        merge["card"] = missing
+    if new == raw:
+        return []
+    write_changed(env, rel, new, backup=False)
+    return ["~ HOW_WE_WORK.md: %d PA3 lines refreshed" % n]
+
+
+def card_merge(env, merge):
+    """3.33 C1: the PA3 lines the refresh could not place (the project edited them), for Claude to merge with
+    judgment after the restart: :data:`CARD_MERGE_REL` ``{version, card, claude_md, at}`` when there are any, a
+    stale one deleted when there are none. A dry run writes nothing. Returns the note lines."""
+    card, claude = merge.get("card") or [], merge.get("claude_md") or []
+    out = ["%s: %d PA3 lines for Claude to merge after the restart" % (rel, len(got))
+           for rel, got in (("HOW_WE_WORK.md", card), ("CLAUDE.md", claude)) if got]
+    if env.dry_run:
+        return out
+    path = env.path(CARD_MERGE_REL)
+    if card or claude:
+        fsutil.atomic_write_json(path, {"version": PA_VERSION, "card": card, "claude_md": claude,
+                                        "at": time.time()})
+    elif os.path.isfile(path):
+        os.remove(path)
+    return out
+
+
+def refresh_pa3_lines(env):
+    """3.33 C1: P7's update refresh of the project's own files: CLAUDE.md (:func:`refresh_claude_md`), the card
+    (:func:`refresh_card`) and :func:`card_merge`. A refresh that fails is a warning: the install goes on and a
+    card-merge file stays as it was. Returns the note lines."""
+    out, merge = [], {}
+    try:
+        out += refresh_claude_md(env, merge)
+        out += refresh_card(env, merge)
+        out += card_merge(env, merge)
+    except Exception as exc:                        # a broken curate.py must not fail the update
+        why = "card and CLAUDE.md refresh stopped: %s: %s" % (type(exc).__name__, exc)
+        env.warnings.append(why)
+        out.append("warn: %s" % why)
     return out
 
 
@@ -1680,9 +1776,10 @@ def claude_and_settings(env):
         # 3.12 T1: CLAUDE.md, HOW_WE_WORK.md and every other setting stay; old model defaults migrate
         # 3.22 T2d: and PA3_ADD_DEFAULTS are added when absent
         # 3.24 T5: the shipped pins go; CLAUDE.md's Gen 3 lines and past seed rules take the 3.2 text
+        # 3.33 C1: and the card's and CLAUDE.md's PA3 lines at every update; the rest go to Claude to merge
         mark = env.man.mark()
         moved = migrate_pa3_settings(env)
-        lines = refresh_claude_md(env) + refresh_seed_rules(env)
+        lines = refresh_pa3_lines(env) + refresh_seed_rules(env)
         if not moved and not [ln for ln in lines if ln.startswith("~")]:
             step("P7", "claude + settings", "SKIP",
                  "pa3 upgrade: CLAUDE.md, settings.json, HOW_WE_WORK.md left alone")
@@ -1693,7 +1790,7 @@ def claude_and_settings(env):
         done = env.man.since(mark)
         status = "SKIP" if (env.dry_run or not Manifest.changed(done)) else "DONE"
         step("P7", "claude + settings", status,
-             _reason(env, done, ".claude/settings.json, CLAUDE.md, rules/ (3.2 refresh)"))
+             _reason(env, done, ".claude/settings.json, CLAUDE.md, HOW_WE_WORK.md, rules/ (PA3 refresh)"))
         for key, old, new in moved:
             note("~ settings  %s: %s -> %s"
                  % (key, json.dumps(old, default=str), json.dumps(new, default=str)))

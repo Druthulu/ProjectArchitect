@@ -25,7 +25,6 @@ export const RECORDS_TOKENS = 10_000 // 3.32 B4: `records.py seed`'s budget; was
 export const GENERATION_TOKENS = 3_000 // 3.32 B5: `phaseend_index.py history-seed`'s budget
 export const STATE_TOKENS = 3_000 // 3.32 B6: `records.py state`'s budget
 export const MEMORY_CAP_TOKENS = 800 // 3.32 B4: with the card, ~3k; was MEMORY_CAP_CHARS = 6_000
-export const CARD_CAP_CHARS = 6_000 // 3.24 T7b: Claude's slice of the card (10k chars, 3.32 B7), ~2.1k real tokens; card.py SEED_CARD_CAP mirrors it
 
 export type Child = { who: string; agentId?: string; status?: string; summary?: string }
 
@@ -83,7 +82,8 @@ export function memorySection(text: string): string {
 /** 3.24 T7b: the CARD section, `card.py slice claude`'s output (the card's sections tagged for Claude, `## Developer`
  * among them), capped like MEMORY; '' when empty. */
 export function cardSection(text: string): string {
-  return cappedSection('CARD', text, CARD_CAP_CHARS, 'HOW_WE_WORK.md (PY tools/card.py slice claude)')
+  // 3.33: never cut (the developer: the whole card matters; the card's own cap bounds it, PA3's lines aside)
+  return cappedSection('CARD', text, Number.POSITIVE_INFINITY, 'HOW_WE_WORK.md (PY tools/card.py slice claude)')
 }
 
 type Pair = { msg?: Entry; answer?: Entry }

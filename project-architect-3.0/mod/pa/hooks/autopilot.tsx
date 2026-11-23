@@ -85,19 +85,19 @@ import { CHAIN_SCRIPTS, parseAuditorReturn, parseExpertContract, splitCommand } 
 import { clip, eventFile, isStale } from './debug'
 import { BUILD } from './build'
 import { PROGRESS_READ_CHARS, PROGRESS_READS, recoveryDigest } from './digest'
-import { isLoopKind, noticeRequest, parseRequest, pendingRequests, type Request, requestFile } from './inbox'
+import { isLoopKind, type Land, noticeRequest, parseRequest, type PendingRequest, pendingRequests, type Request, requestFile, retryRequests } from './inbox'
 import { ENTRIES_TOOL, entryLinesOf, stamp, type Meta } from './journal'
 import { processLines, PROCESS_MS, PROCESSES_POSIX, PROCESSES_WIN, snapshotText, stallFile, type Tail, transcriptTail } from './stall'
 import {
   agentFor, candidateOf, doneInName, leftoverNotice, stallNotice, STALL_NOTICE_MS, effortFor, effortHint, CANDIDATE_OPTIONS, CONTINUE_TEXT, editIsDecision, HEARTBEAT_MS, type Install, installOf, lintErrors, LOOP_FILE,
   nextRuleId, ownsLoop, parseLoop, plannerIdOf, popHold, proposalOf, pushHold, queuedTo, releaseHold, routeStatus, ruleArgs, ruleCandidateOf, RULE_OPTIONS, runEnded, nextTaskOf,
-  serializeLoop, silenceReleases, steerText, stoppedText, quietReply, liveness, ABSENT_MS, takesOver, WAIT_MAX_MS, WAIT_POLL_MS, waitSpec, windowResumes,
+  serializeLoop, silenceReleases, steerText, stoppedText, stopNotice, type UnreadReport, UNREAD_CHARS, quietReply, liveness, ABSENT_MS, takesOver, WAIT_MAX_MS, WAIT_POLL_MS, waitSpec, windowResumes,
   LIMIT_SLACK_MS, limitHeldLine, limitKindOf, limitName, limitResumedLine, usageLimit,
   contextLines, CURATE_OPTIONS, curateQuestion, deferredOf, firstRunLine, type Drift, DRIFT_OPTIONS, driftOf, driftQuestion, driftRows, type GenStart,
   genNotice, genStartOf, newGenStart, phaseEndsOf, renewalNotice, type UpdateAsk, updateNotice, updateOf, UPDATE_OPTIONS,
   archiveLines, bandLine, batchDoneNotice, batchOf, CHAIN_STEPS, closeNotice, driveOf, extHealthNotice, extHealthOf, extReviewLine, genEndOf, keepSummary, planPhase, closedLine, recalcSessions, summariesOf, taskPosOf, withDrive, withPhaseSid,
   BANK_MARKER, BANK_OPTIONS, bankNotice, bankQuestion, generalizableCount, SET_BACK, setAsideOf,
-  installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, RUN_REVIEW_OPTIONS, RUN_REVIEW_QUESTION, runReviewNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckOffline, startCheckState, offlineNotice, manualUpdate, updateFailedNotice, pausedDoneNotice, pausedHandbackNotice, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
+  installingNotice, loadedNotice, olderRunWork, RUN_REVIEW_MARKER, runReviewNotice, CATCH_UP_V, CARD_MERGE_FILE, CARD_MERGE_SEEN, cardMergeOf, mergeSeenOf, mergeSeenText, unseenMerge, openPhaseOf, finishedTaskDirs, CATCH_UP_QUESTION, CATCH_UP_OPTIONS, catchUpNotice, mergeNotice, CLEANUP_ASK, CLEANUP_LIST, CLEANUP_OPTIONS, cleanupQuestion, START_CHECK, startCheckOffline, startCheckState, offlineNotice, manualUpdate, updateFailedNotice, pausedDoneNotice, pausedHandbackNotice, pausedNotice, markerOf, modFilesKey, RELOAD_NOTICE, RELEASE_CHECK_MS, RELEASE_MARKER, releaseNotice, releaseOf, RELEASE_OPTIONS, releaseQuestion, runRunning, runToReport, UPDATE_LOG, UPDATE_MARKER, updateDoneNotice, updateFact, updateOutcome, updateSeenOf,
   UPGRADE_MD, upgradeLeftNotice, upgradeOf, UPGRADE_ROUNDS, FORWARD_TTL_MS, SHELLS_FILE, shellNotice, shellsOf, shellsOut, waitingShell,
   GATE_CHECK, GATE_FAILED, GATE_RUN, GATE_STALE, gateWaitReply,
   noVerdict, SPAWN_RETRIES, SPAWN_RETRY_MS, spawnRetryOf,
@@ -209,6 +209,7 @@ let ticking = false
 let offCheckedAt = 0
 let jseq = 500 // the autopilot's journal sequence, apart from the router's
 let nseq = 0 // the notices' sequence in the router's inbox
+let loopPending: PendingRequest[] = [] // 3.33: notices that did not land (a full disk), retried each tick
 let sseq = 0 // the start records' sequence in the feed's `in/` (3.23 T13d.c3)
 // The close's ledger recalc (3.23 T13d.c4), launched detached at the close's start (3.24 T10b; 3.25 T2): its phase and, when it
 // was not launched, the journal line ('' launched: the chain reads RECALC_DONE). Lost on a hot reload: the chain starts one.
@@ -246,6 +247,7 @@ const seenLive = new Set<string>()
 let shellQ: { agentId: string; what: string; at: number }[] = []
 const heldSeen = new Set<string>() // 3.32.1 T3: `<agentId>\n<report>`: a hand-back held by a live shell, passed on once
 const handedAt = new Map<string, number>() // 3.32.1: agent id -> its last hand-back (ms), for loop.doneInName
+const handedText = new Map<string, string>() // 3.33: agent id -> its last hand-back's report, for a stop notice
 function waitsOnShell(agentId: string | undefined, text: string, at: number): void {
   const what = waitingShell(text)
   if (what !== null && agentId !== undefined && agentId !== '') {
@@ -263,6 +265,8 @@ let installTold = 0 // 3.32.4: the session start's install run (its marker's atM
 let startAt = 0 // 3.29.1 T8: this process's session start (ms): the update check's note must be this start's
 let pausedAskedSid = '' // 3.29.1 T9: the session Claude was asked about a paused task in (once a session start)
 let runReviewDue = false // 3.29.2: the one-time `.run/` cleanup is to be offered once the update gate opens
+let cardMerge: { card: string[]; claudeMd: string[] } = { card: [], claudeMd: [] } // 3.33: the card refresh's lines for Claude
+const mergeDue = (): boolean => cardMerge.card.length + cardMerge.claudeMd.length > 0
 let bankDue: { all: number; current: number } | null = null // 3.30: the one-time cookbook banking, offered then too
 let releaseCheckedAt = 0 // 3.28.1 T14: the 8-hour release check's last run (ms); 0 until the first tick
 let modLoaded = '' // 3.28.2 T17: the PA3 release this process loaded (3.30.2: its own code's BUILD; a checkout reads VERSION)
@@ -623,14 +627,52 @@ export function armAutopilot(on: On): void {
       // A notice to Claude through the router's inbox (the router writes its own state.json): text, a toast cause, and
       // `to`, a request's caller for a reply.
       const inboxDir = `${root}/.run/mod/${sidNow}/inbox`
+      // 3.33: a notice that did not land whole (a full disk writes it empty) is retried under a fresh name each tick.
+      const land: Land = async (path, body) => {
+        try {
+          await $.fs.write(path, body)
+        } catch {
+          return false
+        }
+        return (await $.fs.read(path).catch(() => null)) === body
+      }
       const notice = async (text: string, toast: ToastOut['cause'] | '' = '', to = ''): Promise<void> => {
         nseq += 1
-        const r = noticeRequest(await $.clock.now(), nseq, text, toast, to)
-        try {
-          await $.fs.write(`${inboxDir}/${r.name}`, r.body)
+        const now = await $.clock.now()
+        const build = (ms: number, seq: number): { name: string; body: string } => noticeRequest(ms, seq, text, toast, to)
+        const r = build(now, nseq)
+        if (await land(`${inboxDir}/${r.name}`, r.body)) {
           await log('notice', { name: r.name, toast, to, text: clip(text, 200) })
-        } catch (err) {
-          await log('notice.error', { err: clip(String(err), 300) })
+        } else {
+          loopPending = [...loopPending, { dir: inboxDir, build, since: now, what: clip(text, 120) }]
+          await log('notice.error', { name: r.name, text: clip(text, 200) })
+        }
+      }
+      // 3.33: card-merge.json's lines went to Claude: marked `handed`, so a later start does not hand them again
+      const markMergeHanded = async (merge: { card: string[]; claudeMd: string[] }): Promise<void> => {
+        const o = objectOf((await $.fs.read(`${root}/${CARD_MERGE_FILE}`).catch(() => null)) ?? '')
+        if (o !== null) {
+          await $.fs.write(`${root}/${CARD_MERGE_FILE}`, `${JSON.stringify({ ...o, handed: await $.clock.now() })}\n`).catch(quiet)
+        }
+        const seen = mergeSeenOf(await $.fs.read(`${root}/${CARD_MERGE_SEEN}`).catch(() => null))
+        await $.fs.write(`${root}/${CARD_MERGE_SEEN}`, mergeSeenText(seen, merge)).catch(quiet)
+      }
+      const retryNotices = async (): Promise<void> => {
+        if (loopPending.length === 0) {
+          return
+        }
+        const taken = loopPending
+        loopPending = []
+        const res = await retryRequests(land, taken, await $.clock.now(), () => {
+          nseq += 1
+          return nseq
+        })
+        loopPending = [...res.left, ...loopPending]
+        for (const p of res.sent) {
+          await log('notice.retried', { what: p.what })
+        }
+        for (const p of res.dropped) {
+          await log('notice.dropped', { what: p.what })
         }
       }
 
@@ -888,13 +930,14 @@ export function armAutopilot(on: On): void {
         }
         // 3.23 T13d.c11: under `held(session)` the recovery is recorded; 3.28.1 T9c: it runs at once (no release needed).
         if (taken && s.state === 'running' && s.task !== null && !s.holds.some(h => h !== 'talk' && h !== 'session')) {
-          if (runReviewDue) {
-            // 3.29.7: an update's after-restart work (the one-time `.run/` cleanup) comes first: the task is held as
-            // stopped until it is done and the developer says to continue (Claude asks; release stopped).
+          if (runReviewDue || mergeDue()) {
+            // 3.29.7: an update's after-restart work (the one-time `.run/` cleanup; 3.33: the catch-up, the card's lines to
+            // merge) comes first: the task is held as stopped until it is done and the developer says to continue
+            // (Claude asks; release stopped).
             const pt = s.task
             await save(pushHold({ ...s, task: { ...pt, stopped: { at: now, status: 'post-update' }, recovery: null } }, 'stopped'), 'post-update.held')
             await journal('mod', 'hold', { task: pt.id, agentId: pt.agentId },
-              `${pt.id} held at this session start: the update's after-restart work (the .run/ cleanup) comes first.`)
+              `${pt.id} held at this session start: the update's after-restart work (${runReviewDue ? 'the .run/ catch-up' : 'the card merge'}) comes first.`)
           } else if ((s.task.paused ?? null) !== null) {
             // 3.29.1 T9: paused on the developer's request: never recovered on its own; held as stopped, and once the
             // update check lets work go on, Claude asks whether to resume (release stopped).
@@ -1845,7 +1888,10 @@ ${REPLAN_NOTICE}`)
         // 3.32.22 (GitHub #17): a failure at a usage limit (the account's 5-hour or weekly window at 100%, its reset ahead) is
         // no stop: the `window` hold until the reset plus LIMIT_SLACK_MS, one transcript line, no notice (Claude is refused
         // too); the task's `stopped` status `limit:<kind>` restarts it when the hold is gone (the limit restart below).
-        const stopHold = async (t: LoopTask, status: string): Promise<void> => {
+        // 3.33: only Claude Code's `killed` is a Ctrl+C; an expert gone from the list is not (bfm 2026-11-23: a full disk
+        // lost its coder's report, and the notice blamed a Ctrl+C nobody pressed). `unread`: a child's hand-back the expert
+        // never got, carried to Claude (stopNotice).
+        const stopHold = async (t: LoopTask, status: string, unread: UnreadReport | null = null): Promise<void> => {
           const lim = status === 'failed' ? usageLimit((await $.session.usage().catch(() => null))?.rateLimits ?? [], now) : null
           if (lim !== null) {
             const resumeAt = lim.resetsAt + LIMIT_SLACK_MS
@@ -1855,16 +1901,11 @@ ${REPLAN_NOTICE}`)
             $.ui.log(limitHeldLine(t.id, lim.kind, resumeAt), { to: 'transcript' })
             return
           }
-          const who = `${t.id}'s expert`
-          const how = status === 'failed'
-            ? `${who} failed: reason unknown (an error, not the developer). The task is paused; you may resume it yourself.`
-            : `${who} was stopped (Ctrl+C${status === 'absent' ? `; ${t.agentId} is gone from the agent list, so I treat it as killed` : ''}); ` +
-              'its coder too if it had one. The task is paused until the developer wants it to go on. ' +
-              'A go they already gave counts: if their latest message asked for this task or the work to go on, ' +
-              'resume it now (release stopped); otherwise ask them.'
           await save(pushHold({ ...s, task: { ...t, stopped: { at: now, status } } }, 'stopped'), 'stopped')
-          await journal('mod', 'hold', { task: t.id, agentId: t.agentId }, `${t.agentId} ${status} with no contract: ${t.id} held (stopped).`)
-          await notice(`‹pa› ${how}`)
+          const kid = unread === null ? '' : `; its ${unread.type || 'child'} ${unread.id} handed back at ` +
+            `${new Date(unread.at).toISOString()} and that report never reached the expert`
+          await journal('mod', 'hold', { task: t.id, agentId: t.agentId }, `${t.agentId} ${status} with no contract: ${t.id} held (stopped)${kid}.`)
+          await notice(`‹pa› ${stopNotice(t.id, t.agentId, status, unread, now)}`)
         }
 
         // Recovery after a takeover (T5d1), a step a tick, each journaled (`mod/recover`): launch.py's view; a stale
@@ -2016,6 +2057,14 @@ ${REPLAN_NOTICE}`)
           const t = s.task
           // 3.28.1 T12: with `text`, the router found the expert cold and sent nothing: a fresh expert takes the text.
           const text = typeof input['text'] === 'string' ? input['text'] : ''
+          // 3.33: a report that lands after its task was held as stopped (a retried request, a full disk) starts nothing
+          // behind the hold: Claude gets it, and the developer still decides
+          if (text !== '' && t !== null && t.agentId !== '' && input['agentId'] === t.agentId && s.holds.includes('stopped')) {
+            await journal('mod', 'hold', { task: t.id, agentId: t.agentId }, `A report reached ${t.id} after its stop; held, nothing started: ${clip(text, 300)}`)
+            await notice(`‹pa› A report for ${t.id}'s expert reached the mod after the task was held, so nothing was started. ` +
+              `Pass on what it says to the developer if it changes what they decide:\n${clip(text, UNREAD_CHARS)}`)
+            return
+          }
           if (text !== '' && t !== null && s.state === 'running' && t.agentId !== '' && input['agentId'] === t.agentId &&
             (await expertCold(t)) && (await relaunchCold(t, text, 'a message for it'))) {
             return
@@ -2076,6 +2125,7 @@ ${REPLAN_NOTICE}`)
           const d = driftOf(s)
           const u = updateOf(s)
           const rel = releaseOf(s)
+          const runMarker = objectOf((await $.fs.read(`${root}/${RUN_REVIEW_MARKER}`).catch(() => null)) ?? '')
           if (inst !== null && inst.asked !== '' && input['id'] === inst.asked) {
             await save({ ...s, install: { ...inst, answer } } as LoopState, 'install.answer')
           } else if (g !== null && g.asked !== '' && input['id'] === g.asked) {
@@ -2086,11 +2136,23 @@ ${REPLAN_NOTICE}`)
             await save({ ...s, update: { ...u, answer } } as LoopState, 'update.answer')
           } else if (rel !== null && rel.asked !== '' && input['id'] === rel.asked) {
             await releaseAnswer(rel, /^install\b/i.test(answer)) // 3.28.1 T14
-          } else if (typeof input['id'] === 'string' && input['id'] !== '' &&
-            objectOf((await $.fs.read(`${root}/${RUN_REVIEW_MARKER}`).catch(() => null)) ?? '')?.['asked'] === input['id']) {
-            const go = /^clean\b/i.test(answer) // 3.29.3: the one-time `.run/` cleanup picker
-            await journal('mod', 'decision', {}, go ? 'The developer chose the one-time .run/ cleanup.' : 'The developer put off the one-time .run/ cleanup.')
-            await notice(runReviewNotice(go))
+          } else if (typeof input['id'] === 'string' && input['id'] !== '' && runMarker?.['asked'] === input['id']) {
+            const go = /^(clean|catch)\b/i.test(answer) // 3.29.3: the one-time `.run/` cleanup picker; 3.33: the catch-up
+            if (runMarker['v'] === CATCH_UP_V) {
+              await journal('mod', 'decision', {}, go ? 'The developer chose the one-time 3.33 catch-up.' : 'The developer put off the one-time 3.33 catch-up.')
+              if (!go) { // offered again at the next start
+                await $.fs.write(`${root}/${RUN_REVIEW_MARKER}`, `${JSON.stringify({ ...runMarker, v: '', putOff: await $.clock.now() })}\n`).catch(quiet)
+              }
+              const merge = cardMerge
+              cardMerge = { card: [], claudeMd: [] }
+              if (merge.card.length + merge.claudeMd.length > 0) {
+                await markMergeHanded(merge)
+              }
+              await notice(catchUpNotice(go, merge))
+            } else {
+              await journal('mod', 'decision', {}, go ? 'The developer chose the one-time .run/ cleanup.' : 'The developer put off the one-time .run/ cleanup.')
+              await notice(runReviewNotice(go))
+            }
           } else if (typeof input['id'] === 'string' && input['id'] !== '' &&
             objectOf((await $.fs.read(`${root}/${BANK_MARKER}`).catch(() => null)) ?? '')?.['asked'] === input['id']) {
             const go = /^add\b/i.test(answer) // 3.30: the one-time cookbook banking picker
@@ -2609,12 +2671,17 @@ ${REPLAN_NOTICE}`)
         }
         // 3.29.2: the one-time `.run/` cleanup offer (3.29 T6), after the update check and any restart it needed.
         if (runReviewDue) { // 3.29.3: the mod's picker; the answer comes back through `answered`, matched by the marker
-          runReviewDue = false
+          runReviewDue = false // 3.33: the catch-up's picker (CATCH_UP_V); the card's lines ride in its notice
           nseq += 1
-          const q = requestFile(now, nseq, 'ask', 'loop', { question: RUN_REVIEW_QUESTION, options: [...RUN_REVIEW_OPTIONS] })
+          const q = requestFile(now, nseq, 'ask', 'loop', { question: CATCH_UP_QUESTION, options: [...CATCH_UP_OPTIONS] })
           await $.fs.write(`${inboxDir}/${q.name}`, q.body)
           await $.fs.write(`${root}/${RUN_REVIEW_MARKER}`,
-            `${JSON.stringify({ offered: modLoaded, at: now, asked: q.name.slice(0, -'.json'.length) })}\n`).catch(quiet)
+            `${JSON.stringify({ offered: modLoaded, at: now, asked: q.name.slice(0, -'.json'.length), v: CATCH_UP_V })}\n`).catch(quiet)
+        } else if (mergeDue()) { // 3.33: no catch-up due: the card's lines alone are the after-restart work
+          const merge = cardMerge
+          cardMerge = { card: [], claudeMd: [] }
+          await markMergeHanded(merge)
+          await notice(mergeNotice(merge))
         }
         // 3.30: the one-time cookbook banking offer, the same way; the answer comes back through `answered`
         if (bankDue !== null) {
@@ -3131,7 +3198,16 @@ ${REPLAN_NOTICE}`)
               return
             }
             if ((cur.pendingContract ?? null) === null) {
-              await stopHold(cur, me?.status ?? 'absent')
+              // 3.33: a child's report its expert never got (bfm 2026-11-23: on a full disk the forward of "the disk is
+              // full" was lost): the newest hand-back since the expert's last turn rides in the stop notice
+              const unread = [...kidIds]
+                .map(id => ({ id, at: handedAt.get(id) ?? 0, text: (handedText.get(id) ?? '').trim(), type: list.find(a => a.id === id)?.type ?? '' }))
+                .filter(k => k.at > cur.lastCompleteAt && k.text !== '')
+                .sort((a, b) => b.at - a.at)[0]
+              if (unread !== undefined && unread.type === '') { // gone from the list: its type from pa-watch's facts file
+                unread.type = strOf(objectOf((await $.fs.read(`${root}/.run/mod/${sidNow}/agents/${unread.id}.json`).catch(() => null)) ?? '')?.['type'])
+              }
+              await stopHold(cur, me?.status ?? 'absent', unread ?? null)
               return
             }
             await leftoverSay(routeStatus(cur.pendingContract ?? null))
@@ -3312,6 +3388,11 @@ ${REPLAN_NOTICE}`)
           }
           ticking = true
           try {
+            await retryNotices()
+          } catch (err) {
+            await log('notice.error', { err: clip(String(err), 300) })
+          }
+          try {
             await step()
           } catch (err) {
             await log('error', { err: clip(String(err), 300) })
@@ -3339,6 +3420,7 @@ ${REPLAN_NOTICE}`)
     shellQ = []
     heldSeen.clear()
     handedAt.clear()
+    handedText.clear()
     waitPolledAt = 0
     genMode = { sid: '', at: 0, doc: null }
     sideAgent = ''
@@ -3418,16 +3500,27 @@ ${REPLAN_NOTICE}`)
     // 3.29 T6: the one-time `.run/` cleanup, offered once per project when `.run/` holds work from before 3.29.
     // 3.29.5: a marker counts once the picker was shown (`asked`, '' when there was nothing to offer); an older one
     // (3.29-3.29.2's plain-text offer, easy to miss) gets the picker at the next start
+    // 3.33: the one-time catch-up (CATCH_UP_V in the marker; 3.29's marker has none, so it is offered once more): due
+    // when `.run/` holds earlier work (outside PA3's own entries and the open phase's folder) or the open phase holds a
+    // finished task's folder. Its picker replaces 3.29's; "Not now" clears `v`, so the next start offers it again.
     const rvm = objectOf((await $.fs.read(`${root}/${RUN_REVIEW_MARKER}`).catch(() => null)) ?? '')
-    if (rvm === null || typeof rvm['asked'] !== 'string') {
+    if (rvm === null || typeof rvm['asked'] !== 'string' || rvm['v'] !== CATCH_UP_V) {
       const names = (await $.fs.list(`${root}/.run`).catch(() => [])).map(f => f.name)
       const logs = (await $.fs.list(`${root}/.run/logs`).catch(() => [])).length
+      const planText = await $.fs.read(`${root}/phase-ends/current/PHASE_PLAN.md`).catch(() => null)
+      const phase = openPhaseOf(planText)
+      const inPhase = phase === '' ? [] : (await $.fs.list(`${root}/.run/${phase}`).catch(() => [])).map(f => f.name)
+      const running = parseLoop(await $.fs.read(`${root}/${LOOP_FILE}`).catch(() => null)).task?.id ?? ''
       // 3.29.2: offered once the update gate opens (the tick), never before an update and its restart; marked then
-      runReviewDue = olderRunWork(names, logs)
+      runReviewDue = olderRunWork(names.filter(n => n !== phase), logs) || finishedTaskDirs(inPhase, planText, running).length > 0
       if (!runReviewDue) {
-        await $.fs.write(`${root}/${RUN_REVIEW_MARKER}`, `${JSON.stringify({ offered: '', asked: '', at: await $.clock.now() })}\n`).catch(quiet)
+        await $.fs.write(`${root}/${RUN_REVIEW_MARKER}`,
+          `${JSON.stringify({ offered: '', asked: '', v: CATCH_UP_V, at: await $.clock.now() })}\n`).catch(quiet)
       }
     }
+    // 3.33: the update's card refresh left PA3 lines for Claude to merge (every update, not only the catch-up's)
+    cardMerge = unseenMerge(cardMergeOf(await $.fs.read(`${root}/${CARD_MERGE_FILE}`).catch(() => null)),
+      mergeSeenOf(await $.fs.read(`${root}/${CARD_MERGE_SEEN}`).catch(() => null)))
     // 3.30: the one-time cookbook banking, offered once per project when its task summaries (the current phase's and
     // the archived ones', as task_log.py gotchas --all reads them) mark lessons for the cookbook; offered and marked
     // with the cleanup's timing; nothing marked is marked at once
@@ -3554,6 +3647,7 @@ ${REPLAN_NOTICE}`)
     const msg = typeof m === 'string' ? m : ''
     if (id !== '' && waitingShell(msg) === null) {
       handedAt.set(id, await $.clock.now()) // 3.32.1: a hand-back (a `WAITING:` line is none): loop.doneInName
+      handedText.set(id, msg) // 3.33: what a stop notice carries when its expert never got it
     }
     if (id !== '' && msg.trim() !== '' && !heldSeen.has(`${id}\n${msg}`)) {
       const root = await $.session.root()

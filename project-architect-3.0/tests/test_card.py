@@ -261,8 +261,9 @@ class TestCardCheck7001(unittest.TestCase):
         self.assertIn("cap=7000", r.stdout)
 
 
-class TestLivingDocsAndTheSeedCap(unittest.TestCase):
-    """3.32 B7: the cap is 10,000 chars; the section reaches Claude and the experts; Claude's slice fits the seed."""
+class TestLivingDocsAndTheCap(unittest.TestCase):
+    """3.32 B7: the cap is 10,000 chars; the section reaches Claude and the experts. 3.33 C2: the cap counts the
+    project's own lines only; the seed's cut of Claude's slice is gone."""
 
     def template(self):
         with open(os.path.join(TOOLS, "..", "templates", "HOW_WE_WORK.template.md"), encoding="utf-8") as fh:
@@ -275,24 +276,75 @@ class TestLivingDocsAndTheSeedCap(unittest.TestCase):
             self.assertIn("## Living docs", card.slice_text(text, role))
         self.assertNotIn("## Living docs", card.slice_text(text, "coder"))
 
-    def test_the_templates_claude_slice_fits_the_seed(self):
+    def test_no_seed_cap(self):
         import card
-        self.assertLessEqual(len(card.slice_text(self.template(), "claude")), card.SEED_CARD_CAP)
+        self.assertFalse(hasattr(card, "SEED_CARD_CAP"))
 
-    def test_the_cap_matches_seed_ts(self):
-        import card
-        with open(os.path.join(TOOLS, "..", "mod", "pa", "hooks", "seed.ts"), encoding="utf-8") as fh:
-            m = re.search(r"CARD_CAP_CHARS = ([0-9_]+)", fh.read())
-        self.assertEqual(int(m.group(1).replace("_", "")), card.SEED_CARD_CAP)
-
-    def test_default_cap_and_the_slice_in_check(self):
+    def test_default_cap_and_own_in_check(self):
         tmp = tempfile.mkdtemp(prefix="pa3-card10k-")
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         _write(os.path.join(tmp, "HOW_WE_WORK.md"), "# How we work\n\n## Project <!-- roles: claude -->\nx\n")
         r = subprocess.run([PY, os.path.join(TOOLS, "card.py"), "check"], capture_output=True, text=True, cwd=tmp, timeout=30)
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
-        self.assertIn("cap=10000", r.stdout)
-        self.assertRegex(r.stdout, r"claude=[0-9]+/6000")
+        self.assertEqual(r.stdout.strip(), "chars=51 own=51 cap=10000 placeholders=0 standing=0")
+
+
+class TestOwnLines(unittest.TestCase):
+    """3.33 C2: a card line equal to a current template line (after the card's fills, whitespace collapsed) is PA3's:
+    the cap counts the rest."""
+
+    TMPL = ("# How we work — {{PROJECT_NAME}}\n\n## Tools <!-- roles: expert -->\nPY = {{PY}}\n"
+            "| run | `bash tools/run.sh` | any command that may print >40 lines |\n"
+            "- Python: {{PY}} ({{PY_VERSION}})\n- Pins: {{PINS}} — detail in `docs/ops/INDEX.md`\n"
+            "- {{PROJECT_CONVENTION}}\n")
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="pa3-card-own-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def check(self, card, cap, tmpl=TMPL):
+        _write(os.path.join(self.tmp, "HOW_WE_WORK.md"), card)
+        _write(os.path.join(self.tmp, ".claude", "pa.json"), json.dumps({"card": {"max_chars": cap}}))
+        if tmpl is not None:
+            _write(os.path.join(self.tmp, "templates", "HOW_WE_WORK.template.md"), tmpl)
+        r = subprocess.run([PY, os.path.join(TOOLS, "card.py"), "check"], capture_output=True, text=True,
+                           cwd=self.tmp, timeout=30)
+        return r.returncode, r.stdout.strip()
+
+    def test_pa3_lines_are_not_counted(self):
+        import card
+        own = "- Conventions are ours\n"
+        text = ("# How we work — Demo\n\n## Tools <!-- roles: expert -->\nPY = /usr/bin/python3\n"
+                "|  run  | `bash tools/run.sh` |   any command that may print >40 lines |\n"    # whitespace collapsed
+                "- Python: /usr/bin/python3 (3.12.3)\n" + own)
+        self.assertEqual(card.pa3_lines(text, self.TMPL), {0, 2, 3, 4, 5})
+        self.assertEqual(card.own_chars(text, self.TMPL), 1 + len(own))           # the blank line and ours
+        self.assertEqual(card.own_chars(text, None), len(text))                    # no template: every line
+
+    def test_generic_and_unfilled_lines_count(self):
+        import card
+        text = "- Pins: our own pins\n- Anything at all\n"                         # PINS never filled
+        self.assertEqual(card.own_chars(text, self.TMPL), len(text))
+
+    def test_crlf_and_no_final_newline(self):
+        import card
+        text = "# How we work — Demo\r\nours\r\n# How we work — Demo"
+        self.assertEqual(card.own_chars(text, self.TMPL), len("ours\r\n"))
+
+    def test_check_fails_on_own_lines_not_the_total(self):
+        pa3 = "# How we work — Demo\n## Tools <!-- roles: expert -->\n"
+        rc, out = self.check(pa3 + "- " + "x" * 40 + "\n", 50)
+        self.assertEqual(rc, 0, out)                                               # 96 chars, 43 own
+        self.assertEqual(out, "chars=96 own=43 cap=50 placeholders=0 standing=0")
+        rc, out = self.check(pa3 + "- " + "x" * 60 + "\n", 50)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("own=63 cap=50", out)
+
+    def test_the_projects_template_copy_wins(self):
+        import card
+        _write(os.path.join(self.tmp, "templates", "HOW_WE_WORK.template.md"), "only ours\n")
+        self.assertEqual(card.template_text(self.tmp), "only ours\n")
+        self.assertEqual(card.template_text(os.path.join(self.tmp, "nowhere")), _template_text())
 
 
 class TestHowWeWorkWrite(unittest.TestCase):

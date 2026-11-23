@@ -48,6 +48,8 @@ let debugWanted = false // PA_MOD_DEBUG=1; 3.24 T8: an inert session writes noth
 let counter = 0
 let reqSeq = 0 // per-load sequence of inbox requests
 let journalSeq = 0 // per-load sequence of journal entries
+let entryPending: { path: string; text: string; since: number }[] = [] // 3.33: journal entries that did not land whole
+const ENTRY_RETRY_MS = 6 * 60 * 60_000 // 3.33: how long such an entry is written again (a full disk freed by hand)
 let feedSeq = 0 // per-load sequence of feed records (3.23 T13d)
 
 /** Stream facts per agent (T8b draws the stream and usage lines from them); in-memory, lost on reload. */
@@ -352,6 +354,32 @@ export const register: Register = on => {
     const want = me === undefined ? null : stepEffort(own ?? (await read($, ladderAtom).catch(() => ({})) as Record<string, LadderRow | undefined>)[type], type)
     const stream = next(want === null ? e : { ...e, effort: want })
     const effort = String(want ?? e.effort ?? '')
+    // 3.33: a journal entry written and read back; one that did not land whole (bfm-decomp 2026-11-23: a full disk left
+    // two thinking entries empty) is written again at a later step, oldest first, for ENTRY_RETRY_MS
+    const entry = async (path: string, text: string): Promise<void> => {
+      const todo = [...entryPending, { path, text, since: Date.now() }]
+      entryPending = []
+      let stuck = false
+      for (const p of todo) {
+        if (Date.now() - p.since > ENTRY_RETRY_MS) {
+          continue
+        }
+        if (stuck) {
+          entryPending.push(p)
+          continue
+        }
+        let ok = true
+        try {
+          await $.fs.write(p.path, p.text)
+        } catch {
+          ok = false
+        }
+        if (!ok || (await $.fs.read(p.path).catch(() => null)) !== p.text) {
+          stuck = true
+          entryPending.push(p)
+        }
+      }
+    }
     // 3.24 T17b: an agent spawned in this load: its first request's model and effort, as a `spawn` journal entry.
     const first = agentId === undefined ? undefined : spawned.get(agentId)
     if (agentId !== undefined && first !== undefined) {
@@ -362,7 +390,7 @@ export const register: Register = on => {
       const fields = spawnFields({ ts: new Date(ms).toISOString(), session: await $.session.id(), agentId, type: first.type, model: e.model, effort, row: first.row })
       const rel = entryPath(date, time, journalSeq, 'w', whoOf(first.type, agentId, '', factsOf(agentId).description), 'spawn')
       const body = `${first.type} ran on ${e.model} at ${effort === '' ? 'no effort' : effort}.`
-      await $.fs.write(`${await $.session.root()}/${rel}`, entryText(fields, body)).catch(quiet)
+      await entry(`${await $.session.root()}/${rel}`, entryText(fields, body))
     }
     // 3.23 T13d: the feed. Text before each tool chunk but the hand-back, and after the last tool chunk of a step that
     // made tool calls, is one record each (`kind` "text"); the final report and the text before the hand-back are not.
@@ -467,7 +495,7 @@ export const register: Register = on => {
       const [date, time] = stamp(now)
       journalSeq += 1
       const body = entryText({ ts: new Date(now).toISOString(), session: sid, agentId, model: e.model, turnId: e.turnId }, approach)
-      await $.fs.write(`${root}/${entryPath(date, time, journalSeq, 'w', noter, 'note')}`, body).catch(quiet)
+      await entry(`${root}/${entryPath(date, time, journalSeq, 'w', noter, 'note')}`, body)
     }
     if (debugDir !== '') {
       await $.fs.write(...ev('step', { agentId, model: f.model, effort: f.effort, usage: f.usage, thinking: thinking.length, narration: narration.size })).catch(quiet)
@@ -481,7 +509,7 @@ export const register: Register = on => {
       journalSeq += 1
       const rel = entryPath(date, time, journalSeq, 'w', whoOf(type, agentId, partnerId, row === undefined ? f.description : hintOf(row.description).desc), 'thinking')
       const text = entryText({ ts: new Date(ms).toISOString(), session: sid, agentId, model: e.model, effort: f.effort, turnId: e.turnId }, thinking.trim())
-      await $.fs.write(`${root}/${rel}`, text).catch(quiet)
+      await entry(`${root}/${rel}`, text)
     }
     return result
   })

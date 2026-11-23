@@ -2,7 +2,7 @@ import { describe, expect, test } from 'claude-code/testing'
 
 import { decide, errorText, ledgerPath, paSetting, releaseOf, heartbeatText, versionAtLeast, versionOf } from './activation'
 import { clip, eventFile, isStale, pruneArgv } from './debug'
-import { handle, parseRequest, parseRequestName, pendingRequests, requestName, RETRIEVE_TYPE } from './inbox'
+import { handle, parseRequest, parseRequestName, pendingRequests, requestFile, requestName, REQUEST_RETRY_MS, RETRIEVE_TYPE, retryRequests } from './inbox'
 import { defaultState, lastJson, markDone, parseLast, parseState, pruneDone, serializeState, STATE_V } from './state'
 
 const ON = '{"mod":"on","warmer":"off","upgrade":"ask"}'
@@ -186,5 +186,31 @@ describe('health records (3.24 T6)', () => {
     expect(JSON.parse(heartbeatText('S1', '3.24.0', '2.1.293', 1_500, 'pa'))).toEqual({ sid: 'S1', version: '3.24.0', engine: '2.1.293', at: 1.5, plugin: 'pa' })
     const e = JSON.parse(errorText('S1', 'pa-watch', 'session.start', 'x'.repeat(600), 2_000)) as Record<string, unknown>
     expect({ ...e, error: (e['error'] as string).length }).toEqual({ sid: 'S1', plugin: 'pa-watch', hook: 'session.start', error: 500, at: 2 })
+  })
+})
+
+describe('3.33: requests that did not land', () => {
+  test('retryRequests: each under a fresh name, oldest first; a failure ends the round; old ones drop', async () => {
+    const wrote: string[] = []
+    let full = true
+    const land = async (path: string): Promise<boolean> => {
+      wrote.push(path)
+      return !full
+    }
+    const build = (kind: string) => (ms: number, seq: number): { name: string; body: string } => requestFile(ms, seq, kind, 'router', {})
+    const pending = [
+      { dir: '/i', build: build('forward'), since: 1_000, what: 'a' },
+      { dir: '/i', build: build('notice'), since: 2_000, what: 'b' },
+    ]
+    let seq = 40
+    const next = (): number => (seq += 1)
+    const r1 = await retryRequests(land, pending, 5_000, next)
+    expect([r1.left.map(p => p.what), r1.sent.length, r1.dropped.length, wrote.length]).toEqual([['a', 'b'], 0, 0, 1])
+    full = false
+    const r2 = await retryRequests(land, r1.left, 6_000, next)
+    expect([r2.sent.map(p => p.what), r2.left.length]).toEqual([['a', 'b'], 0])
+    expect(wrote.slice(1)).toEqual(['/i/6000-42-forward.json', '/i/6000-43-notice.json'].map(p => p.replace('6000-', String(6000) + '-')))
+    const r3 = await retryRequests(land, pending, 1_000 + REQUEST_RETRY_MS + 1, next)
+    expect([r3.dropped.map(p => p.what), r3.sent.map(p => p.what)]).toEqual([['a'], ['b']])
   })
 })

@@ -56,7 +56,9 @@ function cracks, byte-match tested: external"). Design and judgment go in-house 
 the card's section. The developer changes any of them in the plan view.
 The last task is always the phase cleanup: `- T<n> | title: phase cleanup | done-when: what the project still needs from
 .run/<phase>/ is in its proper place in the repo`. Its expert checks the phase's temp folder and moves what is still
-needed (or asks); the close deletes the folder once this task is done.
+needed (or asks); the close deletes the folder once this task is done. A task whose output later tasks or tools use (a
+table, a script) puts it in its proper place in the repo, or names the command that rebuilds it: never a later task reading
+an earlier task's scratch.
 `## Interfaces` carries the exact signatures and record shapes the tasks touch, with `file:line`, from retrievers.
 Each task line, or its context, names the research report (`R<N>-<nnn>`) that covers it; `## Research` lists every
 report the plan cites, and `## Cookbook` names the entries the tasks should consult; `## Risks` names what could invalidate the

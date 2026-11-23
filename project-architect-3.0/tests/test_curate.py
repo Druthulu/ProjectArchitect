@@ -190,9 +190,19 @@ class MemoryRouteTest(unittest.TestCase):
         before = _tree(self.tmp)
         rc, out = self._run(["feedback-no-force.md=rule", "user-profile.md=developer"])
         self.assertEqual(rc, 1)
-        self.assertRegex(out, r"(?m)^refused: user-profile\.md: HOW_WE_WORK\.md would be "
+        self.assertRegex(out, r"(?m)^refused: user-profile\.md: HOW_WE_WORK\.md's own lines would be "
                               r"\d+/%d chars$" % (len(CARD) + 20))
         self.assertEqual(_tree(self.tmp), before)
+
+    def test_card_cap_counts_own_lines(self):
+        """3.33 C2: the card's PA3 lines (here the template's Docs map) don't count against the cap."""
+        tmpl = _read(os.path.join(PKG, "templates", "HOW_WE_WORK.template.md")).decode("utf-8")
+        docs = tmpl.split("## Docs map", 1)[1].split("\n\n", 1)[0].split("\n", 1)[1] + "\n"
+        _write(os.path.join(self.tmp, "HOW_WE_WORK.md"), CARD + docs)
+        self.set_cap(len(CARD) + 100)
+        rc, out = self._run(["user-profile.md=developer"])
+        self.assertEqual(rc, 0, out)
+        self.assertGreater(len(self.text("HOW_WE_WORK.md")), len(CARD) + 100)
 
     def test_dry_run_writes_nothing(self):
         before = _tree(self.tmp)
@@ -485,13 +495,76 @@ class FirstRun32Test(unittest.TestCase):
                     self.assertIn(ln, cur, name)
 
     def test_card_refresh_cap_refused(self):
-        card = "# How we work — Demo\n\n## Developer <!-- roles: planner review auditor curator -->\n"
+        """3.33 C2: refused only when the card's own lines pass the cap; PA3's lines don't count."""
+        card = ("# How we work — Demo\n\n## Developer <!-- roles: planner review auditor curator -->\n"
+                "- " + "x" * 40 + "\n")
         _write(os.path.join(self.tmp, "HOW_WE_WORK.md"), card)
-        _write(os.path.join(self.tmp, ".claude", "pa.json"), '{"card": {"max_chars": %d}}\n' % len(card))
+        _write(os.path.join(self.tmp, ".claude", "pa.json"), '{"card": {"max_chars": 40}}\n')
         rc, out = self._run("card", "--refresh")
         self.assertEqual(rc, 1)
-        self.assertIn("refused: HOW_WE_WORK.md would be", out)
+        self.assertIn("refused: HOW_WE_WORK.md's own lines would be 44/40 chars", out)
         self.assertEqual(self.text("HOW_WE_WORK.md"), card)
+        _write(os.path.join(self.tmp, ".claude", "pa.json"), '{"card": {"max_chars": 44}}\n')
+        rc, out = self._run("card", "--refresh")              # 132 chars in all, 44 of them its own
+        self.assertEqual(rc, 0, out)
+        self.assertIn("## Developer <!-- roles: claude planner", self.text("HOW_WE_WORK.md"))
+
+    def _tmpl(self, name):
+        return _read(os.path.join(PKG, "templates", name)).decode("utf-8")
+
+    def test_card_refresh_anywhere_and_missing(self):
+        """3.33 C1: a past PA3 block anywhere on the card takes the current one (the one-line Scratch line under
+        ## Paths); a PA3 line the project edited stays and its current text is listed as missing; yours: stays
+        limited to the owned sections."""
+        tmpl = self._tmpl("HOW_WE_WORK.template.md")
+        scratch = tmpl.split("\n- Scratch: ", 1)[1].split("\n\n", 1)[0]
+        block = "- Scratch: " + scratch
+        ratify = "The developer pushes; agents never do. They ratify rules at the next plan approval."
+        card = ("# How we work — Demo\n\n## Developer <!-- roles: claude planner review auditor curator -->\n"
+                + ratify.replace("next plan approval", "phase close") + "\n\n"
+                "## Paths <!-- roles: claude expert coder planner review auditor curator -->\n"
+                "- Our own path line\n- Scratch: `.run/` (gitignored; never the system temp)\n\n"
+                "## Docs map <!-- roles: expert coder planner review auditor curator -->\n- `notes/` — ours\n")
+        _write(os.path.join(self.tmp, "HOW_WE_WORK.md"), card)
+        rc, out = self._run("card", "--refresh")
+        self.assertEqual(rc, 0, out)
+        got = self.text("HOW_WE_WORK.md")
+        self.assertIn("- Our own path line\n" + block + "\n\n## Docs map", got)
+        self.assertIn("They ratify rules at the phase close.\n", got)
+        yours = [ln for ln in out.splitlines() if ln.startswith("  yours: ")]
+        self.assertEqual(yours, ["  yours: line 18: - `notes/` — ours"])    # ## Paths is not listed as yours
+        missing = [ln[len("  missing: "):] for ln in out.splitlines() if ln.startswith("  missing: ")]
+        self.assertIn(ratify, missing)
+        self.assertIn("| run | `bash tools/run.sh` | any command that may print >40 lines |", missing)
+        self.assertNotIn(block.split("\n")[0], missing)                      # refreshed in place
+        for ln in missing:
+            self.assertNotIn("{{", ln)                                       # unfilled placeholders skipped
+            self.assertFalse(ln.lstrip().startswith(("<!--", "- (none yet", "card.max_chars")), ln)
+        self.assertLess(out.index("  yours: "), out.index("  missing: "))
+
+    def test_refresh_text_missing_rules(self):
+        """3.33 C1: missing lines: fills from the file, whitespace collapsed, no generic, comment or sample lines."""
+        cur = ("# T — {{NAME}}\n<!-- a comment\n     that goes on for long -->\n- {{CONVENTION}}\n"
+               "- Python: {{PY}} ({{PY_VERSION}})\n- Pins: {{PINS}} — detail in ops\n"
+               "| {{TOOL}} | `{{TOOL_COMMAND}}` | {{TOOL_PURPOSE}} |\n- (none yet: a sample)\n"
+               "A plain PA3 line that the file lacks.\nA PA3 line with   odd spacing.\n")
+        raw = "# T — Demo\n- Python: py3 (3.12)\nA PA3 line with odd spacing.\n"
+        got = CU.refresh_text(raw, cur, [])
+        self.assertEqual(got["missing"], ["A plain PA3 line that the file lacks."])
+        self.assertEqual(got["text"], raw)
+        got = CU.refresh_text("x\r\nold PA3 line here\r\n", "x\nnew PA3 line here\n",
+                              [[["old PA3 line here"], ["new PA3 line here"]]])
+        self.assertEqual((got["text"], got["missing"]), ("x\r\nnew PA3 line here\r\n", []))
+
+    def test_claude_md_refresh_lists_missing(self):
+        """3.33 C1: claude-md --refresh lists the current template lines CLAUDE.md lacks after its yours: lines."""
+        self._claude_md("Our own line about the build farm.\n")
+        drive = [ln for ln in self._tmpl("CLAUDE.template.md").splitlines() if ln.startswith("Drive:")][0]
+        path = os.path.join(self.tmp, "CLAUDE.md")
+        _write(path, self.text("CLAUDE.md").replace(drive + "\n", ""))
+        rc, out = self._run("claude-md", "--refresh", "--dry-run")
+        self.assertEqual(rc, 0, out)
+        self.assertEqual(out.rstrip("\n").splitlines()[-2:], ["  missing: " + drive, "dry-run: no changes"])
 
 
 class LivingDocsTest(unittest.TestCase):
@@ -545,14 +618,15 @@ class LivingDocsTest(unittest.TestCase):
         self._pa({"intake": "pending", "card": {"max_chars": 120}})
         rc, out = self._run("--entry", "`a.md`: " + "x" * 100)
         self.assertEqual(rc, 1)
-        self.assertIn("refused: HOW_WE_WORK.md would be", out)
+        self.assertIn("refused: HOW_WE_WORK.md's own lines would be", out)
         self.assertEqual((self.card(), self.marker()), (self.CARD, "pending"))
 
-    def test_refused_past_the_seeds_card_cap(self):
+    def test_no_seed_cap_and_pa3_lines_free(self):
+        """3.33 C2: the seed no longer cuts Claude's slice; the template's heading is PA3's, not the project's."""
         rc, out = self._run("--entry", "`a.md`: " + "x" * 6100)
-        self.assertEqual(rc, 1)
-        self.assertIn("refused: Claude's slice would be", out)
-        self.assertEqual((self.card(), self.marker()), (self.CARD, "pending"))
+        self.assertEqual(rc, 0, out)
+        own = len(self.card()) - len(self.HEAD)
+        self.assertIn("living docs: 1 lines, card %d chars, own lines %d/10000" % (len(self.card()), own), out)
 
 
 class CuratorAgentTest(unittest.TestCase):

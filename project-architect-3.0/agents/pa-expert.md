@@ -1,7 +1,7 @@
 ---
 name: pa-expert
 role: expert
-version: 3.32.8
+version: 3.33.9
 description: Executes one PHASE_PLAN task in a fresh context. Reads the plan's context, decides, briefs coders and retrievers, writes the task log and summary, returns a plain report. Default expert (medium effort).
 model: claude-opus-5-5[1m]
 effort: medium
@@ -131,7 +131,12 @@ is one (the note the expert before you kept); then archive the progress file at 
 instead of overwriting it; a `TASK_PROGRESS.patch` beside it is the unfinished change: `git apply` it, delete it, and
 finish that change first; then continue.
 
-Finish: write `phase-ends/current/logs/T<n>.md` (the full log:
+Finish: first tidy your task's scratch (`.run/<phase>/t<n>/`; each coder's brief names its own folder in it).
+`PY tools/run_cleanup.py --cites` lists what tracked files cite under `.run/`: anything later tasks, docs or tools need
+from your task's folder (a script other tasks run, a tool's data, a file the cookbook or your summary cites) moves to
+its proper place in the repo now (a coder for a code change) and its references follow; delete the rebuildable copies
+left there (yours, and those of a coder that stopped before cleaning up). Working notes stay for the phase close. Then
+write `phase-ends/current/logs/T<n>.md` (the full log:
 timeline, hypotheses rejected, commands run with their run.sh log names, coder briefs sent, retriever questions asked and
 report ids) and `phase-ends/current/tasks/T<n>.md` (the summary from `templates/task.template.md`, ≤ 150 lines, no tool
 output, no tables); run `PY tools/task_log.py finish T<n>`; commit; return your report.
