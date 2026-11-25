@@ -2631,28 +2631,50 @@ def _run_jobs(jobs, cfg):
 def run_background():
     """The child: run the queued jobs until the queue is empty, then release the lock.
 
-    Writes nothing to stdout; failures go to the hooks log.
+    3.33.1 (GitHub #19): the summary child's lock rules (3.32.10, GitHub #12). A batch past the 10 min stale age let
+    the next request start a second child, and every child rewrote and removed the lock whoever held it. The lock is
+    refreshed from a heartbeat thread while it names this process, a child that lost it stops after its batch and
+    leaves it, a batch of SLOW_PASS_S or more is logged with its time, and a newer install hands the queue to a fresh
+    child. Writes nothing to stdout; failures go to the hooks log.
     """
+    import threading
+
     from . import config as config_mod
     from . import summary as summary_mod
 
     lock = _sampler_path("child.lock")
+    stop = threading.Event()
+    handover = False
     try:
         summary_mod._write_lock(lock, "background")
+        threading.Thread(target=summary_mod._heartbeat, args=(lock, stop), daemon=True).start()
         cfg = config_mod.load()
         while True:
             jobs = _take_jobs()
             if not jobs:
                 break
+            t0 = time.time()
             _run_jobs(jobs, cfg)
-            summary_mod._write_lock(lock, "background")   # fresh mtime: a long run is not stale
+            took = time.time() - t0
+            if took >= summary_mod.SLOW_PASS_S:
+                _log("statusline.background_slow", seconds=round(took, 1), jobs=len(jobs))
+            if not summary_mod._owns(lock):
+                break                                      # taken over: its owner drains the queue
+            if os.path.exists(_sampler_path("queue.jsonl")) and summary_mod._newer_installed():
+                handover = True
+                break
     except Exception as exc:
         _log("statusline.background_failed", err=repr(exc))
     finally:
-        try:
-            os.remove(lock)
-        except OSError:
-            pass
+        stop.set()
+        if summary_mod._owns(lock):
+            try:
+                os.remove(lock)
+            except OSError:
+                pass
+    if handover:
+        _log("statusline.background_handover")
+        request_background()                               # the queue left in place goes to a fresh child
 
 
 def _mismatch(payload, cfg):

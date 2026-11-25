@@ -350,8 +350,12 @@ def _account_timeline(conn, run_id):
         return []
 
 
-def _vanilla_walk(rows, turns, vtl_s, fallback_model=None, t0=None, t1=None, window=None):
+def _vanilla_walk(rows, turns, vtl_s, fallback_model=None, t0=None, t1=None, window=None,
+                  on_credit=None):
     """Core vanilla-net-v4 session walk: a plain *window* (1M) that cycles.
+
+    ``on_credit(ts, account, krid, parent_run_id, usd)``: called for every credit the walk books, zero ones
+    included (3.33.1: the savings tally records them per turn).
 
     *rows* is ``[(krid, ret_at, kept, parent_run_id)]``.
     *turns* is a sequence of rows with ts, model, ctx, account.
@@ -450,6 +454,8 @@ def _vanilla_walk(rows, turns, vtl_s, fallback_model=None, t0=None, t1=None, win
                     entry["by_account"][account] = entry["by_account"].get(account, 0.0) + usd
                 gross += usd
                 turn_usd += usd
+                if on_credit is not None:
+                    on_credit(ts, account, krid, parent, usd)
 
         # Credit carried mass in full (the cycle above keeps it inside the window)
         if carried_items and carried_mass > 0:
@@ -467,6 +473,8 @@ def _vanilla_walk(rows, turns, vtl_s, fallback_model=None, t0=None, t1=None, win
                     entry["by_account"][account] = entry["by_account"].get(account, 0.0) + usd
                 gross += usd
                 turn_usd += usd
+                if on_credit is not None:
+                    on_credit(ts, account, krid, parent, usd)
 
         if turn_usd > 0 and account is not None:
             by_account[account] = by_account.get(account, 0.0) + turn_usd
@@ -857,13 +865,12 @@ def _emission_for_run(conn, run_id):
     return calls, total_carry, total_emission, total_usd, by_account
 
 
-def _emission_for_window(conn, session_id, t0, t1):
-    """Emission term for a session's tool_calls in ``[t0, t1)``.
+def _emission_items(conn, session_id, t0=None, t1=None):
+    """Emission of a session's tool_calls in ``[t0, t1)``, one item per call: ``[(ts, account, usd, tokens)]``.
 
-    Returns ``(emission_tokens, emission_usd, by_account)`` where
-    ``by_account`` is ``{account: usd}`` attributing each call's emission
-    to the account of the nearest api turn (T9).
-    When a row's ``model`` is NULL the session's nearest api turn is used.
+    ``account``: the run's nearest api turn at or before the call (T9), None when there is none or the call's usd
+    is not positive (only positive emission is attributed to an account).  A NULL ``model`` takes the run's
+    nearest api turn's model.  ``None`` when the query fails.
     """
     sql = ("SELECT emission_tokens, model, ts, run_id FROM tool_calls"
            " WHERE session_id=? AND ts IS NOT NULL"
@@ -878,10 +885,8 @@ def _emission_for_window(conn, session_id, t0, t1):
     try:
         rows = conn.execute(sql, args).fetchall()
     except Exception:
-        return 0, 0.0, {}
-    total_tok = 0
-    total_usd = 0.0
-    by_account = {}
+        return None
+    out = []
     tl_cache = {}                                          # run_id -> timeline
     acct_tl_cache = {}
     for r in rows:
@@ -893,14 +898,33 @@ def _emission_for_window(conn, session_id, t0, t1):
             if rid not in tl_cache:
                 tl_cache[rid] = _model_timeline(conn, rid)
             m = _nearest_model(tl_cache[rid], ts)
-        total_tok += et
         usd_val = et * price_output(m) / 1e6
-        total_usd += usd_val
         # attribute to the account of the nearest api turn (T9)
         if rid not in acct_tl_cache:
             acct_tl_cache[rid] = _account_timeline(conn, rid)
         acct = _nearest_model(acct_tl_cache[rid], ts)
-        if acct is not None and usd_val > 0:
+        out.append((ts, acct if (acct is not None and usd_val > 0) else None, usd_val, et))
+    return out
+
+
+def _emission_for_window(conn, session_id, t0, t1):
+    """Emission term for a session's tool_calls in ``[t0, t1)``.
+
+    Returns ``(emission_tokens, emission_usd, by_account)`` where
+    ``by_account`` is ``{account: usd}`` attributing each call's emission
+    to the account of the nearest api turn (T9).
+    When a row's ``model`` is NULL the session's nearest api turn is used.
+    """
+    items = _emission_items(conn, session_id, t0, t1)
+    if items is None:
+        return 0, 0.0, {}
+    total_tok = 0
+    total_usd = 0.0
+    by_account = {}
+    for _ts, acct, usd_val, et in items:
+        total_tok += et
+        total_usd += usd_val
+        if acct is not None:
             by_account[acct] = by_account.get(acct, 0.0) + usd_val
     return total_tok, total_usd, by_account
 
@@ -1058,6 +1082,73 @@ def _norm_project(path):
     return os.path.normcase(os.path.normpath(text))
 
 
+def _walk_turns(conn, session_id):
+    """A session's api turns as the window walk reads them, oldest first; equal timestamps in ``msg_id`` order
+    (3.33.1: a fixed order, so the savings tally and the reference walk see the same sequence)."""
+    return conn.execute(
+        "SELECT ts, model, ctx, run_id, cost_usd, account FROM turns"
+        " WHERE session_id=? AND kind='api' AND ts IS NOT NULL"
+        " ORDER BY ts, msg_id", (session_id,)).fetchall()
+
+
+def _seed_items(conn, session_id):
+    """Seed carry of a session's subagent runs, one item per api turn with a context: ``[(ts, account, usd)]``,
+    ``usd = min(1, seed_ctx/ctx) × cost_usd``."""
+    try:
+        runs = conn.execute(
+            "SELECT run_id, seed_ctx FROM agent_runs"
+            " WHERE session_id=? AND run_id!=?",
+            (session_id, session_id)).fetchall()
+    except Exception:
+        runs = []
+    out = []
+    for r in runs:
+        seed = _int(_field(r, "seed_ctx"))
+        if seed <= 0:
+            continue
+        rid = _field(r, "run_id")
+        try:
+            rturns = conn.execute(
+                "SELECT ts, ctx, cost_usd, account FROM turns"
+                " WHERE run_id=? AND kind='api' AND ts IS NOT NULL",
+                (rid,)).fetchall()
+        except Exception:
+            continue
+        for rt in rturns:
+            ctx = _int(_field(rt, "ctx"))
+            cost = float(_field(rt, "cost_usd") or 0)
+            if ctx > 0:
+                out.append((_field(rt, "ts"), _field(rt, "account"), min(1.0, seed / ctx) * cost))
+    return out
+
+
+def _parent_family(conn, parent_run_id):
+    """The family a kept-out row's savings go to: its parent run's ``model_seen`` (``fit.family_of``), or
+    ``unknown`` when the parent has no ``agent_runs`` row."""
+    fam = "unknown"
+    try:
+        pr = conn.execute("SELECT model_seen FROM agent_runs WHERE run_id=?",
+                          (parent_run_id,)).fetchone()
+        if pr:
+            from . import fit as _fit
+            fam = _fit.family_of(_field(pr, "model_seen"))
+    except Exception:
+        pass
+    return fam
+
+
+def _family_spread(by_fam, total_gross, total_emission, total_seeds):
+    """Seeds subtracted and emission added across ``by_fam`` in proportion to each family's gross."""
+    net_base = total_gross + total_emission
+    if total_seeds > 0 and net_base > 0:
+        for fam in by_fam:
+            by_fam[fam] -= total_seeds * by_fam[fam] / net_base
+    if total_emission > 0 and total_gross > 0:
+        for fam in list(by_fam):
+            by_fam[fam] += total_emission * by_fam.get(fam, 0.0) / total_gross
+    return by_fam
+
+
 def window_saved_measured(conn, account, t0, t1, by_family=False, project=None,
                           detail=False, session=None, window=None):
     """Measured savings accrued in ``[t0, t1)`` (vanilla-net-v4, 3.5 T9 + 3.6 T3).
@@ -1069,7 +1160,30 @@ def window_saved_measured(conn, account, t0, t1, by_family=False, project=None,
     ``by_family=True`` returns ``{family: net_usd}``.
     ``project``: only sessions whose project normalizes to this key.
     ``window``: carry window in tokens; default ``savings.window_tokens`` (fix-10).
+
+    3.33.1 (GitHub #19): answered from the savings tally (each session's credits recorded once per turn, see
+    :func:`tally_sync`), the same numbers as :func:`_window_saved_reference` without walking every session per call;
+    the reference still answers a non-default ``window``, a session whose credits went negative, and
+    ``savings.tally: false``.
     """
+    if not window or _int(window) == _cfg_window_tokens():
+        view = _tally_view(conn)
+        if view is not None:
+            try:
+                got = view.saved(account, t0, t1, by_family=by_family, project=project, detail=detail,
+                                 session=session)
+            except Exception:
+                got = None
+            if got is not None:
+                return got
+    return _window_saved_reference(conn, account, t0, t1, by_family=by_family, project=project,
+                                   detail=detail, session=session, window=window)
+
+
+def _window_saved_reference(conn, account, t0, t1, by_family=False, project=None,
+                            detail=False, session=None, window=None):
+    """:func:`window_saved_measured` by walking every session the account ever had (the reference: 3.33.1, GitHub
+    #19, the savings tally is checked against it)."""
     try:
         sql = ("SELECT DISTINCT t.session_id, s.project, s.cwd FROM turns t "
                "LEFT JOIN sessions s ON s.session_id = t.session_id "
@@ -1097,14 +1211,8 @@ def window_saved_measured(conn, account, t0, t1, by_family=False, project=None,
 
     for sid in sids:
         rows = _kept_out_with_parent(conn, sid)
-        if not rows:
-            # Even with no rows, the session may have seed-carrying runs
-            pass
         try:
-            full = conn.execute(
-                "SELECT ts, model, ctx, run_id, cost_usd, account FROM turns"
-                " WHERE session_id=? AND kind='api' AND ts IS NOT NULL"
-                " ORDER BY ts", (sid,)).fetchall()
+            full = _walk_turns(conn, sid)
         except Exception:
             continue
 
@@ -1123,77 +1231,405 @@ def window_saved_measured(conn, account, t0, t1, by_family=False, project=None,
             total_emission += e_usd
 
         if by_family:
-            # Re-walk with family tracking: accumulate per-family gross from
-            # per_row by looking at which turns credited which model.
-            # Simplified: attribute each row's USD to the family of the row's
-            # parent run's model (or fallback to the session's).
+            # each row's USD goes to the family of the row's parent run's model; per account, only the share that
+            # account's turns credited (3.33.1: a row with none of it counted all accounts' credit)
             for krid, info in per_row.items():
-                from . import fit as _fit
-                # Use the first turn's model as representative; exact per-turn
-                # family split is expensive and not needed here.
-                fam = "unknown"
-                parent = info.get("parent_run_id")
-                try:
-                    pr = conn.execute("SELECT model_seen FROM agent_runs WHERE run_id=?",
-                                      (parent,)).fetchone()
-                    if pr:
-                        fam = _fit.family_of(_field(pr, "model_seen"))
-                except Exception:
-                    pass
-                # Per-account: use the account's share of the row (T9)
-                row_usd = info.get("by_account", {}).get(account, info["usd"]) if account else info["usd"]
+                fam = _parent_family(conn, info.get("parent_run_id"))
+                row_usd = info.get("by_account", {}).get(account, 0.0) if account else info["usd"]
                 by_fam[fam] = by_fam.get(fam, 0.0) + row_usd
 
-        # Seed carry of turns in [t0, t1)
-        try:
-            runs = conn.execute(
-                "SELECT run_id, seed_ctx FROM agent_runs"
-                " WHERE session_id=? AND run_id!=?",
-                (sid, sid)).fetchall()
-        except Exception:
-            runs = []
-        for r in runs:
-            seed = _int(_field(r, "seed_ctx"))
-            if seed <= 0:
+        # Seed carry of turns in [t0, t1); when account is specified, only this account's turns (T9)
+        for ts, acct, seed_val in _seed_items(conn, sid):
+            if (t0 and str(ts) < str(t0)) or (t1 and str(ts) >= str(t1)):
                 continue
-            rid = _field(r, "run_id")
-            try:
-                rturns = conn.execute(
-                    "SELECT ts, ctx, cost_usd, account FROM turns"
-                    " WHERE run_id=? AND kind='api' AND ts IS NOT NULL",
-                    (rid,)).fetchall()
-            except Exception:
+            if account and acct != account:
                 continue
-            for rt in rturns:
-                ts = _field(rt, "ts")
-                if (t0 and str(ts) < str(t0)) or (t1 and str(ts) >= str(t1)):
-                    continue
-                ctx = _int(_field(rt, "ctx"))
-                cost = float(_field(rt, "cost_usd") or 0)
-                if ctx > 0:
-                    seed_val = min(1.0, seed / ctx) * cost
-                    # When account is specified, only count this account's turns (T9)
-                    acct = _field(rt, "account")
-                    if account and acct != account:
-                        continue
-                    total_seeds += seed_val
+            total_seeds += seed_val
 
     if by_family:
-        # Subtract proportional seeds from families (simplified: spread evenly)
-        net_base = total_gross + total_emission
-        if total_seeds > 0 and net_base > 0:
-            for fam in by_fam:
-                by_fam[fam] -= total_seeds * by_fam[fam] / net_base
-        # Add emission proportionally to families
-        if total_emission > 0 and total_gross > 0:
-            for fam in list(by_fam):
-                by_fam[fam] += total_emission * by_fam.get(fam, 0.0) / total_gross
-        return by_fam
+        return _family_spread(by_fam, total_gross, total_emission, total_seeds)
     net = total_gross + total_emission - total_seeds
     if detail:
         return {"gross": total_gross, "seeds": total_seeds,
                 "emission": total_emission, "net": net}
     return net
+
+
+# --------------------------------------------------------------------------- the savings tally (3.33.1)
+#
+# GitHub #19: window_saved_measured walked every session the account ever had, per call, and a summary pass made
+# 288 calls: minutes of CPU per pass, growing every week.  Each session's credits are now recorded once per turn in
+# ``tally_credits`` (the walk's own credits, seeds and emission, from the functions the reference uses) and a window
+# is a sum over them.  The triggers in pa.db log every session whose inputs change in ``tally_dirty``; tally_sync
+# re-walks those sessions in full.  A view walks in memory any session still dirty or stored under another stamp,
+# so its answers equal the reference's; a ledger read from another machine is walked in memory the same way unless
+# its stamp is ours.
+
+TALLY_VERSION = "1"
+_STAMP_CACHE = {}
+_PASS = {"depth": 0, "views": {}}
+
+
+def _tally_enabled():
+    """``savings.tally`` (default on): off sends every call to the reference walk."""
+    try:
+        from . import config as _cfg
+        return bool(_cfg.get(_cfg.load(), "savings.tally", True))
+    except Exception:
+        return True
+
+
+def _spill_chars():
+    try:
+        from . import config as _cfg
+        return int((_cfg.load().get("credit") or {}).get("spill_chars") or 20000)
+    except Exception:
+        return 20000
+
+
+def tally_stamp():
+    """What every stored credit depends on besides the ledger's rows: the walk's code (this module, pa.credit,
+    pa.prices) and the settings it reads.  A new stamp re-walks every session once."""
+    key = (_cfg_vanilla_ttl_s(), _cfg_window_tokens(), _spill_chars())
+    hit = _STAMP_CACHE.get(key)
+    if hit:
+        return hit
+    import hashlib
+
+    from . import credit as _credit
+    from . import fit as _fit
+
+    h = hashlib.sha1(repr((TALLY_VERSION, SAVINGS_VERSION, prices.PRICES_VERSION, prices.PRICES,
+                           _fit.FAMILIES, key)).encode("utf-8"))
+    for path in (__file__, _credit.__file__, prices.__file__):
+        try:
+            with open(path, "rb") as fh:
+                h.update(fh.read().replace(b"\r\n", b"\n"))
+        except OSError:
+            h.update(path.encode("utf-8", "replace"))
+    _STAMP_CACHE[key] = stamp = h.hexdigest()[:16]
+    return stamp
+
+
+def _session_tally(conn, session_id, vtl, win):
+    """One session's credits, summed per turn: ``(events, ref_only)`` with events ``[(ts, account, kind, family,
+    usd)]``, kind ``row`` (a kept-out row's credit; family = its parent run's), ``seed`` or ``emis``.  ``ref_only``:
+    a credit went negative, where the reference's per-turn account gate and these sums could part."""
+    rows = _kept_out_with_parent(conn, session_id)
+    full = _walk_turns(conn, session_id)
+    agg, fams, neg = {}, {}, []
+
+    def on_credit(ts, account, krid, parent, usd):
+        fam = fams.get(parent)
+        if fam is None:
+            fam = fams[parent] = _parent_family(conn, parent)
+        key = (str(ts), account, "row", fam)
+        agg[key] = agg.get(key, 0.0) + usd
+        if usd < 0:
+            neg.append(krid)
+
+    _vanilla_walk(rows, full, vtl, window=win, on_credit=on_credit)
+    for ts, acct, val in _seed_items(conn, session_id):
+        key = (str(ts), acct, "seed", None)
+        agg[key] = agg.get(key, 0.0) + val
+    for ts, acct, usd, _tok in (_emission_items(conn, session_id) or []):
+        key = (str(ts), acct, "emis", None)
+        agg[key] = agg.get(key, 0.0) + usd
+    return [k + (v,) for k, v in agg.items()], bool(neg)
+
+
+class _TallyView(object):
+    """One connection's tally for one pass: stored credits of the sessions that are current, the rest walked in
+    memory once, on first use.  ``saved`` returns None when the reference must answer."""
+
+    def __init__(self, conn, stamp):
+        self.conn = conn
+        self.vtl, self.win = _cfg_vanilla_ttl_s(), _cfg_window_tokens()
+        self.clean, self.ref_only = {}, set()          # clean: sid -> sk
+        self.mem, self._win, self._mem_win = {}, {}, {}
+        self._proj = None
+        try:
+            from . import db as _db
+
+            stored_ok = _db.get_meta(conn, "tally_stamp") == stamp
+            dirty = set(r[0] for r in conn.execute("SELECT DISTINCT session_id FROM tally_dirty"))
+            for r in conn.execute("SELECT sk, session_id, stamp, ref_only FROM tally_sessions"):
+                if stored_ok and r[2] == stamp and r[1] not in dirty:
+                    self.clean[r[1]] = r[0]
+                    if r[3]:
+                        self.ref_only.add(r[1])
+        except Exception:                               # no tally tables (another machine's older ledger)
+            self.clean = {}
+        self.sid_of = dict((sk, sid) for sid, sk in self.clean.items())
+        self.all_sids, self.by_account = set(), {}
+        for r in conn.execute("SELECT DISTINCT session_id, account FROM turns "
+                              "WHERE kind='api' AND session_id IS NOT NULL"):
+            self.all_sids.add(r[0])
+            if r[1]:
+                self.by_account.setdefault(r[1], set()).add(r[0])
+
+    def _projects(self):
+        if self._proj is None:
+            self._proj = dict((r[0], _norm_project(r[1] or r[2]))
+                              for r in self.conn.execute("SELECT session_id, project, cwd FROM sessions"))
+        return self._proj
+
+    def _stored(self, t0, t1):
+        """``{sid: [(kind, account, family, usd)]}`` of the clean sessions' credits in ``[t0, t1)``."""
+        key = (str(t0) if t0 else "", str(t1) if t1 else "")
+        hit = self._win.get(key)
+        if hit is not None:
+            return hit
+        sql, args, where = "SELECT sk, kind, account, fam, SUM(usd) FROM tally_credits", [], []
+        if key[0]:
+            where.append("ts >= ?")
+            args.append(key[0])
+        if key[1]:
+            where.append("ts < ?")
+            args.append(key[1])
+        if where:
+            sql += " WHERE " + " AND ".join(where)
+        out = {}
+        if self.clean:
+            for r in self.conn.execute(sql + " GROUP BY sk, kind, account, fam", args):
+                sid = self.sid_of.get(r[0])
+                if sid is not None:
+                    out.setdefault(sid, []).append((r[1], r[2], r[3], r[4]))
+        self._win[key] = out
+        return out
+
+    def _walked(self, sid, t0, t1):
+        """A session the store cannot answer for, walked once per view, its credits in ``[t0, t1)``."""
+        if sid not in self.mem:
+            events, neg = _session_tally(self.conn, sid, self.vtl, self.win)
+            self.mem[sid] = events
+            if neg:
+                self.ref_only.add(sid)
+        key = (sid, str(t0) if t0 else "", str(t1) if t1 else "")
+        hit = self._mem_win.get(key)
+        if hit is None:
+            agg = {}
+            for ts, acct, kind, fam, usd in self.mem[sid]:
+                if (key[1] and ts < key[1]) or (key[2] and ts >= key[2]):
+                    continue
+                k = (kind, acct, fam)
+                agg[k] = agg.get(k, 0.0) + usd
+            hit = self._mem_win[key] = [k + (v,) for k, v in agg.items()]
+        return hit
+
+    def saved(self, account, t0, t1, by_family=False, project=None, detail=False, session=None):
+        if session:
+            sids = (session,)
+        else:
+            sids = self.by_account.get(account, ()) if account else self.all_sids
+            if project:
+                proj = self._projects()
+                sids = [s for s in sids if proj.get(s) == project]
+        stored = self._stored(t0, t1)
+        gross = seeds = emission = 0.0
+        by_fam = {} if by_family else None
+        for sid in sids:
+            items = stored.get(sid, ()) if sid in self.clean else self._walked(sid, t0, t1)
+            if sid in self.ref_only:
+                return None
+            for kind, acct, fam, usd in items:
+                mine = (not account) or acct == account
+                if kind == "row":
+                    if mine:
+                        gross += usd
+                    if by_fam is not None:
+                        by_fam[fam] = by_fam.get(fam, 0.0) + (usd if mine else 0.0)
+                elif not mine:
+                    continue
+                elif kind == "seed":
+                    seeds += usd
+                else:
+                    emission += usd
+        if by_family:
+            return _family_spread(by_fam, gross, emission, seeds)
+        net = gross + emission - seeds
+        if detail:
+            return {"gross": gross, "seeds": seeds, "emission": emission, "net": net}
+        return net
+
+
+def _tally_view(conn):
+    """The connection's view: one per connection for the whole :class:`tally_pass`, else one per call."""
+    if not _tally_enabled():
+        return None
+    views = _PASS["views"] if _PASS["depth"] else None
+    if views is not None and conn in views:
+        return views[conn]
+    try:
+        view = _TallyView(conn, tally_stamp())
+    except Exception:
+        view = None
+    if views is not None:
+        views[conn] = view
+    return view
+
+
+class tally_pass(object):
+    """``with savings.tally_pass(conn):`` brings ``conn``'s tally up to date once (:func:`tally_sync`), then serves
+    every :func:`window_saved_measured` call inside from one view per connection, union readers included."""
+
+    def __init__(self, conn, sync=True):
+        self.conn, self.sync = conn, sync
+
+    def __enter__(self):
+        if self.sync and self.conn is not None and _tally_enabled():
+            try:
+                tally_sync(self.conn)
+            except Exception as exc:
+                from . import log as _log
+
+                _log.log("savings_tally_sync_failed", error=("%s: %s" % (type(exc).__name__, exc))[:200])
+        _PASS["depth"] += 1
+        return self
+
+    def __exit__(self, *exc):
+        _PASS["depth"] -= 1
+        if _PASS["depth"] <= 0:
+            _PASS["depth"] = 0
+            _PASS["views"].clear()
+        return False
+
+
+def tally_sync(conn, spot_check=True):
+    """Re-walk every session logged in ``tally_dirty`` or stored under another stamp, each in its own short write;
+    returns how many were written.  A busy write stops the sync: the rest stays dirty for the next pass and views
+    walk it in memory meanwhile."""
+    import sqlite3
+
+    from . import db as _db
+
+    if conn.in_transaction:
+        return 0
+    stamp = tally_stamp()
+    if _db.get_meta(conn, "tally_stamp") != stamp:
+        _tally_enqueue_all(conn, stamp)
+    todo = dict((r[0], r[1]) for r in conn.execute(
+        "SELECT session_id, MAX(seq) FROM tally_dirty GROUP BY session_id"))
+    for r in conn.execute("SELECT session_id FROM tally_sessions WHERE stamp IS NOT ?", (stamp,)):
+        todo.setdefault(r[0], 0)
+    vtl, win = _cfg_vanilla_ttl_s(), _cfg_window_tokens()
+    done, failed = 0, []
+    for sid in sorted(todo, key=lambda s: str(s)):
+        try:
+            _tally_write_session(conn, sid, stamp, vtl, win)
+        except sqlite3.OperationalError:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            break
+        except Exception as exc:                       # this session stays dirty: views walk it in memory
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            failed.append((sid, "%s: %s" % (type(exc).__name__, exc)))
+            continue
+        done += 1
+    if failed:
+        from . import log as _log
+
+        _log.log("savings_tally_walk_failed", sessions=len(failed), first=failed[0][0],
+                 error=failed[0][1][:200])
+    if spot_check:
+        _tally_spot_check(conn, stamp, vtl, win)
+    return done
+
+
+def _tally_enqueue_all(conn, stamp):
+    """A new stamp (or the first sync): every session with api turns or tool calls goes in the log, then the stamp."""
+    from . import db as _db
+
+    sids = set(r[0] for r in conn.execute(
+        "SELECT DISTINCT session_id FROM turns WHERE kind='api' AND session_id IS NOT NULL"))
+    sids.update(r[0] for r in conn.execute(
+        "SELECT DISTINCT session_id FROM tool_calls WHERE session_id IS NOT NULL"))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.executemany("INSERT INTO tally_dirty(session_id) VALUES (?)", [(s,) for s in sorted(sids)])
+        _db.set_meta(conn, "tally_stamp", stamp)
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+def _tally_write_session(conn, sid, stamp, vtl, win):
+    """Walk ``sid`` in one read snapshot with the newest log entry it covers (M), then in one short write replace its
+    credits and clear its entries up to M.  A walk that covered less than one already stored is dropped."""
+    conn.execute("BEGIN")
+    try:
+        m = conn.execute("SELECT MAX(seq) FROM tally_dirty WHERE session_id=?", (sid,)).fetchone()[0] or 0
+        events, neg = _session_tally(conn, sid, vtl, win)
+    finally:
+        conn.execute("COMMIT")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute("SELECT sk, walked_seq, stamp FROM tally_sessions WHERE session_id=?",
+                           (sid,)).fetchone()
+        if row is None or (row[1] or 0) < m or row[2] != stamp:
+            if row is None:
+                sk = conn.execute("INSERT INTO tally_sessions(session_id) VALUES (?)", (sid,)).lastrowid
+                seq = m
+            else:
+                sk, seq = row[0], max(row[1] or 0, m)
+                conn.execute("DELETE FROM tally_credits WHERE sk=?", (sk,))
+            conn.executemany("INSERT INTO tally_credits(sk, ts, account, kind, fam, usd) VALUES (?, ?, ?, ?, ?, ?)",
+                             [(sk,) + e for e in events])
+            conn.execute("UPDATE tally_sessions SET walked_seq=?, stamp=?, ref_only=? WHERE sk=?",
+                         (seq, stamp, 1 if neg else 0, sk))
+        conn.execute("DELETE FROM tally_dirty WHERE session_id=? AND seq<=?", (sid, m))
+        conn.execute("COMMIT")
+    except Exception:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+
+
+def _tally_spot_check(conn, stamp, vtl, win, now=None):
+    """Re-walk one stored session from the last week and one from any time and compare with what is stored; a
+    difference is logged (``savings_tally_mismatch``) and the session goes back in the log, so the next sync
+    rewrites it.  Each check reads one snapshot, and skips a session that is dirty in it."""
+    import time as _time
+
+    since = _time.strftime("%Y-%m-%dT%H:%M:%SZ", _time.gmtime((now or _time.time()) - 7 * 86400))
+    picks = []
+    try:
+        for sql, args in (("SELECT sk FROM tally_credits WHERE ts >= ? ORDER BY RANDOM() LIMIT 1", (since,)),
+                          ("SELECT sk FROM tally_sessions WHERE stamp = ? ORDER BY RANDOM() LIMIT 1", (stamp,))):
+            r = conn.execute(sql, args).fetchone()
+            if r is not None and r[0] not in picks:
+                picks.append(r[0])
+    except Exception:
+        return []
+    bad = []
+    for sk in picks:
+        conn.execute("BEGIN")
+        try:
+            row = conn.execute("SELECT session_id, stamp FROM tally_sessions WHERE sk=?", (sk,)).fetchone()
+            if row is None or row[1] != stamp or conn.execute(
+                    "SELECT 1 FROM tally_dirty WHERE session_id=? LIMIT 1", (row[0],)).fetchone():
+                continue
+            stored = dict(((r[0], r[1], r[2], r[3]), r[4]) for r in conn.execute(
+                "SELECT ts, account, kind, fam, usd FROM tally_credits WHERE sk=?", (sk,)))
+            events, _neg = _session_tally(conn, row[0], vtl, win)
+        finally:
+            conn.execute("COMMIT")
+        fresh = dict((e[:4], e[4]) for e in events)
+        worst = max([abs(stored.get(k, 0.0) - fresh.get(k, 0.0)) for k in set(stored) | set(fresh)] or [0.0])
+        if worst > 1e-9 or set(stored) != set(fresh):
+            bad.append(row[0])
+            from . import log as _log
+
+            _log.log("savings_tally_mismatch", session=row[0], diff=round(worst, 9),
+                     keys=len(set(stored) ^ set(fresh)))
+            try:
+                conn.execute("INSERT INTO tally_dirty(session_id) VALUES (?)", (row[0],))
+            except Exception:
+                pass
+    return bad
 
 
 def detail_by_account(detail_json, session_account, measured_usd):

@@ -2,6 +2,23 @@
 
 One plain-English section per phase, newest first, written at the phase close as `## <phase> — <title>`. When it announces an update, Claude reads the sections newer than the phase a project last recorded and tells the developer what changed in those words.
 
+## 3.33.1 — The statusline's background work stays light
+
+- The work behind the statusline's usage and savings figures took several minutes of a full CPU core for every
+  refresh, and longer each week, so it ran nonstop while you worked and stayed busy after Claude Code closed. Each
+  savings figure re-read every session you ever had, hundreds of times a pass. Now each turn's saving is worked out
+  once and kept, and a window's, month's or lifetime's figure adds those up. On a ledger of a few months a pass went
+  from about 7 minutes to about 15 seconds. The figures are the same. (GitHub #19)
+- The first start after this update works out the savings of your past sessions once, in the background: about half
+  a minute on a few months of use.
+- A long pass of that background work can no longer start a second copy beside it.
+- When a session switched accounts, one account's savings split by model could include savings earned under the
+  other account. Each account's split now adds up to its own figure.
+- The "whole account replayed as one session" estimate is now worked out only when you run `pa_ledger.py report`,
+  which replays it every time. Summary passes no longer spend minutes on a number the statusline never shows.
+- `"savings": {"tally": false}` in the ledger's `config.json` goes back to re-reading every session, should a figure
+  ever look wrong.
+
 ## 3.33 — Scratch stays tidy, and every project catches up
 
 - An expert that disappears is no longer reported as stopped by a Ctrl+C. Only a real stop (Claude Code lists the

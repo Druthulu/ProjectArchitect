@@ -42,7 +42,7 @@ from . import paths
 from . import prices
 from .fsutil import disk_free_mb  # re-exported: the WSL disk guard lives here
 
-SCHEMA_VERSION = 8  # was 7; 3.24 T13l: turns.output_est
+SCHEMA_VERSION = 9  # was 8; 3.33.1 (GitHub #19): the savings tally
 
 PRAGMAS = (
     "PRAGMA journal_mode=WAL",
@@ -169,6 +169,98 @@ CREATE TABLE IF NOT EXISTS bench(
 """
 SCHEMA_SQL += BENCH_SQL
 
+# v9 (3.33.1, GitHub #19): the measured-savings tally, derived data (never exported; rebuilt from the rows above).
+# tally_credits holds each session's credits per turn (kind 'row' | 'seed' | 'emis'), so a window's savings is a
+# sum, not a walk of every session; tally_dirty is an append-only log of sessions whose inputs changed, written by
+# the triggers below on every write path (hooks, locks, recalc, repairs, imports, older installs).  Never drop or
+# rename tally_dirty or its session_id column: the triggers insert into it on every write to turns, retrievals,
+# tool_calls and agent_runs, and a missing table would fail those writes.
+TALLY_SQL = """
+CREATE TABLE IF NOT EXISTS tally_sessions(
+  sk INTEGER PRIMARY KEY, session_id TEXT UNIQUE, walked_seq INTEGER DEFAULT 0, stamp TEXT,
+  ref_only INTEGER DEFAULT 0);
+CREATE TABLE IF NOT EXISTS tally_credits(sk INTEGER, ts TEXT, account TEXT, kind TEXT, fam TEXT, usd REAL);
+CREATE TABLE IF NOT EXISTS tally_dirty(seq INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT);
+CREATE INDEX IF NOT EXISTS ix_tally_sk ON tally_credits(sk);
+CREATE INDEX IF NOT EXISTS ix_tally_ts ON tally_credits(ts);
+CREATE INDEX IF NOT EXISTS ix_tally_dirty ON tally_dirty(session_id, seq);
+"""
+SCHEMA_SQL += TALLY_SQL
+
+# Recreated whole when TALLY_TRIGGERS_VERSION changes (meta ``tally_triggers``); names fixed.  turns is written with
+# INSERT OR REPLACE, whose delete fires no trigger, so its insert trigger runs BEFORE and reads the row it replaces.
+# A retrieval's session is _kept_out_with_parent's: its run's, else its parent's, else the parent id itself.
+TALLY_TRIGGERS_VERSION = "1"
+_TALLY_TRIGGER_NAMES = ("tally_turns_ins", "tally_turns_upd", "tally_turns_del", "tally_calls_ins",
+                        "tally_calls_upd", "tally_calls_del", "tally_retr_ins", "tally_retr_upd",
+                        "tally_retr_del", "tally_runs_ins", "tally_runs_upd", "tally_runs_del")
+_RETR_SESSION = ("COALESCE((SELECT session_id FROM agent_runs WHERE run_id={r}.run_id),"
+                 " (SELECT session_id FROM agent_runs WHERE run_id={r}.parent_run_id), {r}.parent_run_id)")
+TALLY_TRIGGERS_SQL = """
+CREATE TRIGGER tally_turns_ins BEFORE INSERT ON turns BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (
+    SELECT NEW.session_id AS s
+    UNION SELECT session_id FROM turns WHERE msg_id=NEW.msg_id
+    UNION SELECT session_id FROM agent_runs WHERE run_id=NEW.run_id
+    UNION SELECT session_id FROM agent_runs WHERE run_id=(SELECT run_id FROM turns WHERE msg_id=NEW.msg_id))
+  WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_turns_upd AFTER UPDATE OF msg_id, session_id, run_id, account, ts, model, ctx, cost_usd, kind
+ON turns WHEN OLD.msg_id IS NOT NEW.msg_id OR OLD.session_id IS NOT NEW.session_id OR OLD.run_id IS NOT NEW.run_id
+  OR OLD.account IS NOT NEW.account OR OLD.ts IS NOT NEW.ts OR OLD.model IS NOT NEW.model OR OLD.ctx IS NOT NEW.ctx
+  OR OLD.cost_usd IS NOT NEW.cost_usd OR OLD.kind IS NOT NEW.kind BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (
+    SELECT OLD.session_id AS s UNION SELECT NEW.session_id
+    UNION SELECT session_id FROM agent_runs WHERE run_id IN (OLD.run_id, NEW.run_id))
+  WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_turns_del AFTER DELETE ON turns BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (
+    SELECT OLD.session_id AS s UNION SELECT session_id FROM agent_runs WHERE run_id=OLD.run_id)
+  WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_calls_ins AFTER INSERT ON tool_calls WHEN NEW.session_id IS NOT NULL BEGIN
+  INSERT INTO tally_dirty(session_id) VALUES (NEW.session_id);
+END;
+CREATE TRIGGER tally_calls_upd AFTER UPDATE OF id, session_id, run_id, ts, kind, path, file_tokens, emission_tokens,
+  result_tokens, kept_tokens, model ON tool_calls
+WHEN OLD.id IS NOT NEW.id OR OLD.session_id IS NOT NEW.session_id OR OLD.run_id IS NOT NEW.run_id
+  OR OLD.ts IS NOT NEW.ts OR OLD.kind IS NOT NEW.kind OR OLD.path IS NOT NEW.path
+  OR OLD.file_tokens IS NOT NEW.file_tokens OR OLD.emission_tokens IS NOT NEW.emission_tokens
+  OR OLD.result_tokens IS NOT NEW.result_tokens OR OLD.kept_tokens IS NOT NEW.kept_tokens
+  OR OLD.model IS NOT NEW.model BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (SELECT OLD.session_id AS s UNION SELECT NEW.session_id)
+  WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_calls_del AFTER DELETE ON tool_calls WHEN OLD.session_id IS NOT NULL BEGIN
+  INSERT INTO tally_dirty(session_id) VALUES (OLD.session_id);
+END;
+CREATE TRIGGER tally_retr_ins AFTER INSERT ON retrievals BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (SELECT {new} AS s) WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_retr_upd AFTER UPDATE OF run_id, parent_run_id, returned_at, kept_out_tokens, void ON retrievals
+WHEN OLD.run_id IS NOT NEW.run_id OR OLD.parent_run_id IS NOT NEW.parent_run_id
+  OR OLD.returned_at IS NOT NEW.returned_at OR OLD.kept_out_tokens IS NOT NEW.kept_out_tokens
+  OR OLD.void IS NOT NEW.void BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (SELECT {old} AS s UNION SELECT {new}) WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_retr_del AFTER DELETE ON retrievals BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (SELECT {old} AS s) WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_runs_ins AFTER INSERT ON agent_runs WHEN NEW.session_id IS NOT NULL BEGIN
+  INSERT INTO tally_dirty(session_id) VALUES (NEW.session_id);
+END;
+CREATE TRIGGER tally_runs_upd AFTER UPDATE OF run_id, session_id, seed_ctx, model_seen ON agent_runs
+WHEN OLD.run_id IS NOT NEW.run_id OR OLD.session_id IS NOT NEW.session_id OR OLD.seed_ctx IS NOT NEW.seed_ctx
+  OR OLD.model_seen IS NOT NEW.model_seen BEGIN
+  INSERT INTO tally_dirty(session_id) SELECT s FROM (SELECT OLD.session_id AS s UNION SELECT NEW.session_id)
+  WHERE s IS NOT NULL;
+END;
+CREATE TRIGGER tally_runs_del AFTER DELETE ON agent_runs WHEN OLD.session_id IS NOT NULL BEGIN
+  INSERT INTO tally_dirty(session_id) VALUES (OLD.session_id);
+END;
+""".replace("{new}", _RETR_SESSION.format(r="NEW")).replace("{old}", _RETR_SESSION.format(r="OLD"))
+
 # table -> (primary key columns, all columns, default upsert mode)
 TABLES = {
     "meta": (("key",), ("key", "value"), "replace"),
@@ -284,6 +376,7 @@ def init_schema(conn, machine=None):
     _accounts_v7(conn)   # likewise a v6 accounts table (3.10.6 T1)
     _turns_v8(conn)   # likewise a v7 turns table (3.24 T13l)
     _window_instances_v2(conn)   # likewise a v1 window_instances table (T2.1; 3.14.2 T1)
+    _tally_triggers(conn)   # 3.33.1: the savings tally's dirty-session triggers
     now = time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()) + "Z"
     if get_meta(conn, "created") is None:
         set_meta(conn, "created", now)
@@ -350,8 +443,31 @@ def migrate(conn):
     # v7 -> v8: turns.output_est, the output estimated for a placeholder-usage request (T13l)
     if have < 8:
         _turns_v8(conn)
+    # v8 -> v9: the savings tally (3.33.1, GitHub #19); its tables come from SCHEMA_SQL, its triggers from
+    # init_schema (_tally_triggers); the first summary pass fills it
     init_schema(conn)
     return SCHEMA_VERSION
+
+
+def _tally_triggers(conn):
+    """Create the savings tally's triggers, or recreate them all when ``TALLY_TRIGGERS_VERSION`` changed
+    (meta ``tally_triggers``); a no-op otherwise.  One transaction: no write ever runs with half of them."""
+    have = get_meta(conn, "tally_triggers")
+    names = set(r[0] for r in conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'tally_%'"))
+    if have == TALLY_TRIGGERS_VERSION and names >= set(_TALLY_TRIGGER_NAMES):
+        return False
+    script = "BEGIN;\n" + "".join("DROP TRIGGER IF EXISTS %s;\n" % n for n in _TALLY_TRIGGER_NAMES)
+    script += TALLY_TRIGGERS_SQL
+    script += "INSERT OR REPLACE INTO meta(key, value) VALUES ('tally_triggers', '%s');\nCOMMIT;\n" % (
+        TALLY_TRIGGERS_VERSION)
+    try:
+        conn.executescript(script)
+    except sqlite3.Error:
+        if conn.in_transaction:
+            conn.execute("ROLLBACK")
+        raise
+    return True
 
 
 def _window_instances_v2(conn):

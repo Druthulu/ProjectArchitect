@@ -568,12 +568,12 @@ def accounts_block(conn, cfg=None, readers=None):
             cost_row = conn.execute(
                 "SELECT COALESCE(SUM(cost_usd),0) FROM turns WHERE kind='api' AND account IS ? AND ts>=?",
                 (email, pstart)).fetchone()
-        measured, modeled = saved.get(email, (0.0, 0.0))
+        measured, _modeled = saved.get(email, (0.0, 0.0))
         period = ({"start": pstart,
                    "renewal_day": _renewal_day_of(cfg, email),
                    "cost_used": round(float(cost_row[0] or 0.0), 6),
                    "cost_saved_measured": round(measured, 6),
-                   "cost_saved_modeled": round(modeled, 6)} if pstart else
+                   "cost_saved_modeled": None} if pstart else      # 3.33.1: modeled is the report's
                   {"start": None, "renewal_day": None, "unknown": True})
         out[email] = {
             "label": labels.get(email),
@@ -841,6 +841,19 @@ def _rated_windows(conn, email, readers=None):
     return out
 
 
+_PASS_MEMO = None   # 3.33.1 (GitHub #19): one rebuild's row caches, keyed per ledger connection; None outside
+
+
+def _memo(kind, key, fill):
+    """``fill()`` once per rebuild for ``(kind, key)``; every call outside a rebuild."""
+    if _PASS_MEMO is None:
+        return fill()
+    box = _PASS_MEMO.setdefault(kind, {})
+    if key not in box:
+        box[key] = fill()
+    return box[key]
+
+
 def _turns_ts_cost(conn, email, where, args, readers=None):
     """``[(ts, cost)]`` of this account's api turns matching ``where``, msg_id-deduped
     across ``conn`` + ``readers``."""
@@ -928,7 +941,10 @@ def _weeks_by_window(conn, email, sids, since_iso, readers=None, cache=None, era
     rebuild for the account's rated windows.  ``era_iso`` (``sids`` None only): pre-era
     sessions are excluded like the account's dollars (fix-9.c3); the rated windows' rates
     still use every turn of the account."""
-    if cache is not None and email in cache:
+    if _PASS_MEMO is not None:                  # 3.33.1: once per rebuild per account and readers, every block
+        rkey = tuple(rd.get("path") for rd in (readers or ()) if rd.get("conn") not in (None, conn))
+        rated = _memo("rated", (conn, email, rkey), lambda: _rated_windows(conn, email, readers=readers))
+    elif cache is not None and email in cache:
         rated = cache[email]
     else:
         rated = _rated_windows(conn, email, readers=readers)
@@ -949,11 +965,15 @@ def _weeks_by_window(conn, email, sids, since_iso, readers=None, cache=None, era
         cost = _turns_ts_cost(conn, email, "ts>=?", [since], readers)
     saved = [(t, v) for t, v in _saved_ts(conn, email, sids, readers, era_iso=era_iso)
              if t >= since]
+    import bisect
+
+    starts = [s_iso for s_iso, _e, _r in rated]   # sorted, the spans never overlap (_rated_windows)
 
     def _split(rows):
         weeks, unrated = 0.0, 0.0
         for t, usd in rows:
-            rate = next((r for s_iso, e_iso, r in rated if s_iso <= t < e_iso), None)
+            i = bisect.bisect_right(starts, t) - 1
+            rate = rated[i][2] if i >= 0 and t < rated[i][1] else None
             if rate is None:
                 unrated += usd
             else:
@@ -1258,15 +1278,13 @@ def sessions_block(conn, cfg=None, hours=SESSION_WINDOW_H, accounts=None):
     for row in rows:
         sid = row["session_id"]
         sv = conn.execute(
-            "SELECT COALESCE(SUM(measured_saved_usd),0), COALESCE(SUM(modeled_saved_usd),0) "
-            "FROM savings WHERE session_id=?", (sid,)).fetchone()
+            "SELECT COALESCE(SUM(measured_saved_usd),0) FROM savings WHERE session_id=?", (sid,)).fetchone()
         measured = float(sv[0] or 0.0) if sv else 0.0
-        modeled = float(sv[1] or 0.0) if sv else 0.0
         cost = float(row["cost_usd"] or 0.0)
         entry = {"account": row["account"], "kind": row["kind"], "project": row["project"],
                  "phase": row["phase"], "started": row["started"], "ended": row["ended"],
                  "cost_usd": cost, "cost_source": row["cost_source"],
-                 "saved_measured": round(measured, 6), "saved_modeled": round(modeled, 6),
+                 "saved_measured": round(measured, 6), "saved_modeled": None,   # 3.33.1: the report's
                  "ratio": (round(measured / cost, 3) if cost > 0 else None)}
         # windowed cost and net per session (T1.c7)
         wins = {}
@@ -1501,52 +1519,6 @@ def write(doc):
     return doc
 
 
-def _modeled_block(conn, cfg, doc):
-    """Compute the rolling replay per account and upsert per-session savings rows."""
-    from . import db, replay
-    import json as _json
-
-    params = replay.params_from_cfg(cfg)
-    accounts = doc.get("accounts") or {}
-    sessions = doc.get("sessions") or {}
-    now = _now_iso()
-
-    for email, ablock in accounts.items():
-        turns, seeds = replay.account_turns(conn, email)
-        if not turns:
-            continue
-        p = dict(params)                # rolling mutates params (side-channel)
-        results = replay.rolling(turns, seeds, p)
-        sums = replay.session_sums(results)
-        assume_json = _json.dumps(
-            replay.assumptions(p, results), ensure_ascii=False, default=str)
-
-        for sid, modeled in sums.items():
-            db.upsert_savings(conn, {
-                "run_id": sid, "session_id": sid,
-                "modeled_saved_usd": round(modeled, 6),
-                "assumptions_json": assume_json,
-                "updated": now,
-            })
-
-        period = ablock.get("period")
-        if isinstance(period, dict) and period.get("start"):   # 3.11 T9: no period without a renewal day
-            pstart = period.get("start", "")
-            period["cost_saved_modeled"] = round(replay.sum_since(results, pstart), 6)
-
-        for w, winfo in (ablock.get("windows") or {}).items():
-            started_at = winfo.get("started_at")
-            if started_at is not None:
-                started_iso = _iso(started_at)
-                if started_iso:
-                    winfo["cost_saved_modeled"] = round(
-                        replay.sum_since(results, started_iso), 6)
-
-        for sid, modeled in sums.items():
-            if str(sid) in sessions:
-                sessions[str(sid)]["saved_modeled"] = round(modeled, 6)
-
-
 def _windows_with_extra_roots(conn, cfg, new, readers=None):
     """Compute the windows group into ``new`` over the local ledger plus the config's
     ``extra_roots`` (T17).  Returns True on success, False when the read rule gave up
@@ -1649,10 +1621,6 @@ def rebuild(conn, cfg=None, windows_only=False, sessions_only=False, readers=Non
             doc["accounts"] = new["accounts"]
             doc["projects"] = new["projects"]
             stamps["windows"] = started
-        elif apply_ses and sessions_only and stamps.get("windows") == _stamps(snap).get("windows"):
-            # sessions_only's modeled fields ride on the snapshot's accounts; write them
-            # back only while no windows result landed since the snapshot was read
-            doc["accounts"] = new["accounts"]
         if apply_ses:
             sessions = dict(new["sessions"])
             try:
@@ -1672,26 +1640,35 @@ def rebuild(conn, cfg=None, windows_only=False, sessions_only=False, readers=Non
         doc.setdefault("sessions", {})
         return doc
 
+    global _PASS_MEMO
+    from . import savings as _savings
+
+    memo_before = _PASS_MEMO
     try:
-        era = era_start(conn, cfg)
-        # only sessions_only needs existing blocks (the accounts its sessions and replay read)
-        snap = fsutil.read_json(path, {}) if sessions_only else {}
-        snap = snap if isinstance(snap, dict) else {}
-        new = {}
-        if win:
-            win = _windows_with_extra_roots(conn, cfg, new, readers=readers)
-            if not win:                         # read rule failed: sessions ride on the disk's accounts
-                snap = fsutil.read_json(path, {})
-                snap = snap if isinstance(snap, dict) else {}
-        if not win:
-            new["accounts"] = snap.get("accounts") if isinstance(snap.get("accounts"), dict) else {}
-        if ses:
-            new["sessions"] = sessions_block(conn, cfg, accounts=new.get("accounts"))
-            new["alerts"] = alerts_block(conn, cfg)
-        if win:
-            new["seed_alerts"] = _seed_for_projects(conn, new["projects"], cfg)
-        if ses:
-            _modeled_block(conn, cfg, new)
+        # 3.33.1 (GitHub #19): the savings tally brought up to date once; every measured-savings figure of the
+        # pass is then a sum over it (one view per ledger, union readers included), and each ledger's turns and
+        # savings rows of an account are read once (_PASS_MEMO)
+        _PASS_MEMO = {}
+        with _savings.tally_pass(conn):
+            era = era_start(conn, cfg)
+            # only sessions_only needs existing blocks (the accounts its sessions and replay read)
+            snap = fsutil.read_json(path, {}) if sessions_only else {}
+            snap = snap if isinstance(snap, dict) else {}
+            new = {}
+            if win:
+                win = _windows_with_extra_roots(conn, cfg, new, readers=readers)
+                if not win:                         # read rule failed: sessions ride on the disk's accounts
+                    snap = fsutil.read_json(path, {})
+                    snap = snap if isinstance(snap, dict) else {}
+            if not win:
+                new["accounts"] = snap.get("accounts") if isinstance(snap.get("accounts"), dict) else {}
+            if ses:
+                new["sessions"] = sessions_block(conn, cfg, accounts=new.get("accounts"))
+                new["alerts"] = alerts_block(conn, cfg)
+            if win:
+                new["seed_alerts"] = _seed_for_projects(conn, new["projects"], cfg)
+            # 3.33.1: the modeled replay (every turn of every account, each sessions pass) is the report's alone
+            # (pa_ledger report replays on demand); nothing the statusline shows reads it
         return fsutil.locked_update(path, _patch, timeout_ms=2000, default={})
     except Exception as exc:
         from . import log
@@ -1699,6 +1676,8 @@ def rebuild(conn, cfg=None, windows_only=False, sessions_only=False, readers=Non
         # the error text: 59 bare lines hid a missing column for three days (3.14.2 T2)
         log.log("summary_rebuild_failed", error=("%s: %s" % (type(exc).__name__, exc))[:200])
         return None
+    finally:
+        _PASS_MEMO = memo_before
 
 
 def patch_session(sid, fields):

@@ -1685,7 +1685,16 @@ def _cmd_recalc_run(args):
 
 def _report_conns(cfg):
     """Local + extra-root readers: ``[{conn, path, account, label}]`` (``db.union_readers``)."""
-    open_db()                                   # make sure the local schema exists
+    local = open_db()                           # make sure the local schema exists
+    try:                                        # 3.33.1: the savings tally current before the readers open
+        if savings._tally_enabled():
+            savings.tally_sync(local)
+    except Exception as exc:
+        from . import log
+
+        log.log("savings_tally_sync_failed", error=("%s: %s" % (type(exc).__name__, exc))[:200])
+    finally:
+        db.close(local)
     readers = db.union_readers(cfg.get("extra_roots") or [], include_local=True)
     return readers or [{"conn": db.connect(), "path": None, "account": None, "label": None}]
 
@@ -1782,16 +1791,15 @@ def _saved_rows(conn, args, since, default_account=None, until=None):
         session_id = r["session_id"] if hasattr(r, "keys") else r[1]
         run_id = r["run_id"] if hasattr(r, "keys") else r[2]
         measured = float((r["measured"] if hasattr(r, "keys") else r[3]) or 0.0)
-        modeled = r["modeled"] if hasattr(r, "keys") else r[4]
         detail_json = r["detail_json"] if hasattr(r, "keys") else r[5]
         ba = savings.detail_by_account(detail_json, session_account, measured)
         for acct, val in ba.items():
             if args.account and acct != args.account:
                 continue
-            # modeled stays on session account only (no per-turn split)
-            mod = modeled if acct == session_account else None
+            # 3.33.1: modeled is never read from the ledger (rebuilds stopped writing it; old rows are stale):
+            # the report replays it below
             out.append({"account": acct, "session_id": session_id,
-                        "run_id": run_id, "measured": val, "modeled": mod})
+                        "run_id": run_id, "measured": val, "modeled": None})
     return out
 
 
@@ -1904,6 +1912,12 @@ def _thinking_rows(conn, args, since):
 
 
 def cmd_report(args):
+    """``report``: its savings calls share one tally view per ledger (3.33.1, GitHub #19)."""
+    with savings.tally_pass(None):
+        return _cmd_report(args)
+
+
+def _cmd_report(args):
     cfg = config.load()
     summary_doc = fsutil.read_json(paths.summary_path(), {}) or {}
     since, label = window_cutoff(args.window, cfg, summary_doc, args.account)

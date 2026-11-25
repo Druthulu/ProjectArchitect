@@ -12,8 +12,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from pa import db  # noqa: E402
 
 EXPECTED_TABLES = ("accounts", "agent_runs", "bench", "events", "fit_pool", "meta", "prices", "retrievals",
-                   "savings", "sessions", "summary", "tool_calls", "turns", "utilization",
-                   "window_instances")
+                   "savings", "sessions", "sqlite_sequence", "summary", "tally_credits",
+                   "tally_dirty", "tally_sessions", "tool_calls", "turns", "utilization", "window_instances")
 
 
 class SchemaTest(unittest.TestCase):
@@ -110,22 +110,22 @@ class MigrateV3Test(unittest.TestCase):
 
     def test_v2_to_v3(self):
         self.assertFalse(self._has_bench())
-        self.assertEqual(db.migrate(self.conn), 8)
-        self.assertEqual(db.SCHEMA_VERSION, 8)  # was 7
+        self.assertEqual(db.migrate(self.conn), 9)
+        self.assertEqual(db.SCHEMA_VERSION, 9)  # was 8
         self.assertTrue(self._has_bench())
         self.assertIn("attempt", [r[1] for r in self.conn.execute("PRAGMA table_info(bench)")])
-        self.assertEqual(db.schema_version(self.conn), 8)
+        self.assertEqual(db.schema_version(self.conn), 9)
         self.assertEqual(tuple(self.conn.execute("SELECT run_id, agent_type, turns FROM agent_runs")
                                .fetchall()[0]), ("r1", "coder", 7))
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
-        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
-        self.assertEqual(db.schema_version(self.conn), 8)
+        self.assertEqual(db.migrate(self.conn), 9)                     # second migrate: no-op
+        self.assertEqual(db.schema_version(self.conn), 9)
         self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM agent_runs").fetchone()[0], 1)
 
     def test_newer_stamp_stays(self):
-        db.set_meta(self.conn, "schema_version", "8")
-        self.assertEqual(db.migrate(self.conn), 8)
-        self.assertEqual(db.schema_version(self.conn), 8)
+        db.set_meta(self.conn, "schema_version", "9")
+        self.assertEqual(db.migrate(self.conn), 9)
+        self.assertEqual(db.schema_version(self.conn), 9)
 
 
 # the v3 bench DDL (3.9 T3), kept here as the migration fixture
@@ -163,8 +163,8 @@ class MigrateV4Test(unittest.TestCase):
 
     def test_v3_to_v4_in_place(self):
         self.assertNotIn("attempt", [r[1] for r in self.conn.execute("PRAGMA table_info(bench)")])
-        self.assertEqual(db.migrate(self.conn), 8)
-        self.assertEqual(db.schema_version(self.conn), 8)
+        self.assertEqual(db.migrate(self.conn), 9)
+        self.assertEqual(db.schema_version(self.conn), 9)
         want = [("r1", "k", "a", 1, 1, 0.25, 0.5, 3, None, None),
                 ("r1", "k", "b", 1, 0, 0.5, 0.5, 3, None, None),
                 ("r1", "k", "c", 1, None, None, 0.5, 3, None, None)]
@@ -175,14 +175,14 @@ class MigrateV4Test(unittest.TestCase):
                                        "passed": 0}, "replace")
         self.assertEqual(len(self._rows()), 4)                        # a second attempt is a new row
         self.conn.execute("DELETE FROM bench WHERE attempt=2")
-        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 9)                     # second migrate: no-op
         self.assertEqual(self._rows(), want)
         self.assertNotIn("bench_v4", [r[0] for r in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")])
 
     def test_init_schema_alone_upgrades_a_v3_bench(self):
         db.init_schema(self.conn)                  # the hooks' and the installer's path
-        self.assertEqual(db.schema_version(self.conn), 8)
+        self.assertEqual(db.schema_version(self.conn), 9)
         self.assertEqual([r[3] for r in self._rows()], [1, 1, 1])
 
 
@@ -206,13 +206,13 @@ class MigrateV5Test(unittest.TestCase):
 
     def test_v4_to_v5(self):
         self.assertNotIn("harness_cost_usd", self._cols())
-        self.assertEqual(db.migrate(self.conn), 8)
+        self.assertEqual(db.migrate(self.conn), 9)
         self.assertIn("harness_cost_usd", self._cols())
         db.upsert_session(self.conn, {"session_id": "s1", "harness_cost_usd": 2.0})
         self.assertEqual(tuple(self.conn.execute(
             "SELECT cost_usd, cost_source, harness_cost_usd FROM sessions").fetchone()),
             (1.5, "turns", 2.0))
-        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 9)                     # second migrate: no-op
 
     def test_init_schema_alone_adds_the_column(self):
         db.init_schema(self.conn)                  # the hooks' path
@@ -241,7 +241,7 @@ class MigrateV6Test(unittest.TestCase):
 
     def test_v5_to_v6(self):
         self.assertFalse(self._has_pool())
-        self.assertEqual(db.migrate(self.conn), 8)
+        self.assertEqual(db.migrate(self.conn), 9)
         self.assertTrue(self._has_pool())
         db.upsert_fit_pool(self.conn, {"tier": "max", "window": "seven_day", "family": "opus",
                                        "rate": 0.001, "se": 0.0001, "n": 60, "n_instances": 2})
@@ -249,7 +249,7 @@ class MigrateV6Test(unittest.TestCase):
                                        "rate": 0.002, "n": 90})
         self.assertEqual(tuple(self.conn.execute("SELECT rate, se, n FROM fit_pool").fetchone()),
                          (0.002, None, 90))                            # replace: the new fit wins
-        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 9)                     # second migrate: no-op
 
 
 class MigrateV7Test(unittest.TestCase):
@@ -273,18 +273,128 @@ class MigrateV7Test(unittest.TestCase):
 
     def test_v6_to_v7(self):
         self.assertNotIn("tier", self._cols())
-        self.assertEqual(db.migrate(self.conn), 8)
+        self.assertEqual(db.migrate(self.conn), 9)
         self.assertIn("tier", self._cols())
         self.assertIn("tier_source", self._cols())
         db.upsert_account(self.conn, {"email": "a@x.io", "tier": "max20", "tier_source": "credentials"})
         self.assertEqual(tuple(self.conn.execute(
             "SELECT label, first_seen, tier, tier_source FROM accounts").fetchone()),
             ("A", "t0", "max20", "credentials"))
-        self.assertEqual(db.migrate(self.conn), 8)                     # second migrate: no-op
+        self.assertEqual(db.migrate(self.conn), 9)                     # second migrate: no-op
 
     def test_init_schema_alone_adds_the_columns(self):
         db.init_schema(self.conn)                  # the hooks' path (open_db)
         self.assertIn("tier_source", self._cols())
+
+
+class TallyTriggersTest(unittest.TestCase):
+    """3.33.1 (GitHub #19): every write to the savings walk's inputs logs its session in ``tally_dirty``."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp(prefix="pa3-db-")
+        self.conn = db.connect(os.path.join(self.dir, "ledger.sqlite"))
+        db.init_schema(self.conn)
+        db.upsert_agent_run(self.conn, {"run_id": "S1", "session_id": "S1", "model_seen": "claude-opus-5-5"})
+        db.upsert_agent_run(self.conn, {"run_id": "A1", "session_id": "S1", "parent_run_id": "S1",
+                                        "seed_ctx": 1000})
+        db.upsert_turn(self.conn, self._turn("m1", "S1", "S1"))
+        db.upsert_turn(self.conn, self._turn("m2", "A1", "S1"))
+        db.upsert_tool_call(self.conn, {"id": "c1", "session_id": "S1", "run_id": "S1", "ts": "2026-01-01T00:00:03Z",
+                                        "kind": "script", "emission_tokens": 10})
+        self._clear()
+
+    def tearDown(self):
+        db.close(self.conn)
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    @staticmethod
+    def _turn(msg_id, run_id, session_id, **kw):
+        row = {"msg_id": msg_id, "run_id": run_id, "session_id": session_id, "ts": "2026-01-01T00:00:01.500Z",
+               "kind": "api", "account": "a@x.io", "model": "claude-opus-5-5", "ctx": 5000, "cost_usd": 0.1}
+        row.update(kw)
+        return row
+
+    def _clear(self):
+        self.conn.execute("DELETE FROM tally_dirty")
+
+    def _dirty(self):
+        out = set(r[0] for r in self.conn.execute("SELECT session_id FROM tally_dirty"))
+        self._clear()
+        return out
+
+    def test_a_v8_ledger_gets_the_tables_and_triggers(self):
+        conn = db.connect(os.path.join(self.dir, "v8.sqlite"))
+        try:
+            conn.executescript(db.SCHEMA_SQL.replace(db.TALLY_SQL, ""))
+            db.set_meta(conn, "schema_version", "8")
+            self.assertEqual(db.migrate(conn), 9)
+            have = set(r[0] for r in conn.execute("SELECT name FROM sqlite_master"))
+            self.assertTrue({"tally_sessions", "tally_credits", "tally_dirty"} <= have)
+            self.assertTrue(set(db._TALLY_TRIGGER_NAMES) <= have)
+            self.assertEqual(db.get_meta(conn, "tally_triggers"), db.TALLY_TRIGGERS_VERSION)
+        finally:
+            db.close(conn)
+
+    def test_turn_writes(self):
+        db.upsert_turn(self.conn, self._turn("m3", "S1", "S1"))
+        self.assertEqual(self._dirty(), {"S1"})
+        db.upsert_turn(self.conn, self._turn("m3", "S2", "S2"))        # REPLACE moves it: old and new session
+        self.assertEqual(self._dirty(), {"S1", "S2"})
+        self.conn.execute("UPDATE turns SET account='b@x.io' WHERE msg_id='m1'")
+        self.assertEqual(self._dirty(), {"S1"})
+        self.conn.execute("UPDATE turns SET gap_s=5, cold=1 WHERE msg_id='m1'")   # not read by the walk
+        self.assertEqual(self._dirty(), set())
+        self.conn.execute("DELETE FROM turns WHERE msg_id='m2'")
+        self.assertEqual(self._dirty(), {"S1"})
+
+    def test_a_subagent_turn_dirties_its_runs_session(self):
+        """Seeds read a run's turns by run_id: a turn filed under another session still dirties the run's."""
+        db.upsert_turn(self.conn, self._turn("m4", "A1", "S9"))
+        self.assertEqual(self._dirty(), {"S1", "S9"})
+
+    def test_retrieval_writes_map_like_the_walk(self):
+        db.upsert_retrieval(self.conn, {"run_id": "A1", "parent_run_id": "S1", "returned_at": "t", "kept_out_tokens": 5})
+        self.assertEqual(self._dirty(), {"S1"})                         # through its own run
+        db.upsert_retrieval(self.conn, {"run_id": "X1", "parent_run_id": "A1", "returned_at": "t", "kept_out_tokens": 5})
+        self.assertEqual(self._dirty(), {"S1"})                         # through its parent's run
+        db.upsert_retrieval(self.conn, {"run_id": "X2", "parent_run_id": "S7", "returned_at": "t", "kept_out_tokens": 5})
+        self.assertEqual(self._dirty(), {"S7"})                         # the parent id itself
+        db.upsert_retrieval(self.conn, {"run_id": "X2", "parent_run_id": "S7", "returned_at": "t", "kept_out_tokens": 5})
+        self.assertEqual(self._dirty(), set())                          # an unchanged merge
+        db.upsert_retrieval(self.conn, {"run_id": "X2", "void": 1})
+        self.assertEqual(self._dirty(), {"S7"})
+        self.conn.execute("DELETE FROM retrievals WHERE run_id='X2'")
+        self.assertEqual(self._dirty(), {"S7"})
+
+    def test_agent_run_and_tool_call_writes(self):
+        db.upsert_agent_run(self.conn, {"run_id": "A1", "seed_ctx": 2000})
+        self.assertEqual(self._dirty(), {"S1"})
+        db.upsert_agent_run(self.conn, {"run_id": "A1", "seed_ctx": 2000, "status": "completed"})
+        self.assertEqual(self._dirty(), set())                          # nothing the walk reads changed
+        db.upsert_agent_run(self.conn, {"run_id": "A1", "session_id": "S2"})
+        self.assertEqual(self._dirty(), {"S1", "S2"})
+        db.upsert_tool_call(self.conn, {"id": "c1", "session_id": "S1", "emission_tokens": 20})
+        self.assertEqual(self._dirty(), {"S1"})
+        db.upsert_tool_call(self.conn, {"id": "c1", "phase": "P2"})     # a phase restamp
+        self.assertEqual(self._dirty(), set())
+        db.upsert_tool_call(self.conn, {"id": "c2", "session_id": "S3", "kind": "read", "path": "a.py"})
+        self.assertEqual(self._dirty(), {"S3"})
+
+    def test_the_log_only_grows(self):
+        """seq never goes back after a clear (AUTOINCREMENT): a sync's ``seq <= M`` never drops a later write."""
+        db.upsert_turn(self.conn, self._turn("m5", "S1", "S1"))
+        first = self.conn.execute("SELECT MAX(seq) FROM tally_dirty").fetchone()[0]
+        self._clear()
+        db.upsert_turn(self.conn, self._turn("m6", "S1", "S1"))
+        self.assertGreater(self.conn.execute("SELECT MAX(seq) FROM tally_dirty").fetchone()[0], first)
+
+    def test_a_new_trigger_version_recreates_them(self):
+        db.set_meta(self.conn, "tally_triggers", "0")
+        self.assertTrue(db._tally_triggers(self.conn))
+        self.assertEqual(db.get_meta(self.conn, "tally_triggers"), db.TALLY_TRIGGERS_VERSION)
+        self.assertFalse(db._tally_triggers(self.conn))
+        db.upsert_turn(self.conn, self._turn("m7", "S1", "S1"))
+        self.assertEqual(self._dirty(), {"S1"})
 
 
 class UpsertTest(unittest.TestCase):

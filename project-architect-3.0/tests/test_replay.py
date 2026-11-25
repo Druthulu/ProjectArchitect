@@ -262,23 +262,16 @@ class ReplayDBCase(unittest.TestCase):
 
 class SummaryRebuildTest(ReplayDBCase):
 
-    def test_modeled_in_savings_rows(self):
-        """rebuild upserts savings rows with modeled_saved_usd and assumptions_json."""
+    def test_a_rebuild_leaves_the_savings_rows_alone(self):
+        """3.33.1 (GitHub #19): the modeled replay ran over every turn of every account on each sessions pass, for
+        numbers only the report shows, and its upsert re-stamped ``updated`` on every main run's measured row. A
+        rebuild now writes no savings row."""
         conn = self.conn()
         try:
+            before = [tuple(r) for r in conn.execute("SELECT * FROM savings ORDER BY run_id")]
             doc = summary.rebuild(conn, config.defaults())
             self.assertIsNotNone(doc)
-            rows = conn.execute(
-                "SELECT run_id, modeled_saved_usd, assumptions_json "
-                "FROM savings WHERE run_id IN (?,?)", (SID_A, SID_B)).fetchall()
-            by_sid = {r["run_id"]: r for r in rows}
-            self.assertIn(SID_A, by_sid)
-            self.assertIn(SID_B, by_sid)
-            for sid in (SID_A, SID_B):
-                self.assertIsNotNone(by_sid[sid]["modeled_saved_usd"])
-                assume = json.loads(by_sid[sid]["assumptions_json"])
-                self.assertIn("prices_version", assume)
-                self.assertIn("n_turns", assume)
+            self.assertEqual([tuple(r) for r in conn.execute("SELECT * FROM savings ORDER BY run_id")], before)
         finally:
             db.close(conn)
 
@@ -295,8 +288,9 @@ class SummaryRebuildTest(ReplayDBCase):
         finally:
             db.close(conn)
 
-    def test_period_cost_saved_modeled(self):
-        """accounts[a].period.cost_saved_modeled equals the replay sum."""
+    def test_summary_json_carries_no_modeled_figure(self):
+        """3.33.1: the period's, the windows' and the sessions' modeled fields stay None (the statusline never
+        showed them; ``pa_ledger report`` replays them)."""
         conn = self.conn()
         try:
             cfg = config.defaults()
@@ -304,27 +298,13 @@ class SummaryRebuildTest(ReplayDBCase):
             doc = summary.rebuild(conn, cfg)
             acct_block = doc["accounts"].get(ACCOUNT)
             self.assertIsNotNone(acct_block)
-            period = acct_block["period"]
-            self.assertIsNotNone(period.get("cost_saved_modeled"))
-
-            turns, seeds = replay.account_turns(conn, ACCOUNT)
-            params = dict(replay.params_from_cfg(cfg))
-            results = replay.rolling(turns, seeds, params)
-            expected = replay.sum_since(results, period["start"])
-            self.assertAlmostEqual(
-                period["cost_saved_modeled"], round(expected, 6), places=4)
-        finally:
-            db.close(conn)
-
-    def test_session_saved_modeled_set(self):
-        """sessions[sid].saved_modeled is set for each session."""
-        conn = self.conn()
-        try:
-            doc = summary.rebuild(conn, config.defaults())
-            sessions = doc.get("sessions", {})
+            self.assertIn("cost_saved_modeled", acct_block["period"])
+            self.assertIsNone(acct_block["period"]["cost_saved_modeled"])
+            for winfo in (acct_block.get("windows") or {}).values():
+                self.assertIsNone(winfo.get("cost_saved_modeled"))
             for sid in (SID_A, SID_B):
-                self.assertIn(sid, sessions)
-                self.assertIsNotNone(sessions[sid].get("saved_modeled"))
+                self.assertIn(sid, doc["sessions"])
+                self.assertIsNone(doc["sessions"][sid]["saved_modeled"])
         finally:
             db.close(conn)
 
@@ -345,6 +325,24 @@ class ReportTest(ReplayDBCase):
                 for row in entry["rows"]:
                     if row["key"] in (SID_A, SID_B):
                         self.assertIn("saved_modeled", row)
+
+    def test_report_replays_over_a_stale_ledger_value(self):
+        """3.33.1: rebuilds stopped writing modeled values, so the ones left in the ledger go stale; the report
+        replays every time and never reads them."""
+        conn = self.conn()
+        try:
+            db.upsert_savings(conn, {"run_id": SID_A, "session_id": SID_A, "modeled_saved_usd": 999.0})
+            conn.commit()
+            turns, seeds = replay.account_turns(conn, ACCOUNT)
+            sums = replay.session_sums(replay.rolling(turns, seeds, dict(replay.params_from_cfg(config.defaults()))))
+        finally:
+            db.close(conn)
+        rc, text, errs = _run_cli("report", "--json", "--window", "all", "--account", ACCOUNT, "--by", "session")
+        self.assertEqual(rc, 0, errs)
+        entry = [e for e in json.loads(text)["accounts"] if e["account"] == ACCOUNT][0]
+        rows = dict((r["key"], r) for r in entry["rows"])
+        self.assertAlmostEqual(rows[SID_A]["saved_modeled"], round(sums[SID_A], 6), places=6)
+        self.assertNotEqual(entry["saved_modeled"], 999.0)
 
 
 # --------------------------------------------------------------------------- source scan

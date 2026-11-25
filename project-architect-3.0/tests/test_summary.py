@@ -720,6 +720,22 @@ class WeeksByWindowTest(unittest.TestCase):
         self.assertAlmostEqual(lt["unrated_usd"], 5.0, places=6)
 
 
+class WeeksByWindowInARebuildTest(WeeksByWindowTest):
+    """3.33.1 (GitHub #19): the same expectations with the rebuild's memo on: an account's rated seven-day
+    windows computed once per pass for every block that asks with the same readers."""
+
+    def setUp(self):
+        self.addCleanup(setattr, summary, "_PASS_MEMO", summary._PASS_MEMO)
+        summary._PASS_MEMO = {}
+
+    def test_rated_windows_once_per_account_per_pass(self):
+        from unittest import mock
+
+        with mock.patch.object(summary, "_rated_windows", wraps=summary._rated_windows) as rated:
+            self.test_each_instance_at_its_own_rate()
+        self.assertEqual(rated.call_count, 1)                  # accounts, projects, sessions and the direct call
+
+
 class RebuildFailureLogTest(unittest.TestCase):
     """A failed rebuild names its error in hooks.log (3.14.2 T2: the WSL ledger logged 59 bare
     ``summary_rebuild_failed`` lines while a missing column failed every rebuild)."""
@@ -804,7 +820,6 @@ class RebuildOutsideLockTest(unittest.TestCase):
                               side_effect=lambda *a, **k: {"s-" + _who(): {}}),
             mock.patch.object(summary, "alerts_block", return_value=[]),
             mock.patch.object(summary, "_seed_for_projects", return_value=[]),
-            mock.patch.object(summary, "_modeled_block", return_value=None),
         ]
 
     def _run(self, patches, fn):
@@ -1048,6 +1063,27 @@ class ExtraRootRebuildTest(unittest.TestCase):
     def _cfg(self, root):
         return {"accounts": {ACCT_A: {"renewal_day": 21}},
                 "extra_roots": [{"path": root, "account": ACCT_A}]}
+
+    def test_a_pass_sums_the_tally_and_never_walks_every_session(self):
+        """3.33.1 (GitHub #19): each measured-savings call walked every session the account ever had (288 calls a
+        pass, minutes of CPU). A rebuild brings the local tally up to date once and answers from it; the extra
+        root, with no tally of ours, is walked once per pass in memory."""
+        from unittest import mock
+
+        from pa import db, savings
+
+        other = os.path.join(self.tmp, "other")
+        _seed_ledger(os.path.join(other, "ledger.sqlite"), [("s-o", None)], [("m-o", "s-o", 100.0)]).close()
+        with mock.patch.object(savings, "_window_saved_reference", side_effect=AssertionError("walked")), \
+                mock.patch.object(savings, "_session_tally", wraps=savings._session_tally) as walks:
+            doc = summary.rebuild(self.conn, self._cfg(other))
+        self.assertIsNotNone(doc)
+        self.assertIn(ACCT_A, doc["accounts"])
+        self.assertEqual(db.get_meta(self.conn, "tally_stamp"), savings.tally_stamp())
+        self.assertEqual(self.conn.execute("SELECT COUNT(*) FROM tally_dirty").fetchone()[0], 0)
+        walked = sorted(c.args[1] for c in walks.call_args_list)
+        self.assertEqual(walked.count("s-o"), 1)                 # the extra root's session, once
+        self.assertLessEqual(walked.count("s-l"), 2)             # the sync, and at most a spot check
 
     def test_local_project_share_of_the_whole_spend(self):
         other = os.path.join(self.tmp, "other")

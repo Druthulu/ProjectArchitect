@@ -409,6 +409,18 @@ class AccountSwitchTest(ToolCallCreditTest):
             self.assertAlmostEqual(window, ba.get(acct, 0.0), places=4,
                                    msg="window for %s should match by_account" % acct)
 
+    def test_by_family_per_account_sums_to_its_own_figure(self):
+        """3.33.1 (found for GitHub #19): a row that only the other account's turns credited in the window went into
+        this account's family split at its full value; each account's split now sums to its own figure."""
+        self._fixture()
+        t0, t1 = "2026-09-01T10:05:00Z", "2026-09-01T10:11:00Z"     # only account B's turns
+        for acct in (self.ACCT_A, self.ACCT_B):
+            plain = savings.window_saved_measured(self.conn, acct, t0, t1)
+            fams = savings.window_saved_measured(self.conn, acct, t0, t1, by_family=True)
+            self.assertAlmostEqual(sum(fams.values()), plain, places=9, msg=acct)
+        self.assertGreater(savings.window_saved_measured(self.conn, self.ACCT_B, t0, t1), 0)
+        self.assertEqual(savings.window_saved_measured(self.conn, self.ACCT_A, t0, t1), 0.0)
+
     def test_window_sum_equals_session(self):
         """Sum of window figures for both accounts equals the total."""
         sid, rid = self._fixture()

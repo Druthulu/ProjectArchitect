@@ -1352,6 +1352,98 @@ class SamplerTest(LedgerCase):
         self.assertEqual(rows, len(self.spool_lines()) * 2)
         self.assertFalse(os.path.exists(statusline._sampler_path("child.lock")))
 
+    def _queue_one(self, pct=21):
+        """One change queued, no child spawned (the tests run it themselves)."""
+        from pa import notify
+
+        notify.set_spawner(lambda cmd, env: None)
+        self.payload["rate_limits"]["five_hour"]["used_percentage"] = pct
+        statusline._JSON_CACHE.clear()
+        statusline.sample(self.payload, self.cfg)
+        statusline._JSON_CACHE.clear()
+
+    def test_a_live_childs_lock_is_never_taken_over(self):
+        """3.33.1 (GitHub #19): a batch past the 10 min stale age let the next request start a second child beside the
+        first (bfm, 2026-11-22). The heartbeat keeps a live child's lock fresh: the request spawns nothing."""
+        from unittest import mock
+        from pa import notify, summary as summary_mod
+
+        self._queue_one()
+        lock = statusline._sampler_path("child.lock")
+        spawned, requested = [], []
+
+        def long_batch(jobs, cfg):
+            old = time.time() - 700                        # the batch has run past _LOCK_STALE_S
+            os.utime(lock, (old, old))
+            time.sleep(0.3)                                # several heartbeats
+            notify.set_spawner(lambda cmd, env: spawned.append(cmd))
+            requested.append(statusline.request_background())
+
+        with mock.patch.object(summary_mod, "HEARTBEAT_S", 0.05), \
+                mock.patch.object(statusline, "_run_jobs", side_effect=long_batch):
+            statusline.run_background()
+        self.assertEqual(requested, [False])
+        self.assertEqual(spawned, [])
+        self.assertFalse(os.path.exists(lock))
+
+    def test_a_child_that_lost_its_lock_leaves_it_and_stops(self):
+        """3.33.1 (GitHub #19): the child rewrote the lock after each batch and removed it on exit, whoever held it. A
+        child whose lock another took stops after its batch and leaves the lock and the queue to the owner."""
+        from unittest import mock
+
+        self._queue_one()
+        lock = statusline._sampler_path("child.lock")
+        other = "%d background\n" % os.getppid()          # a live process that is not this one
+        batches = []
+
+        def taken_over(jobs, cfg):
+            batches.append(len(jobs))
+            with open(lock, "w", encoding="utf-8") as fh:
+                fh.write(other)
+            self._queue_one(22)                            # more work arrives for the owner
+
+        with mock.patch.object(statusline, "_run_jobs", side_effect=taken_over):
+            statusline.run_background()
+        self.assertEqual(len(batches), 1)
+        with open(lock, encoding="utf-8") as fh:
+            self.assertEqual(fh.read(), other)
+        self.assertTrue(os.path.exists(statusline._sampler_path("queue.jsonl")))
+
+    def test_a_slow_batch_is_logged_with_its_time(self):
+        """3.33.1 (GitHub #19): a batch of SLOW_PASS_S or more leaves its time in hooks.log."""
+        from unittest import mock
+        from pa import summary as summary_mod
+
+        self._queue_one()
+        with mock.patch.object(summary_mod, "SLOW_PASS_S", 0), mock.patch.object(statusline, "_run_jobs"), \
+                mock.patch.object(statusline, "_log") as logged:
+            statusline.run_background()
+        slow = [c for c in logged.call_args_list if c.args[:1] == ("statusline.background_slow",)]
+        self.assertEqual([sorted(c.kwargs) for c in slow], [["jobs", "seconds"]])
+
+    def test_a_newer_install_hands_the_queue_to_a_fresh_child(self):
+        """3.33.1: a process keeps the code it started with; while the queue refills, a newer install ends the loop
+        and a fresh child takes the queue."""
+        from unittest import mock
+        from pa import notify, summary as summary_mod
+
+        self._queue_one()
+        lock = statusline._sampler_path("child.lock")
+        spawned = []
+
+        def batch(jobs, cfg):
+            self._queue_one(22)
+            notify.set_spawner(lambda cmd, env: spawned.append(cmd))
+
+        with mock.patch.object(summary_mod, "_newer_installed", return_value=True), \
+                mock.patch.object(statusline, "_run_jobs", side_effect=batch) as runs:
+            statusline.run_background()
+        self.assertEqual(runs.call_count, 1)
+        self.assertEqual(spawned, [statusline.background_command()[0]])
+        self.assertTrue(os.path.exists(statusline._sampler_path("queue.jsonl")))
+        self.assertTrue(os.path.exists(lock))              # taken by the request for the fresh child
+        os.remove(lock)
+
     def test_no_session_id_is_a_no_op(self):
         self.payload.pop("session_id")
         self.assertIsNone(statusline.sample(self.payload, self.cfg))
